@@ -1,9 +1,11 @@
 import Phaser from 'phaser'
 import Webbs from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
+import ColonyNPC from '../entities/ColonyNPC'
 import { CraftingSystem } from '../systems/CraftingSystem'
 import { WeaponType } from '../systems/WeaponSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
+import { ColonyRestorationSystem } from '../systems/ColonyRestorationSystem'
 
 const WORLD_W   = 2560
 const WORLD_H   = 720
@@ -18,6 +20,8 @@ export default class HomeBaseScene extends Phaser.Scene {
   private craftingSystem!: CraftingSystem
   private eKey!:           Phaser.Input.Keyboard.Key
   private transitioning    = false
+  private npcs:            ColonyNPC[] = []
+  private colonyState      = 0
 
   // Player stats — synced to registry each frame for HUD
   private health    = 5
@@ -34,21 +38,43 @@ export default class HomeBaseScene extends Phaser.Scene {
 
   create() {
     this.transitioning = false
+    this.npcs = []
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H)
 
     // Restore health from registry if returning from another zone
     const savedHp = this.registry.get('health') as number | undefined
     if (savedHp !== undefined) this.health = savedHp
 
+    // Compute colony state from bosses defeated
+    const bossesDefeated = this.registry.get('bossesDefeated') as string[] ?? []
+    const crs = new ColonyRestorationSystem()
+    this.colonyState = crs.getColonyState(bossesDefeated)
+
     this.drawBackground()
     this.drawFloor()
-    this.drawTornWebs()
+
+    if (this.colonyState === 0) {
+      this.drawTornWebs()
+    } else {
+      this.drawRepairedWebs()
+    }
+
     this.drawSilkHammocks()
     this.drawHalfBuiltInventions()
     this.drawFoodStores()
     this.drawPersonalItems()
     this.drawExits()
     this.spawnDustParticles()
+
+    // State-based environmental overlays
+    if (this.colonyState >= 1) {
+      this.drawLights()
+      this.drawFire()
+      this.spawnNPCs(crs.getStateConfig(this.colonyState).npcCount)
+    }
+    if (this.colonyState >= 4) {
+      this.drawDecorations()
+    }
 
     // Workbench at center-right of scene
     this.workbench = new Workbench(this, 1820, FLOOR_Y - 40)
@@ -79,6 +105,14 @@ export default class HomeBaseScene extends Phaser.Scene {
     if (!this.scene.isActive('HUDScene')) this.scene.launch('HUDScene')
 
     this.syncRegistry()
+
+    // Survivor return cutscene on first visit after Roller defeat
+    const rollerVictory = this.registry.get('rollerVictory') as boolean ?? false
+    if (rollerVictory) {
+      this.registry.set('rollerVictory', false)
+      this.playSurvivorsReturnCutscene()
+    }
+
     ZoneTransitionSystem.announceZone(this, 'HOME BASE — SPIDER COLONY')
   }
 
@@ -102,6 +136,11 @@ export default class HomeBaseScene extends Phaser.Scene {
     }
 
     if (this.contactCooldown > 0) this.contactCooldown -= delta
+
+    // NPC proximity dialogue
+    for (const npc of this.npcs) {
+      npc.checkProximity(this.webbs.x, this.webbs.y)
+    }
 
     // Left-exit → Ant Colony
     if (this.webbs.x < LEFT_TRIGGER) {
@@ -186,6 +225,45 @@ export default class HomeBaseScene extends Phaser.Scene {
     this.drawWebCluster(g, 960,  0, 100, 120)
     this.drawWebCluster(g, 1600, 0, -80, 110)
     this.drawWebCluster(g, 2200, 0, 90,  130)
+  }
+
+  private drawRepairedWebs(): void {
+    const g = this.add.graphics().setDepth(3)
+    g.lineStyle(1, 0xffffff, 0.5)
+
+    const anchors = [
+      { cx: 20,           cy: 20,       dx: 200, dy: 180 },
+      { cx: WORLD_W - 20, cy: 20,       dx: -200, dy: 180 },
+      { cx: 20,           cy: FLOOR_Y - 20, dx: 160, dy: -110 },
+      { cx: 960,          cy: 20,       dx: 100,  dy: 140 },
+      { cx: 1600,         cy: 20,       dx: -80,  dy: 130 },
+      { cx: 2200,         cy: 20,       dx: 90,   dy: 150 },
+    ]
+
+    for (const a of anchors) {
+      const len = Math.hypot(a.dx, a.dy)
+      const numStrands = 8
+      // Radial strands
+      for (let i = 0; i < numStrands; i++) {
+        const t = i / (numStrands - 1)
+        g.lineBetween(a.cx, a.cy, a.cx + a.dx * t, a.cy + a.dy * (1 - t * 0.3))
+      }
+      // Concentric cross-threads at 3 radii
+      for (const frac of [0.3, 0.6, 0.9]) {
+        const r = len * frac
+        const pts = 8
+        for (let j = 0; j < pts; j++) {
+          const angle1 = (j / pts) * Math.PI * 2
+          const angle2 = ((j + 1) / pts) * Math.PI * 2
+          g.lineBetween(
+            a.cx + Math.cos(angle1) * r * 0.5,
+            a.cy + Math.sin(angle1) * r * 0.5,
+            a.cx + Math.cos(angle2) * r * 0.5,
+            a.cy + Math.sin(angle2) * r * 0.5,
+          )
+        }
+      }
+    }
   }
 
   private drawWebCluster(
@@ -483,6 +561,178 @@ export default class HomeBaseScene extends Phaser.Scene {
       frequency: 160,
       quantity:  1,
     }).setDepth(2)
+  }
+
+  // ── Colony restoration visuals ────────────────────────────────────────────
+
+  private drawLights(): void {
+    const lightXs = [200, 600, 1000, 1400, 1800, 2200]
+    for (const lx of lightXs) {
+      const g = this.add.graphics().setDepth(3).setBlendMode(Phaser.BlendModes.ADD)
+      g.fillStyle(0xffdd88, 0.07)
+      g.fillCircle(lx, 75, 65)
+      g.fillStyle(0xffdd88, 0.14)
+      g.fillCircle(lx, 75, 42)
+      g.fillStyle(0xffdd88, 0.3)
+      g.fillCircle(lx, 75, 22)
+      g.fillStyle(0xffffff, 0.75)
+      g.fillCircle(lx, 75, 5)
+
+      this.tweens.add({
+        targets:  g,
+        alpha:    { from: 0.75, to: 1 },
+        duration: 1800 + Math.floor(Math.random() * 800),
+        yoyo:     true,
+        repeat:   -1,
+        ease:     'Sine.easeInOut',
+      })
+    }
+  }
+
+  private drawFire(): void {
+    const fireX = 1280
+    const g = this.add.graphics().setDepth(4)
+
+    g.fillStyle(0xff6600, 1)
+    g.fillTriangle(fireX - 10, FLOOR_Y, fireX + 10, FLOOR_Y, fireX, FLOOR_Y - 32)
+    g.fillStyle(0xffaa00, 0.85)
+    g.fillTriangle(fireX - 7, FLOOR_Y, fireX + 7, FLOOR_Y, fireX, FLOOR_Y - 22)
+    g.fillStyle(0xffff44, 0.6)
+    g.fillTriangle(fireX - 4, FLOOR_Y, fireX + 4, FLOOR_Y, fireX, FLOOR_Y - 13)
+
+    // Flicker tween
+    this.tweens.add({
+      targets:  g,
+      scaleX:   { from: 0.88, to: 1.12 },
+      scaleY:   { from: 0.85, to: 1.1  },
+      x:        { from: fireX - 2, to: fireX + 2 },
+      duration: 130,
+      yoyo:     true,
+      repeat:   -1,
+      ease:     'Sine.easeInOut',
+    })
+  }
+
+  private drawDecorations(): void {
+    const g = this.add.graphics().setDepth(3)
+
+    const decorXs = [500, 900, 1300, 1700, 2100]
+    for (const px of decorXs) {
+      // Diamond shapes hanging from ceiling
+      g.fillStyle(0xff8844, 0.7)
+      g.fillTriangle(px, 36, px - 9, 52, px + 9, 52)
+      g.fillTriangle(px, 68, px - 9, 52, px + 9, 52)
+
+      // Small accent circles
+      g.fillStyle(0xffaa55, 0.5)
+      g.fillCircle(px + 28, 50, 5)
+      g.fillCircle(px - 28, 60, 4)
+
+      // Short decorative line down from ceiling
+      g.lineStyle(1, 0xffcc88, 0.4)
+      g.lineBetween(px, 30, px, 36)
+    }
+  }
+
+  private spawnNPCs(count: number): void {
+    const positions = [
+      { x: 400,  y: FLOOR_Y - 20, name: 'Asha'  },
+      { x: 600,  y: FLOOR_Y - 20, name: 'Krix'  },
+      { x: 800,  y: FLOOR_Y - 20, name: 'Pela'  },
+      { x: 1200, y: FLOOR_Y - 20, name: 'Donn'  },
+      { x: 1400, y: FLOOR_Y - 20, name: 'Siv'   },
+      { x: 1600, y: FLOOR_Y - 20, name: 'Fen'   },
+      { x: 1900, y: FLOOR_Y - 20, name: 'Moro'  },
+      { x: 2100, y: FLOOR_Y - 20, name: 'Tal'   },
+      { x: 2300, y: FLOOR_Y - 20, name: 'Brix'  },
+      { x: 450,  y: FLOOR_Y - 20, name: 'Cera'  },
+      { x: 750,  y: FLOOR_Y - 20, name: 'Nox'   },
+      { x: 1050, y: FLOOR_Y - 20, name: 'Vell'  },
+      { x: 1350, y: FLOOR_Y - 20, name: 'Oryn'  },
+      { x: 1650, y: FLOOR_Y - 20, name: 'Kal'   },
+      { x: 1950, y: FLOOR_Y - 20, name: 'Jep'   },
+      { x: 2250, y: FLOOR_Y - 20, name: 'Sora'  },
+      { x: 350,  y: FLOOR_Y - 20, name: 'Quill' },
+      { x: 550,  y: FLOOR_Y - 20, name: 'Dex'   },
+      { x: 850,  y: FLOOR_Y - 20, name: 'Pren'  },
+      { x: 1150, y: FLOOR_Y - 20, name: 'Yara'  },
+    ]
+
+    const toSpawn = positions.slice(0, count)
+    for (const pos of toSpawn) {
+      this.npcs.push(new ColonyNPC(this, pos.x, pos.y, pos.name, this.colonyState))
+    }
+  }
+
+  // ── Cutscene ──────────────────────────────────────────────────────────────
+
+  private playSurvivorsReturnCutscene(): void {
+    const survivors: Phaser.GameObjects.Graphics[] = []
+
+    for (let i = 0; i < 2; i++) {
+      const g = this.add.graphics().setDepth(12)
+      g.fillStyle(0x7a6a5a, 1)
+      g.fillCircle(0, 0, 8)
+      g.lineStyle(1, 0x888888, 0.8)
+      g.strokeCircle(0, 0, 8)
+      // Simple legs
+      g.lineStyle(1, 0x666666, 0.7)
+      for (let j = 0; j < 4; j++) {
+        g.lineBetween(-8, -4 + j * 4, -18, -8 + j * 5)
+        g.lineBetween(8,  -4 + j * 4,  18, -8 + j * 5)
+      }
+      g.setPosition(-80, FLOOR_Y - 20 - i * 18)
+      survivors.push(g)
+    }
+
+    const destX = [300, 260]
+    const destY = [FLOOR_Y - 20, FLOOR_Y - 20]
+    let arrived = 0
+
+    survivors.forEach((s, i) => {
+      this.tweens.add({
+        targets:  s,
+        x:        destX[i],
+        y:        destY[i],
+        duration: 1500,
+        ease:     'Sine.easeOut',
+        onComplete: () => {
+          arrived++
+          if (arrived === survivors.length) this.showReturnText(survivors)
+        },
+      })
+    })
+  }
+
+  private showReturnText(survivors: Phaser.GameObjects.Graphics[]): void {
+    const overlay = this.add.text(640, 200,
+      'The ants are free.\nSome have found their way home.',
+      {
+        fontFamily:      'monospace',
+        fontSize:        '16px',
+        color:           '#ffffff',
+        backgroundColor: '#00000099',
+        padding:         { x: 12, y: 8 },
+        align:           'center',
+      },
+    ).setOrigin(0.5).setDepth(15).setScrollFactor(0)
+
+    this.time.delayedCall(3000, () => {
+      this.tweens.add({
+        targets:    overlay,
+        alpha:      0,
+        duration:   600,
+        onComplete: () => overlay.destroy(),
+      })
+      for (const s of survivors) {
+        this.tweens.add({
+          targets:    s,
+          alpha:      0,
+          duration:   600,
+          onComplete: () => s.destroy(),
+        })
+      }
+    })
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

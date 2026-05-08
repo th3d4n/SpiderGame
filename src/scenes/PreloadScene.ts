@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { saveSystem } from '../systems/SaveSystem'
 
 export default class PreloadScene extends Phaser.Scene {
   constructor() {
@@ -36,6 +37,26 @@ export default class PreloadScene extends Phaser.Scene {
   }
 
   create() {
+    // Restore save state into registry before MainMenuScene checks it
+    const save = saveSystem.load()
+    if (save !== null) {
+      this.registry.set('hasSave',         true)
+      this.registry.set('bossesDefeated',  save.bossesDefeated)
+      this.registry.set('legTier',         save.legTier)
+      this.registry.set('inventory',       save.inventory)
+      this.registry.set('unlockedWeapons', save.unlockedWeapons)
+      this.registry.set('colonyCount',     save.colonyCount)
+      this.registry.set('lastZone',        save.lastZone)
+    } else {
+      this.registry.set('hasSave',        false)
+      this.registry.set('bossesDefeated', [])
+      this.registry.set('legTier',        1)
+      this.registry.set('inventory',      {})
+      this.registry.set('unlockedWeapons', [])
+      this.registry.set('colonyCount',    0)
+      this.registry.set('lastZone',       'HomeBaseScene')
+    }
+
     this.scene.start('MainMenuScene')
   }
 }
