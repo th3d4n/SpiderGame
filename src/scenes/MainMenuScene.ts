@@ -35,7 +35,7 @@ export default class MainMenuScene extends Phaser.Scene {
     })
 
     this.input.keyboard!.once('keydown-SPACE', () => {
-      this.scene.start('GameScene')
+      this.scene.start('HomeBaseScene')
     })
   }
 }

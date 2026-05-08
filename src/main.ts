@@ -2,6 +2,8 @@ import Phaser from 'phaser'
 import BootScene from './scenes/BootScene'
 import PreloadScene from './scenes/PreloadScene'
 import MainMenuScene from './scenes/MainMenuScene'
+import HomeBaseScene from './scenes/HomeBaseScene'
+import AntColonyScene from './scenes/AntColonyScene'
 import GameScene from './scenes/GameScene'
 import BossRollerScene from './scenes/BossRollerScene'
 import HUDScene from './ui/HUD'
@@ -17,7 +19,9 @@ const config: Phaser.Types.Core.GameConfig = {
     default: 'arcade',
     arcade: { debug: false }
   },
-  scene: [BootScene, PreloadScene, MainMenuScene, GameScene, BossRollerScene, HUDScene, CraftingMenu]
+  // HomeBaseScene is the entry point after the main menu.
+  // GameScene is kept registered for direct dev access.
+  scene: [BootScene, PreloadScene, MainMenuScene, HomeBaseScene, AntColonyScene, GameScene, BossRollerScene, HUDScene, CraftingMenu]
 }
 
 const game = new Phaser.Game(config)
