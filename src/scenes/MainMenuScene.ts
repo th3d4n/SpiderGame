@@ -26,7 +26,6 @@ export default class MainMenuScene extends Phaser.Scene {
       color: '#aaaacc',
     }).setOrigin(0.5)
 
-    // Blink the start prompt
     this.tweens.add({
       targets: startText,
       alpha: 0,
@@ -35,13 +34,8 @@ export default class MainMenuScene extends Phaser.Scene {
       repeat: -1,
     })
 
-    // Space to proceed (will start GameScene once we build it)
     this.input.keyboard!.once('keydown-SPACE', () => {
-      this.add.text(width / 2, height / 2 + 140, 'Game scene coming soon...', {
-        fontFamily: 'monospace',
-        fontSize: '14px',
-        color: '#555577',
-      }).setOrigin(0.5)
+      this.scene.start('GameScene')
     })
   }
 }
