@@ -1,4 +1,6 @@
 import Phaser from 'phaser'
+import { WeaponSystem, WeaponType } from '../systems/WeaponSystem'
+import { WEAPON_DATA, WEAPON_COLORS } from '../config/WeaponData'
 
 const LEG_COUNT = 8
 const LEG_LENGTH = 40
@@ -18,9 +20,11 @@ export default class Webbs extends Phaser.GameObjects.Container {
   }
   private legAngleOffset: number = 0
   public pb!: Phaser.Physics.Arcade.Body
+  public weaponSystem: WeaponSystem
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y)
+    this.weaponSystem = new WeaponSystem(WEAPON_DATA)
     scene.add.existing(this)
     scene.physics.add.existing(this)
     this.pb = this.body as Phaser.Physics.Arcade.Body
@@ -61,6 +65,16 @@ export default class Webbs extends Phaser.GameObjects.Container {
       tip.setStrokeStyle(1, 0xffffff)
       this.add(tip)
       this.legTips.push(tip)
+    }
+  }
+
+  // Call after equipping or unequipping any weapon to sync tip colors.
+  refreshLegColors(): void {
+    for (let i = 0; i < LEG_COUNT; i++) {
+      const weapon = this.weaponSystem.getSlot(i)
+      const color = weapon === WeaponType.Empty ? LEG_COLORS[i] : WEAPON_COLORS[weapon]
+      this.legs[i].setStrokeStyle(2, color)
+      this.legTips[i].setFillStyle(color)
     }
   }
 

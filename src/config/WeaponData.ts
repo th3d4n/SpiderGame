@@ -1,0 +1,57 @@
+import { WeaponType, type WeaponConfig } from '../systems/WeaponSystem'
+
+export const WEAPON_COLORS: Record<WeaponType, number> = {
+  [WeaponType.Empty]:        0x444444, // placeholder; Webbs falls back to per-leg color
+  [WeaponType.Sword]:        0xc0c0c0, // silver
+  [WeaponType.Bow]:          0x8b6914, // dark gold
+  [WeaponType.Axe]:          0x888888, // steel gray
+  [WeaponType.BoxingGloves]: 0xff3333, // punchy red
+  [WeaponType.Glider]:       0x87ceeb, // sky blue
+  [WeaponType.FlameBreather]:0xff6600, // fire orange
+}
+
+// All Phase 1 weapons. requiredTier = minimum leg tier to equip in any unlocked slot.
+export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
+  [WeaponType.Sword, {
+    name: 'Sword',
+    damage: 25,
+    staminaCost: 15,
+    type: 'melee',
+    requiredTier: 0,
+  }],
+  [WeaponType.Bow, {
+    name: 'Bow',
+    damage: 20,
+    staminaCost: 10,
+    type: 'ranged',
+    requiredTier: 0,
+  }],
+  [WeaponType.BoxingGloves, {
+    name: 'Boxing Gloves',
+    damage: 15,
+    staminaCost: 5,
+    type: 'melee',
+    requiredTier: 0,
+  }],
+  [WeaponType.Axe, {
+    name: 'Axe',
+    damage: 40,
+    staminaCost: 25,
+    type: 'melee',
+    requiredTier: 1,
+  }],
+  [WeaponType.Glider, {
+    name: 'Glider',
+    damage: 0,
+    staminaCost: 20,
+    type: 'traversal',
+    requiredTier: 1,
+  }],
+  [WeaponType.FlameBreather, {
+    name: 'Flame Breather',
+    damage: 30,
+    staminaCost: 30,
+    type: 'ranged',
+    requiredTier: 2,
+  }],
+])
