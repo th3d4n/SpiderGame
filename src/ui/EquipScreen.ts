@@ -35,10 +35,10 @@ export default class EquipScreen extends Phaser.Scene {
   private inventory:    WeaponType[] = []
 
   // Cursor keys
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
+  private cursors!:  Phaser.Types.Input.Keyboard.CursorKeys
   private enterKey!: Phaser.Input.Keyboard.Key
   private xKey!:     Phaser.Input.Keyboard.Key
-  private tabKey!:   Phaser.Input.Keyboard.Key
+  private iKey!:     Phaser.Input.Keyboard.Key
   private escKey!:   Phaser.Input.Keyboard.Key
   private numKeys:   Phaser.Input.Keyboard.Key[] = []
 
@@ -146,7 +146,7 @@ export default class EquipScreen extends Phaser.Scene {
       ['←→',    'Switch panel'],
       ['↑↓',    'Navigate'],
       ['1-8',   'Select slot'],
-      ['TAB/ESC', 'Close'],
+      ['I/ESC', 'Close'],
     ]
 
     const startX = 20
@@ -173,7 +173,7 @@ export default class EquipScreen extends Phaser.Scene {
     this.cursors  = this.input.keyboard!.createCursorKeys()
     this.enterKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER)
     this.xKey     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.X)
-    this.tabKey   = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TAB)
+    this.iKey     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.I)
     this.escKey   = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ESC)
 
     const numCodes = [
@@ -195,7 +195,7 @@ export default class EquipScreen extends Phaser.Scene {
     const JD = Phaser.Input.Keyboard.JustDown
 
     // Close
-    if (JD(this.tabKey) || JD(this.escKey)) {
+    if (JD(this.iKey) || JD(this.escKey)) {
       this.scene.stop('EquipScreen')
       return
     }
