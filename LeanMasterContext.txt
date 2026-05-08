@@ -1,0 +1,67 @@
+# NoLegs — Claude Code Session Context
+
+## Project
+- Game: "No Leg Left to Stand On" (NoLegs)
+- Stack: Phaser 3 + TypeScript + Vite
+- Repo: github.com/th3d4n/SpiderGame
+- Live: playnoleg.th3dan.com
+
+## CRITICAL: File Writing Rules
+- NEVER use git worktrees
+- Write ALL files directly to ./src/ in the current working directory
+- After writing any file verify it exists with: ls [filepath]
+- Do not run any git commands — developer handles all commits manually
+- Before starting work confirm you are NOT in a worktree: run pwd
+
+## Current Scene Flow
+MainMenuScene → HomeBaseScene → AntColonyScene → BossRollerScene
+
+## Existing Files (DO NOT RE-READ UNLESS EDITING)
+src/scenes/      BootScene, PreloadScene, MainMenuScene, GameScene,
+                 HomeBaseScene, AntColonyScene, BossRollerScene
+src/entities/    Webbs, Enemy, CentipedeAmbusher, BeetleTank,
+                 Workbench, RollerBoss, ColonyNPC
+src/systems/     WeaponSystem, CraftingSystem, ZoneTransitionSystem,
+                 ColonyRestorationSystem, SaveSystem
+src/ui/          HUD, CraftingMenu
+src/config/      WeaponData
+src/main.ts
+
+## Key Technical Rules (never break these)
+1. No unused variables — Cloudflare strict TS will fail the build
+2. Never name a property 'body' in any class extending Phaser.GameObjects.Container
+3. All new scenes must be imported and added to the scene array in main.ts
+4. Never use git worktrees — write directly to working directory
+5. Developer commits manually — never run git commands
+
+## Phaser Patterns We Use
+- Physics body: this.pb = this.body as Phaser.Physics.Arcade.Body
+- Scene transitions via ZoneTransitionSystem.transition()
+- Player state passed between scenes via this.registry
+- Enemies extend base Enemy class in src/entities/Enemy.ts
+- Scenes that overlay (don't replace): launch with this.scene.launch('SceneName')
+- Scenes that replace: this.scene.start('SceneName')
+
+## What's Built and Working
+- Full scene pipeline: Boot → Preload → MainMenu → HomeBase → AntColony → BossRoller
+- Webbs: WASD movement, 8 animated colored legs, arcade physics, world bounds
+- WeaponSystem: 8 slots, WeaponType enum, leg tier gating, WeaponConfig interface
+- CraftingSystem: MaterialType enum, RecipeType enum, inventory, canCraft, craftItem
+- CraftingMenu: overlay scene, recipe list, keyboard nav, ESC to close
+- Workbench: proximity prompt (within 60px), E to open crafting menu
+- HUD: 8 weapon slot display, stamina bar, energy bar, zone label
+- Enemy base class: health, speed, damage, weak points, stagger, knockback
+- CentipedeAmbusher: bursts from underground, charges Webbs
+- BeetleTank: slow, armored, high health, charge attack
+- RollerBoss: Phase 1 nose fight (rocks, suction, web anchor), Phase 2 direct combat
+- ZoneTransitionSystem: fade transitions, directional spawning, zone name announcement
+- SaveSystem: localStorage save/load, auto-save on boss defeat and zone transition
+- ColonyRestorationSystem: 5 states of colony recovery, one per boss defeated
+- ColonyNPC: ambient spider NPCs, idle drift, proximity dialogue
+- HomeBaseScene: eerie empty start, 5 blocked exits, one open path left to ant colony,
+  workbench, dust particles, colony restoration rendering per save state
+- AntColonyScene: underground tunnels, fungus lighting, enemies, workbench,
+  left exit to HomeBase, right exit to BossRollerScene
+
+## Current Task
+[PASTE CHUNK PROMPT HERE]

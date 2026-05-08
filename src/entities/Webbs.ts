@@ -20,6 +20,12 @@ export default class Webbs extends Phaser.GameObjects.Container {
   }
   private legAngleOffset: number = 0
   public pb!: Phaser.Physics.Arcade.Body
+  public stamina: number = 100
+  public maxStamina: number = 100
+  public energy: number = 100
+  public maxEnergy: number = 100
+  public facingX: number = 1
+  public facingY: number = 0
   public weaponSystem: WeaponSystem
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
@@ -118,6 +124,10 @@ export default class Webbs extends Phaser.GameObjects.Container {
     }
 
     this.pb.setVelocity(vx, vy)
+    if (vx !== 0 || vy !== 0) { this.facingX = vx > 0 ? 1 : vx < 0 ? -1 : 0; this.facingY = vy > 0 ? 1 : vy < 0 ? -1 : 0 }
+    const dt = delta / 1000
+    if (this.stamina < this.maxStamina) this.stamina = Math.min(this.maxStamina, this.stamina + 8 * dt)
+    if (this.energy < this.maxEnergy) this.energy = Math.min(this.maxEnergy, this.energy + 5 * dt)
 
     const moving = vx !== 0 || vy !== 0
     this.updateLegs(moving, delta)
