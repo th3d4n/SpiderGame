@@ -6,22 +6,25 @@ const SPEED = 220
 const LEG_COLORS = [0xff4444, 0xff8844, 0xffff44, 0x44ff44, 0x44ffff, 0x4444ff, 0xff44ff, 0xffffff]
 
 export default class Webbs extends Phaser.GameObjects.Container {
-  private body!: Phaser.GameObjects.Arc
+  private sprite!: Phaser.GameObjects.Arc
   private legs: Phaser.GameObjects.Line[] = []
   private legTips: Phaser.GameObjects.Arc[] = []
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
-  private wasd!: { up: Phaser.Input.Keyboard.Key, down: Phaser.Input.Keyboard.Key, left: Phaser.Input.Keyboard.Key, right: Phaser.Input.Keyboard.Key }
+  private wasd!: {
+    up: Phaser.Input.Keyboard.Key
+    down: Phaser.Input.Keyboard.Key
+    left: Phaser.Input.Keyboard.Key
+    right: Phaser.Input.Keyboard.Key
+  }
   private legAngleOffset: number = 0
-  private physicsBody!: Phaser.Physics.Arcade.Body
+  public pb!: Phaser.Physics.Arcade.Body
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y)
     scene.add.existing(this)
     scene.physics.add.existing(this)
-
-    this.physicsBody = this.body as unknown as Phaser.Physics.Arcade.Body
-    this.physicsBody.setCollideWorldBounds(true)
-
+    this.pb = this.body as Phaser.Physics.Arcade.Body
+    this.pb.setCollideWorldBounds(true)
     this.buildVisuals()
     this.setupInput()
   }
@@ -32,9 +35,9 @@ export default class Webbs extends Phaser.GameObjects.Container {
     this.add(shadow)
 
     // Body
-    this.body = this.scene.add.arc(0, 0, 16, 0, 360, false, 0x222222)
-    this.body.setStrokeStyle(2, 0x7777ff)
-    this.add(this.body)
+    this.sprite = this.scene.add.arc(0, 0, 16, 0, 360, false, 0x222222)
+    this.sprite.setStrokeStyle(2, 0x7777ff)
+    this.add(this.sprite)
 
     // Eyes
     const eyeL = this.scene.add.arc(-6, -5, 4, 0, 360, false, 0xffffff)
@@ -49,13 +52,11 @@ export default class Webbs extends Phaser.GameObjects.Container {
       const endX = Math.cos(angle) * LEG_LENGTH
       const endY = Math.sin(angle) * LEG_LENGTH
 
-      // Leg line
       const leg = this.scene.add.line(0, 0, 0, 0, endX, endY, LEG_COLORS[i], 1)
       leg.setLineWidth(2)
       this.add(leg)
       this.legs.push(leg)
 
-      // Weapon tip circle at end of each leg
       const tip = this.scene.add.arc(endX, endY, 5, 0, 360, false, LEG_COLORS[i])
       tip.setStrokeStyle(1, 0xffffff)
       this.add(tip)
@@ -74,16 +75,11 @@ export default class Webbs extends Phaser.GameObjects.Container {
   }
 
   private updateLegs(moving: boolean, delta: number) {
-    // Legs slowly rotate when moving, idle when still
-    if (moving) {
-      this.legAngleOffset += delta * 0.003
-    }
+    if (moving) this.legAngleOffset += delta * 0.003
 
     for (let i = 0; i < LEG_COUNT; i++) {
       const baseAngle = (i / LEG_COUNT) * Math.PI * 2
       const angle = baseAngle + this.legAngleOffset
-
-      // Mechanical leg "walking" effect
       const stretch = moving ? 1 + Math.sin(angle * 2 + this.legAngleOffset * 3) * 0.15 : 1
       const endX = Math.cos(angle) * LEG_LENGTH * stretch
       const endY = Math.sin(angle) * LEG_LENGTH * stretch
@@ -94,7 +90,6 @@ export default class Webbs extends Phaser.GameObjects.Container {
   }
 
   update(_time: number, delta: number) {
-    const pb = this.physicsBody
     let vx = 0
     let vy = 0
 
@@ -103,13 +98,12 @@ export default class Webbs extends Phaser.GameObjects.Container {
     if (this.wasd.up.isDown || this.cursors.up.isDown) vy = -SPEED
     if (this.wasd.down.isDown || this.cursors.down.isDown) vy = SPEED
 
-    // Normalize diagonal movement
     if (vx !== 0 && vy !== 0) {
       vx *= 0.707
       vy *= 0.707
     }
 
-    pb.setVelocity(vx, vy)
+    this.pb.setVelocity(vx, vy)
 
     const moving = vx !== 0 || vy !== 0
     this.updateLegs(moving, delta)
