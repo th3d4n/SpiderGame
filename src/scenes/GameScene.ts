@@ -1,6 +1,9 @@
 import Phaser from 'phaser'
 import Webbs from '../entities/Webbs'
 import CentipedeAmbusher, { CONTACT_RADIUS } from '../entities/CentipedeAmbusher'
+import Workbench from '../entities/Workbench'
+import { CraftingSystem } from '../systems/CraftingSystem'
+import { WeaponType } from '../systems/WeaponSystem'
 
 // Starting positions well away from Webbs' spawn at (640, 360)
 const AMBUSHER_SPAWNS = [
@@ -10,9 +13,12 @@ const AMBUSHER_SPAWNS = [
 ] as const
 
 export default class GameScene extends Phaser.Scene {
-  private webbs!:     Webbs
-  private debugText!: Phaser.GameObjects.Text
-  private enemies:    CentipedeAmbusher[] = []
+  private webbs!:          Webbs
+  private debugText!:      Phaser.GameObjects.Text
+  private enemies:         CentipedeAmbusher[] = []
+  private workbench!:      Workbench
+  private craftingSystem!: CraftingSystem
+  private eKey!:           Phaser.Input.Keyboard.Key
 
   // Player stats — written here, read by HUDScene via registry
   public stamina    = 100
@@ -43,13 +49,29 @@ export default class GameScene extends Phaser.Scene {
       gridGraphics.lineBetween(0, y, width, y)
     }
 
-    // Spawn Webbs at center
+    // Crafting system — Phase 1 test: start with some materials
+    this.craftingSystem = new CraftingSystem()
+    this.craftingSystem.addMaterial('SilkThread',   6)
+    this.craftingSystem.addMaterial('ChitinShard',  4)
+    this.craftingSystem.addMaterial('VenomGland',   2)
+    this.craftingSystem.addMaterial('WebFluid',     4)
+    this.craftingSystem.addMaterial('CrystalDust',  1)
+    this.craftingSystem.addMaterial('BoneFragment', 2)
+
+    // Spawn Webbs at center, start with tier 1 so first 4 slots are open
     this.webbs = new Webbs(this, width / 2, height / 2)
+    this.webbs.weaponSystem.setLegTier(1)
 
     // Spawn 3 dormant ambushers — they wake when Webbs approaches
     for (const sp of AMBUSHER_SPAWNS) {
       this.enemies.push(new CentipedeAmbusher(this, sp.x, sp.y, this.webbs))
     }
+
+    // Workbench in top-left quadrant
+    this.workbench = new Workbench(this, 200, 200)
+
+    // Input
+    this.eKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E)
 
     // Debug position display
     this.debugText = this.add.text(20, height - 30, '', {
@@ -65,26 +87,38 @@ export default class GameScene extends Phaser.Scene {
     // World bounds
     this.physics.world.setBounds(0, 0, width, height)
 
-    // Push initial stats to registry for HUD
-    this.registry.set('zoneName',      this.zoneName)
-    this.registry.set('stamina',       this.stamina)
-    this.registry.set('staminaMax',    this.staminaMax)
-    this.registry.set('energy',        this.energy)
-    this.registry.set('energyMax',     this.energyMax)
-    this.registry.set('health',        this.health)
-    this.registry.set('healthMax',     this.healthMax)
-    this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
-    this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
-
+    // Push initial stats to registry for HUD and CraftingMenu
+    this.syncRegistry()
     this.scene.launch('HUDScene')
   }
 
   update(time: number, delta: number) {
+    // Process any weapon crafted while menu was open
+    const pendingEquip: WeaponType | null = this.registry.get('pendingEquip') ?? null
+    if (pendingEquip !== null) {
+      this.registry.set('pendingEquip', null)
+      this.equipFirstFreeSlot(pendingEquip)
+    }
+
+    // Sync crafting inventory in case it changed while menu was open
+    const updatedInventory = this.registry.get('craftingInventory')
+    if (updatedInventory) {
+      this.registry.set('craftingInventory', null)
+      // Inventory is managed entirely in registry — CraftingMenu already updated it
+    }
+
     this.webbs.update(time, delta)
 
     // Update all enemies
     for (const enemy of this.enemies) {
       enemy.update(time, delta)
+    }
+
+    // Workbench interaction
+    if (this.workbench.update(this.webbs, this.eKey)) {
+      this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
+      this.registry.set('legTier', this.webbs.weaponSystem.getLegTier())
+      this.scene.launch('CraftingMenu')
     }
 
     // Contact damage — manual distance check avoids arcade overlap type friction
@@ -95,12 +129,35 @@ export default class GameScene extends Phaser.Scene {
     }
 
     // Sync HUD
-    this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
-    this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
+    this.syncRegistry()
 
     this.debugText.setText(
-      `x: ${Math.round(this.webbs.x)}  y: ${Math.round(this.webbs.y)}  |  WASD to move`
+      `x: ${Math.round(this.webbs.x)}  y: ${Math.round(this.webbs.y)}  |  WASD/E move, E at bench to craft`
     )
+  }
+
+  private equipFirstFreeSlot(weaponType: WeaponType): void {
+    const system = this.webbs.weaponSystem
+    const unlockedCount = system.getUnlockedSlotCount()
+    for (let i = 0; i < unlockedCount; i++) {
+      if (system.getSlot(i) === WeaponType.Empty) {
+        system.equip(i, weaponType)
+        this.webbs.refreshLegColors()
+        return
+      }
+    }
+  }
+
+  private syncRegistry(): void {
+    this.registry.set('zoneName',      this.zoneName)
+    this.registry.set('stamina',       this.stamina)
+    this.registry.set('staminaMax',    this.staminaMax)
+    this.registry.set('energy',        this.energy)
+    this.registry.set('energyMax',     this.energyMax)
+    this.registry.set('health',        this.health)
+    this.registry.set('healthMax',     this.healthMax)
+    this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
+    this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
   }
 
   private checkEnemyContact(): void {
