@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import Webbs from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
 import Pickup from '../entities/Pickup'
+import { MaterialType } from '../systems/CraftingSystem'
 import { CraftingSystem } from '../systems/CraftingSystem'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
@@ -68,6 +69,22 @@ export default class HomeBaseScene extends Phaser.Scene {
 
     // Pickup group
     this.pickupGroup = this.physics.add.staticGroup()
+
+    // Spawn pickups around home base
+    const pickupDefs = [
+      { x: 400,  y: 580, mat: 'SilkThread',  qty: 2 },
+      { x: 650,  y: 560, mat: 'ChitinShard', qty: 3 },
+      { x: 900,  y: 590, mat: 'CrystalDust', qty: 2 },
+      { x: 500,  y: 540, mat: 'ChitinShard', qty: 2 },
+      { x: 1100, y: 570, mat: 'VenomGland',  qty: 1 },
+      { x: 1400, y: 580, mat: 'SilkThread',  qty: 1 },
+      { x: 1600, y: 560, mat: 'CrystalDust', qty: 1 },
+      { x: 1800, y: 575, mat: 'ChitinShard', qty: 2 },
+    ]
+    pickupDefs.forEach(({ x, y, mat, qty }) => {
+      const p = new Pickup(this, x, y, mat as MaterialType, qty, this.craftingSystem)
+      this.pickupGroup.add(p, true)
+    })
 
     // Spawn Webbs — position depends on which direction we entered from
     const spawnX = ZoneTransitionSystem.spawnX(this, WORLD_W, WORLD_W / 2 - 200)
