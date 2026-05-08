@@ -38,9 +38,20 @@ export default class PickupNotification extends Phaser.Scene {
     this.queue   = []
     this.showing = false
 
-    this.game.events.on('itemPickedUp', this.onPickedUp, this)
+    this.scene.manager.scenes.forEach(s => {
+      if (
+        s.scene.key !== 'PickupNotification' &&
+        s.scene.key !== 'EquipScreen' &&
+        s.scene.key !== 'HUDScene'
+      ) {
+        s.events.on('itemPickedUp', this.onPickedUp, this)
+      }
+    })
+
     this.events.once('shutdown', () => {
-      this.game.events.off('itemPickedUp', this.onPickedUp, this)
+      this.scene.manager.scenes.forEach(s => {
+        s.events.off('itemPickedUp', this.onPickedUp, this)
+      })
     })
   }
 

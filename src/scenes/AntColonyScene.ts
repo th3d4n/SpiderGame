@@ -1,10 +1,12 @@
 import Phaser from 'phaser'
 import Webbs from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
+import Pickup from '../entities/Pickup'
 import CentipedeAmbusher from '../entities/CentipedeAmbusher'
 import BeetleTank from '../entities/BeetleTank'
 import { CraftingSystem } from '../systems/CraftingSystem'
 import { WeaponType } from '../systems/WeaponSystem'
+import { WeaponUseSystem } from '../systems/WeaponUseSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
 
 const WORLD_W = 2560
@@ -21,12 +23,14 @@ const CONTACT_COOLDOWN = 750
 const CONTACT_RADIUS = 28 + 16
 
 export default class AntColonyScene extends Phaser.Scene {
-  private webbs!:          Webbs
-  private workbench!:      Workbench
-  private craftingSystem!: CraftingSystem
-  private eKey!:           Phaser.Input.Keyboard.Key
-  private enemies:         (CentipedeAmbusher | BeetleTank)[] = []
-  private transitioning    = false
+  private webbs!:            Webbs
+  private workbench!:        Workbench
+  private craftingSystem!:   CraftingSystem
+  private pickupGroup!:      Phaser.Physics.Arcade.StaticGroup
+  private weaponUseSystem!:  WeaponUseSystem
+  private eKey!:             Phaser.Input.Keyboard.Key
+  private enemies:           (CentipedeAmbusher | BeetleTank)[] = []
+  private transitioning      = false
 
   // Player stats — synced to registry each frame
   private health         = 5
@@ -64,10 +68,28 @@ export default class AntColonyScene extends Phaser.Scene {
     this.craftingSystem.addMaterial('BoneFragment', 3)
     this.craftingSystem.addMaterial('VenomGland',   1)
 
+    // Pickup group
+    this.pickupGroup = this.physics.add.staticGroup()
+
     // Webbs spawns at the correct edge based on entry direction
     const spawnX = ZoneTransitionSystem.spawnX(this, WORLD_W, WORLD_W - 200)
     this.webbs = new Webbs(this, spawnX, FLOOR_Y - 60)
     this.webbs.weaponSystem.setLegTier(1)
+
+    // Overlap: collect pickups on contact
+    this.physics.add.overlap(
+      this.webbs,
+      this.pickupGroup,
+      (_webbs, pickup) => { (pickup as unknown as Pickup).collect() },
+    )
+
+    // Weapon use system
+    this.weaponUseSystem = new WeaponUseSystem()
+    ;[1, 2, 3, 4, 5, 6, 7, 8].forEach(n => {
+      this.input.keyboard!.on(`keydown-${n}`, () => {
+        this.weaponUseSystem.activateWeapon(n, this.webbs, this)
+      })
+    })
 
     // Enemies
     this.enemies.push(new CentipedeAmbusher(this, 650,  FLOOR_Y - 30, this.webbs))
@@ -77,6 +99,11 @@ export default class AntColonyScene extends Phaser.Scene {
     // Input
     this.eKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E)
 
+    // I key — open equip screen
+    this.input.keyboard!.on('keydown-I', () => {
+      this.scene.launch('EquipScreen')
+    })
+
     // Camera
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H)
     this.cameras.main.startFollow(this.webbs, true, 0.1, 0.1)
@@ -84,6 +111,9 @@ export default class AntColonyScene extends Phaser.Scene {
 
     // HUD
     if (!this.scene.isActive('HUDScene')) this.scene.launch('HUDScene')
+
+    // Pickup notifications overlay
+    if (!this.scene.isActive('PickupNotification')) this.scene.launch('PickupNotification')
 
     this.syncRegistry()
     ZoneTransitionSystem.announceZone(this, 'ZONE 1 — ANT COLONY')

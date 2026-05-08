@@ -74,7 +74,7 @@ export default class Pickup extends Phaser.GameObjects.Container {
     this.collected = true
 
     this.craftingSystem.addMaterial(this.materialType, this.quantity)
-    this.scene.game.events.emit('itemPickedUp', {
+    this.scene.events.emit('itemPickedUp', {
       materialType: this.materialType,
       quantity:     this.quantity,
     })
