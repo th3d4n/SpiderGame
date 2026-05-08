@@ -12,6 +12,9 @@ const AMBUSHER_SPAWNS = [
   { x: 590,  y: 600 },
 ] as const
 
+// x threshold — world is 1280 wide; trigger sits near the right edge
+const BOSS_TRIGGER_X = 1140
+
 export default class GameScene extends Phaser.Scene {
   private webbs!:          Webbs
   private debugText!:      Phaser.GameObjects.Text
@@ -19,6 +22,7 @@ export default class GameScene extends Phaser.Scene {
   private workbench!:      Workbench
   private craftingSystem!: CraftingSystem
   private eKey!:           Phaser.Input.Keyboard.Key
+  private bossTriggered    = false
 
   // Player stats — written here, read by HUDScene via registry
   public stamina    = 100
@@ -80,6 +84,9 @@ export default class GameScene extends Phaser.Scene {
       color: '#555577',
     })
 
+    // Boss door — right edge of the zone
+    this.drawBossDoor(width, height)
+
     // Camera
     this.cameras.main.startFollow(this.webbs, true, 0.1, 0.1)
     this.cameras.main.setZoom(1.2)
@@ -134,6 +141,73 @@ export default class GameScene extends Phaser.Scene {
     this.debugText.setText(
       `x: ${Math.round(this.webbs.x)}  y: ${Math.round(this.webbs.y)}  |  WASD/E move, E at bench to craft`
     )
+
+    // Boss trigger — Webbs walks into the far-right door
+    if (!this.bossTriggered && this.webbs.x > BOSS_TRIGGER_X) {
+      this.bossTriggered = true
+      this.cameras.main.shake(200, 0.008)
+
+      // Door slams shut — animate a dark panel sliding in from the right
+      const door = this.add.rectangle(
+        this.scale.width + 40, this.scale.height / 2,
+        80, this.scale.height,
+        0x220a00,
+      ).setDepth(50)
+      this.tweens.add({
+        targets:  door,
+        x:        this.scale.width - 20,
+        duration: 250,
+        ease:     'Power3.In',
+      })
+
+      this.time.delayedCall(600, () => {
+        this.cameras.main.fade(400, 0, 0, 0)
+      })
+      this.time.delayedCall(1050, () => {
+        this.scene.start('BossRollerScene', { health: this.health })
+      })
+    }
+  }
+
+  private drawBossDoor(width: number, height: number): void {
+    const g = this.add.graphics()
+
+    // Stone door frame at right edge
+    g.fillStyle(0x3a2010, 1)
+    g.fillRect(width - 60, 0, 60, height)
+
+    // Door planks
+    g.fillStyle(0x5c3510, 1)
+    for (let y = 20; y < height; y += 38) {
+      g.fillRect(width - 56, y, 52, 30)
+    }
+
+    // Iron studs
+    g.fillStyle(0x888888, 1)
+    for (let y = 30; y < height; y += 76) {
+      g.fillCircle(width - 46, y, 4)
+      g.fillCircle(width - 20, y, 4)
+    }
+
+    // Warning text above the door
+    this.add.text(width - 80, height / 2 - 60, 'ANT COLONY\n   BOSS →', {
+      fontFamily: 'monospace',
+      fontSize:   '11px',
+      color:      '#cc4422',
+      align:      'center',
+    }).setOrigin(0.5)
+
+    // Glowing red border strip at the trigger line
+    const glow = this.add.graphics()
+    glow.lineStyle(2, 0xff2200, 0.7)
+    glow.lineBetween(BOSS_TRIGGER_X, 0, BOSS_TRIGGER_X, height)
+    this.tweens.add({
+      targets:  glow,
+      alpha:    { from: 0.3, to: 1 },
+      duration: 800,
+      yoyo:     true,
+      repeat:   -1,
+    })
   }
 
   private equipFirstFreeSlot(weaponType: WeaponType): void {
