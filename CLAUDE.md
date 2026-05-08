@@ -1,26 +1,13 @@
 # NoLegs — Claude Code Project Rules
 
-## CRITICAL: File Writing Rules
-- NEVER use git worktrees (never run git worktree commands)
-- NEVER use the --worktree flag
-- Write ALL files directly to the current working directory
-- After writing any file verify it exists with: ls [filepath]
-- Do not run any git commands — developer handles all commits manually
+## CRITICAL: NO WORKTREES EVER
+- NEVER create a git worktree
+- NEVER use git worktree commands
+- ALWAYS work directly in the main project directory
+- Before writing ANY file run: pwd
+- If pwd shows .claude/worktrees in the path, run: cd /d/dmorgan/Documents/GitHub/SpiderGame
+- After writing each file verify with: ls src/[subfolder]/[filename]
+- Do not run git commands — developer commits manually
 
-## Launch
-Start Claude Code simply with:
-  claude
-Never with: claude --worktree or claude -w
-
-## Project
-- Game: "No Leg Left to Stand On" (NoLegs)
-- Stack: Phaser 3 + TypeScript + Vite
-- Repo: github.com/th3d4n/SpiderGame
-- Live: playnoleg.th3dan.com
-
-## Technical Rules
-1. No unused variables — Cloudflare strict TS fails the build
-2. Never name a property 'body' in any class extending Phaser Container
-3. New scenes must be added to the scene array in main.ts
-4. Player state passed between scenes via Phaser registry
-5. Physics body accessed as: this.pb = this.body as Phaser.Physics.Arcade.Body
+## If Claude Code tries to use a worktree
+Immediately stop and change directory to the main project root before proceeding.
