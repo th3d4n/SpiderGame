@@ -144,11 +144,11 @@ export default class EquipScreen extends Phaser.Scene {
 
   private buildControls(height: number): void {
     const controls = [
+      ['1-8',   'Equip weapon to that slot'],
       ['ENTER', 'Equip to selected slot'],
       ['X',     'Unequip selected slot'],
       ['←→',    'Switch panel'],
       ['↑↓',    'Navigate'],
-      ['1-8',   'Select slot'],
       ['I/ESC', 'Close'],
     ]
 
@@ -218,11 +218,20 @@ export default class EquipScreen extends Phaser.Scene {
       this.redrawInventory()
     }
 
-    // Number keys → select slot
+    // Number keys → select slot, and equip the current weapon immediately if one is selected
     for (let i = 0; i < 8; i++) {
       if (JD(this.numKeys[i])) {
         this.selectedSlot = i
         this.panelFocus   = 'left'
+        if (this.inventory.length > 0 && this.selectedWeapon < this.inventory.length) {
+          const weapon = this.inventory[this.selectedWeapon]
+          if (this.weaponSys.equip(i, weapon)) {
+            this.inventory.splice(this.selectedWeapon, 1)
+            if (this.selectedWeapon >= this.inventory.length) {
+              this.selectedWeapon = Math.max(0, this.inventory.length - 1)
+            }
+          }
+        }
         this.redrawSlots()
         this.redrawInventory()
       }
@@ -270,23 +279,28 @@ export default class EquipScreen extends Phaser.Scene {
     for (let i = 0; i < 8; i++) {
       const circle = this.slotCircles[i]
       const label  = this.slotLabels[i]
+      const locked = !this.weaponSys.isSlotUnlocked(i)
       const weapon = this.weaponSys.getSlot(i)
       const isSel  = this.panelFocus === 'left' && i === this.selectedSlot
 
-      if (isSel) {
+      if (locked) {
+        circle.setStrokeStyle(1, 0x1a1a22, 0.5)
+        label.setText('×').setColor('#1a1a22')
+      } else if (isSel) {
         circle.setStrokeStyle(2.5, ACCENT)
+        if (weapon !== WeaponType.Empty) {
+          const col = WEAPON_COLORS[weapon]
+          label.setText(WEAPON_INITIALS[weapon]).setColor('#' + col.toString(16).padStart(6, '0'))
+        } else {
+          label.setText('?').setColor(ACCENT_STR)
+        }
       } else if (weapon !== WeaponType.Empty) {
         const col = WEAPON_COLORS[weapon]
         circle.setStrokeStyle(1.5, col)
-      } else {
-        circle.setStrokeStyle(1.5, 0x333344)
-      }
-
-      if (weapon !== WeaponType.Empty) {
-        const col = WEAPON_COLORS[weapon]
         label.setText(WEAPON_INITIALS[weapon]).setColor('#' + col.toString(16).padStart(6, '0'))
       } else {
-        label.setText(isSel ? '?' : '·').setColor(isSel ? ACCENT_STR : '#333344')
+        circle.setStrokeStyle(1.5, 0x333344)
+        label.setText('·').setColor('#333344')
       }
     }
   }
