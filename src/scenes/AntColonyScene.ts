@@ -28,6 +28,7 @@ export default class AntColonyScene extends Phaser.Scene {
   private craftingSystem!:   CraftingSystem
   private pickupGroup!:      Phaser.Physics.Arcade.StaticGroup
   private weaponUseSystem!:  WeaponUseSystem
+  private weaponKeys:        Phaser.Input.Keyboard.Key[] = []
   private eKey!:             Phaser.Input.Keyboard.Key
   private enemies:           (CentipedeAmbusher | BeetleTank)[] = []
   private transitioning      = false
@@ -90,13 +91,19 @@ export default class AntColonyScene extends Phaser.Scene {
       (_webbs, pickup) => { (pickup as unknown as Pickup).collect() },
     )
 
-    // Weapon use system (keys 1-8 map to slots 0-7)
+    // Weapon use system — keys 1-8 registered as tracked Key objects (checked
+    // via JustDown in update) so they only fire when this scene is active.
     this.weaponUseSystem = new WeaponUseSystem()
-    ;[1, 2, 3, 4, 5, 6, 7, 8].forEach(n => {
-      this.input.keyboard!.on(`keydown-${n}`, () => {
-        this.weaponUseSystem.activateWeapon(n - 1, this.webbs, this)
-      })
-    })
+    this.weaponKeys = [
+      Phaser.Input.Keyboard.KeyCodes.ONE,
+      Phaser.Input.Keyboard.KeyCodes.TWO,
+      Phaser.Input.Keyboard.KeyCodes.THREE,
+      Phaser.Input.Keyboard.KeyCodes.FOUR,
+      Phaser.Input.Keyboard.KeyCodes.FIVE,
+      Phaser.Input.Keyboard.KeyCodes.SIX,
+      Phaser.Input.Keyboard.KeyCodes.SEVEN,
+      Phaser.Input.Keyboard.KeyCodes.EIGHT,
+    ].map(code => this.input.keyboard!.addKey(code))
 
     // Enemies
     this.enemies.push(new CentipedeAmbusher(this, 650,  FLOOR_Y - 30, this.webbs))
@@ -148,12 +155,21 @@ export default class AntColonyScene extends Phaser.Scene {
     }
 
     this.webbs.update(time, delta)
+    this.weaponUseSystem.update(delta)
+
+    // Weapon keys 1-8 → slots 0-7
+    for (let i = 0; i < this.weaponKeys.length; i++) {
+      if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
+        this.weaponUseSystem.activateWeapon(i, this.webbs, this)
+      }
+    }
 
     for (const enemy of this.enemies) {
       enemy.update(time, delta)
     }
 
-    if (this.workbench.update(this.webbs, this.eKey)) {
+    // Guard prevents re-launch on the frame CraftingMenu resumes
+    if (!this.scene.isActive('CraftingMenu') && this.workbench.update(this.webbs, this.eKey)) {
       this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
       this.registry.set('legTier',           this.webbs.weaponSystem.getLegTier())
       this.registry.set('callerScene', 'AntColonyScene')
