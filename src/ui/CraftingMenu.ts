@@ -46,7 +46,8 @@ export default class CraftingMenu extends Phaser.Scene {
     this.legTier   = this.registry.get('legTier') ?? 0
 
     // Pause the game world while menu is open
-    this.scene.pause('GameScene')
+    const caller = this.registry.get('callerScene') as string ?? 'HomeBaseScene'
+    this.scene.pause(caller)
 
     // Dark overlay
     this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.72)
@@ -196,7 +197,8 @@ export default class CraftingMenu extends Phaser.Scene {
   }
 
   private closeMenu(): void {
-    this.scene.resume('GameScene')
+    const caller = this.registry.get('callerScene') as string ?? 'HomeBaseScene'
+    this.scene.resume(caller)
     this.scene.stop()
   }
 

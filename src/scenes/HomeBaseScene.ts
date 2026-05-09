@@ -145,6 +145,7 @@ export default class HomeBaseScene extends Phaser.Scene {
     if (this.workbench.update(this.webbs, this.eKey)) {
       this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
       this.registry.set('legTier',           this.webbs.weaponSystem.getLegTier())
+      this.registry.set('callerScene', 'HomeBaseScene')
       this.scene.launch('CraftingMenu')
     }
 
