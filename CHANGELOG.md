@@ -1,0 +1,28 @@
+# Changelog
+
+## [Unreleased] — 2026-05-08
+
+### Fixed
+
+#### EquipScreen crash / "I" key locking the game
+The equip screen was trying to read `equipSystemRef` from the registry, which was never populated. This caused a `TypeError` inside `EquipScreen.create()` that crashed the Phaser game loop, effectively freezing the game whenever `I` was pressed. Fixed by switching `EquipScreen` to use `WeaponSystem` (the same instance already attached to Webbs) stored as `weaponSystemRef`. Both `HomeBaseScene` and `AntColonyScene` now register this reference before the player can open the screen.
+
+Also added caller-scene pause on open and resume on close (matching the pattern `CraftingMenu` already used), and a `resume` event listener on each scene that calls `refreshLegColors()` so the leg visuals update the moment the screen closes.
+
+#### Crafting inventory display not updating
+The material-count text objects in `CraftingMenu` were created once in `create()` and never refreshed. After crafting, the on-screen counts showed stale values, making it appear that no materials were consumed. Added `invCountTexts` to track those text objects and a `refreshInventoryPanel()` method that updates them — called immediately after each successful craft.
+
+#### `AntColonyScene` crafting side-effects
+`AntColonyScene` was launching `CraftingMenu` without setting `callerScene` in the registry, so the menu was pausing `HomeBaseScene` (inactive) instead of `AntColonyScene` (the actual running scene). Also added the missing crafting-inventory sync block to `AntColonyScene`'s `pendingEquip` handler — previously the crafting system's internal Map was never updated after crafting in that zone.
+
+#### Keys 1–8 activating wrong weapon slots (off-by-one)
+`activateWeapon(n, ...)` was called with `n` = 1–8 but `WeaponSystem` slots are 0-indexed (0–7). This meant key `1` checked slot 1, slot 0 was never reachable by any key, and key `8` read `slots[8]` (out of bounds, silently returning `undefined`). Fixed to `activateWeapon(n - 1, ...)` in both scenes.
+
+### Changed
+
+#### Craft-to-inventory flow
+Crafted weapons now go into `weaponInventory` (the registry list that `EquipScreen` reads) instead of being silently auto-equipped to the first free slot. The intended loop is now explicit:
+
+1. **Craft** at the workbench → weapon appears in inventory
+2. Press **I** to open the Equip Screen → assign weapons from the right panel to leg slots on the left
+3. Press **1–8** in-game to fire the weapon assigned to that leg slot

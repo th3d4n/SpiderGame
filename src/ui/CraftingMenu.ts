@@ -34,6 +34,7 @@ export default class CraftingMenu extends Phaser.Scene {
   private upKey!:      Phaser.Input.Keyboard.Key
   private downKey!:    Phaser.Input.Keyboard.Key
   private flashTween:  Phaser.Tweens.Tween | null = null
+  private invCountTexts: Phaser.GameObjects.Text[] = []
 
   constructor() {
     super({ key: 'CraftingMenu' })
@@ -182,6 +183,7 @@ export default class CraftingMenu extends Phaser.Scene {
     this.registry.set('craftingInventory', { ...this.inventory })
 
     this.flashStatus(`Crafted: ${recipe.displayName}`, ACCENT_STR)
+    this.refreshInventoryPanel()
     this.renderSelection()
   }
 
@@ -211,13 +213,24 @@ export default class CraftingMenu extends Phaser.Scene {
       color:      DIM_STR,
     })
     const mats = Object.keys(MAT_ABBREV) as MaterialType[]
+    this.invCountTexts = []
     mats.forEach((mat, i) => {
       const amt = this.inventory[mat] ?? 0
-      this.add.text(ix, py + 76 + i * 16, `${MAT_ABBREV[mat]}  ${amt}`, {
+      const t = this.add.text(ix, py + 76 + i * 16, `${MAT_ABBREV[mat]}  ${amt}`, {
         fontFamily: 'monospace',
         fontSize:   '10px',
         color:      amt > 0 ? WHITE_STR : DIM_STR,
       })
+      this.invCountTexts.push(t)
+    })
+  }
+
+  private refreshInventoryPanel(): void {
+    const mats = Object.keys(MAT_ABBREV) as MaterialType[]
+    mats.forEach((mat, i) => {
+      const amt = this.inventory[mat] ?? 0
+      this.invCountTexts[i].setText(`${MAT_ABBREV[mat]}  ${amt}`)
+      this.invCountTexts[i].setColor(amt > 0 ? WHITE_STR : DIM_STR)
     })
   }
 }

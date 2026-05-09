@@ -4,7 +4,7 @@ import Workbench from '../entities/Workbench'
 import Pickup from '../entities/Pickup'
 import CentipedeAmbusher from '../entities/CentipedeAmbusher'
 import BeetleTank from '../entities/BeetleTank'
-import { CraftingSystem } from '../systems/CraftingSystem'
+import { CraftingSystem, MaterialType } from '../systems/CraftingSystem'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
@@ -76,6 +76,13 @@ export default class AntColonyScene extends Phaser.Scene {
     this.webbs = new Webbs(this, spawnX, FLOOR_Y - 60)
     this.webbs.weaponSystem.setLegTier(1)
 
+    // Expose WeaponSystem and weapon inventory to overlay scenes
+    this.registry.set('weaponSystemRef', this.webbs.weaponSystem)
+    this.registry.set('weaponInventory', (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? [])
+
+    // Refresh leg colors when EquipScreen closes and this scene resumes
+    this.events.on('resume', () => { this.webbs.refreshLegColors() })
+
     // Overlap: collect pickups on contact
     this.physics.add.overlap(
       this.webbs,
@@ -83,11 +90,11 @@ export default class AntColonyScene extends Phaser.Scene {
       (_webbs, pickup) => { (pickup as unknown as Pickup).collect() },
     )
 
-    // Weapon use system
+    // Weapon use system (keys 1-8 map to slots 0-7)
     this.weaponUseSystem = new WeaponUseSystem()
     ;[1, 2, 3, 4, 5, 6, 7, 8].forEach(n => {
       this.input.keyboard!.on(`keydown-${n}`, () => {
-        this.weaponUseSystem.activateWeapon(n, this.webbs, this)
+        this.weaponUseSystem.activateWeapon(n - 1, this.webbs, this)
       })
     })
 
@@ -101,7 +108,10 @@ export default class AntColonyScene extends Phaser.Scene {
 
     // I key — open equip screen
     this.input.keyboard!.on('keydown-I', () => {
-      this.scene.launch('EquipScreen')
+      if (!this.scene.isActive('EquipScreen')) {
+        this.registry.set('equipCallerScene', 'AntColonyScene')
+        this.scene.launch('EquipScreen')
+      }
     })
 
     // Camera
@@ -125,7 +135,16 @@ export default class AntColonyScene extends Phaser.Scene {
     const pendingEquip = this.registry.get('pendingEquip') as WeaponType | null ?? null
     if (pendingEquip !== null) {
       this.registry.set('pendingEquip', null)
-      this.equipFirstFreeSlot(pendingEquip)
+      const updated = this.registry.get('craftingInventory') as Record<string, number> | null
+      if (updated) {
+        for (const [mat, amt] of Object.entries(updated)) {
+          this.craftingSystem['inventory'].set(mat as MaterialType, amt)
+        }
+      }
+      // Add crafted weapon to inventory — player assigns it to a slot via EquipScreen (I key)
+      const inv = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
+      inv.push(pendingEquip)
+      this.registry.set('weaponInventory', inv)
     }
 
     this.webbs.update(time, delta)
@@ -137,6 +156,7 @@ export default class AntColonyScene extends Phaser.Scene {
     if (this.workbench.update(this.webbs, this.eKey)) {
       this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
       this.registry.set('legTier',           this.webbs.weaponSystem.getLegTier())
+      this.registry.set('callerScene', 'AntColonyScene')
       this.scene.launch('CraftingMenu')
     }
 
@@ -322,18 +342,6 @@ export default class AntColonyScene extends Phaser.Scene {
         )
         this.webbs.pb.setVelocity(Math.cos(angle) * 300, Math.sin(angle) * 300)
         break
-      }
-    }
-  }
-
-  private equipFirstFreeSlot(weaponType: WeaponType): void {
-    const sys   = this.webbs.weaponSystem
-    const count = sys.getUnlockedSlotCount()
-    for (let i = 0; i < count; i++) {
-      if (sys.getSlot(i) === WeaponType.Empty) {
-        sys.equip(i, weaponType)
-        this.webbs.refreshLegColors()
-        return
       }
     }
   }

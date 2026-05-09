@@ -1,6 +1,5 @@
 import Phaser from 'phaser'
-import { WeaponType } from '../systems/WeaponSystem'
-import { EquipSystem } from '../systems/EquipSystem'
+import { WeaponType, WeaponSystem } from '../systems/WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
 
 const ACCENT      = 0x7777ff
@@ -31,8 +30,8 @@ export default class EquipScreen extends Phaser.Scene {
   private weaponRows:   Phaser.GameObjects.Container[] = []
 
   // Data
-  private equipSystem!: EquipSystem
-  private inventory:    WeaponType[] = []
+  private weaponSys!: WeaponSystem
+  private inventory:  WeaponType[] = []
 
   // Cursor keys
   private cursors!:  Phaser.Types.Input.Keyboard.CursorKeys
@@ -54,9 +53,13 @@ export default class EquipScreen extends Phaser.Scene {
     this.slotLabels    = []
     this.weaponRows    = []
 
-    // Read shared EquipSystem from registry
-    this.equipSystem = this.registry.get('equipSystemRef') as EquipSystem
-    this.inventory   = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
+    // Read WeaponSystem and weapon inventory from registry
+    this.weaponSys = this.registry.get('weaponSystemRef') as WeaponSystem
+    this.inventory = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
+
+    // Pause the gameplay scene while the equip screen is open
+    const callerScene = this.registry.get('equipCallerScene') as string ?? 'HomeBaseScene'
+    this.scene.pause(callerScene)
 
     const { width, height } = this.scale
 
@@ -196,6 +199,9 @@ export default class EquipScreen extends Phaser.Scene {
 
     // Close
     if (JD(this.iKey) || JD(this.escKey)) {
+      const callerScene = this.registry.get('equipCallerScene') as string ?? 'HomeBaseScene'
+      this.registry.set('weaponInventory', [...this.inventory])
+      this.scene.resume(callerScene)
       this.scene.stop('EquipScreen')
       return
     }
@@ -236,10 +242,8 @@ export default class EquipScreen extends Phaser.Scene {
     if (JD(this.enterKey)) {
       if (this.inventory.length > 0 && this.selectedWeapon < this.inventory.length) {
         const weapon = this.inventory[this.selectedWeapon]
-        this.equipSystem.equipWeapon(this.selectedSlot, weapon)
-        // Remove one copy from inventory
+        this.weaponSys.equip(this.selectedSlot, weapon)
         this.inventory.splice(this.selectedWeapon, 1)
-        this.registry.set('weaponInventory', [...this.inventory])
         if (this.selectedWeapon >= this.inventory.length) {
           this.selectedWeapon = Math.max(0, this.inventory.length - 1)
         }
@@ -250,10 +254,10 @@ export default class EquipScreen extends Phaser.Scene {
 
     // Unequip → returns weapon to inventory
     if (JD(this.xKey)) {
-      const removed = this.equipSystem.unequipWeapon(this.selectedSlot)
-      if (removed && removed !== WeaponType.Empty) {
-        this.inventory.push(removed)
-        this.registry.set('weaponInventory', [...this.inventory])
+      const current = this.weaponSys.getSlot(this.selectedSlot)
+      if (current !== WeaponType.Empty) {
+        this.weaponSys.unequip(this.selectedSlot)
+        this.inventory.push(current)
         this.redrawSlots()
         this.redrawInventory()
       }
@@ -266,19 +270,19 @@ export default class EquipScreen extends Phaser.Scene {
     for (let i = 0; i < 8; i++) {
       const circle = this.slotCircles[i]
       const label  = this.slotLabels[i]
-      const weapon = this.equipSystem.getEquippedWeapon(i)
+      const weapon = this.weaponSys.getSlot(i)
       const isSel  = this.panelFocus === 'left' && i === this.selectedSlot
 
       if (isSel) {
         circle.setStrokeStyle(2.5, ACCENT)
-      } else if (weapon) {
+      } else if (weapon !== WeaponType.Empty) {
         const col = WEAPON_COLORS[weapon]
         circle.setStrokeStyle(1.5, col)
       } else {
         circle.setStrokeStyle(1.5, 0x333344)
       }
 
-      if (weapon && weapon !== WeaponType.Empty) {
+      if (weapon !== WeaponType.Empty) {
         const col = WEAPON_COLORS[weapon]
         label.setText(WEAPON_INITIALS[weapon]).setColor('#' + col.toString(16).padStart(6, '0'))
       } else {
