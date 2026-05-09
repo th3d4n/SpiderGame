@@ -18,6 +18,12 @@ The material-count text objects in `CraftingMenu` were created once in `create()
 #### Keys 1–8 activating wrong weapon slots (off-by-one)
 `activateWeapon(n, ...)` was called with `n` = 1–8 but `WeaponSystem` slots are 0-indexed (0–7). This meant key `1` checked slot 1, slot 0 was never reachable by any key, and key `8` read `slots[8]` (out of bounds, silently returning `undefined`). Fixed to `activateWeapon(n - 1, ...)` in both scenes.
 
+#### EquipScreen number keys required a separate ENTER press to equip
+Pressing a number key (1–8) in the EquipScreen only highlighted the slot — the weapon was not actually assigned until the player also pressed ENTER. This was not obvious and made it appear that weapons could not be mapped. Number keys now equip the currently highlighted inventory weapon to the pressed slot immediately in a single keypress. ENTER still works as a secondary confirm-on-selected-slot action.
+
+#### Locked slots indistinguishable from open ones
+Slots 5–8 are locked at leg tier 1 (tiers unlock in pairs: 1–2 at tier 0, 3–4 at tier 1, 5–6 at tier 2, 7–8 at tier 3). These locked slots looked identical to open ones, so attempting to equip to them silently failed with no feedback. Locked slots now display a faint `×` mark and a dimmed ring. Open slots retain the dot/weapon-initial display.
+
 ### Changed
 
 #### Craft-to-inventory flow
