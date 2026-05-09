@@ -111,7 +111,9 @@ export default class HomeBaseScene extends Phaser.Scene {
 
     // I key — open equip screen
     this.input.keyboard!.on('keydown-I', () => {
-      this.scene.launch('EquipScreen')
+      if (!this.scene.isActive('EquipScreen')) {
+        this.scene.launch('EquipScreen')
+      }
     })
 
     // Camera
@@ -136,6 +138,12 @@ export default class HomeBaseScene extends Phaser.Scene {
     const pendingEquip = this.registry.get('pendingEquip') as WeaponType | null ?? null
     if (pendingEquip !== null) {
       this.registry.set('pendingEquip', null)
+      const updated = this.registry.get('craftingInventory') as Record<string, number> | null
+      if (updated) {
+        for (const [mat, amt] of Object.entries(updated)) {
+          this.craftingSystem['inventory'].set(mat as MaterialType, amt)
+        }
+      }
       this.equipFirstFreeSlot(pendingEquip)
     }
 
