@@ -32,6 +32,13 @@ export default class RollerBoss extends Enemy {
       weakMultiplier:  2,
       staggerDuration: 400,
       bodyRadius:      42,
+      knockbackResist: 0.9,   // boss barely flinches
+      loot: [
+        { material: 'CrystalDust',  quantity: 3, chance: 1.0 },
+        { material: 'BoneFragment', quantity: 2, chance: 1.0 },
+        { material: 'VenomGland',   quantity: 2, chance: 1.0 },
+        { material: 'ChitinShard',  quantity: 3, chance: 1.0 },
+      ],
     }
     super(scene, x, y, cfg)
     this.buildVisuals()

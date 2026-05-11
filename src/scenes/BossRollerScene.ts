@@ -1,7 +1,11 @@
 import Phaser from 'phaser'
 import Webbs from '../entities/Webbs'
 import RollerBoss from '../entities/RollerBoss'
+import BossNose from '../entities/BossNose'
+import type Enemy from '../entities/Enemy'
 import { WeakPointZone } from '../entities/Enemy'
+import { WeaponType } from '../systems/WeaponSystem'
+import { WeaponUseSystem } from '../systems/WeaponUseSystem'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -12,10 +16,8 @@ const H = 720
 const NOSE_X          = W / 2
 const NOSE_Y          = 72
 const NOSE_OVAL_W     = 120
-const NOSE_OVAL_H     = 70
 const NOSE_HIT_RADIUS = 65
 
-const NOSE_HP_MAX       = 4
 const ROCK_INTERVAL     = 3000   // ms between volleys
 const SUCTION_INTERVAL  = 20000  // ms between suction events
 const SUCTION_WARN_DUR  = 2000
@@ -47,12 +49,12 @@ export default class BossRollerScene extends Phaser.Scene {
   // Shared
   private webbs!:       Webbs
   private bossPhase     = 1
+  private retreatTriggered = false
   private playerHp      = PLAYER_MAX_HP
   private damageCooldown = 0
 
   // Phase 1 state
-  private noseGraphic!:      Phaser.GameObjects.Graphics
-  private noseCurrentHp      = NOSE_HP_MAX
+  private nose!:             BossNose
   private rockList:          RockData[] = []
   private rockTimer          = 0
   private suctionCycleTimer  = SUCTION_INTERVAL
@@ -64,12 +66,17 @@ export default class BossRollerScene extends Phaser.Scene {
   private anchorLine!:       Phaser.GameObjects.Graphics
   private anchorPoint        = new Phaser.Math.Vector2(0, 0)
   private spaceKey!:         Phaser.Input.Keyboard.Key
+  private qKey!:             Phaser.Input.Keyboard.Key
   private punchCooldown      = 0
   private dustTexture        = false
 
   // Phase 2 state
   private roller!:            RollerBoss
   private tailSwipeGraphic!:  Phaser.GameObjects.Graphics
+
+  // Shared combat
+  private weaponUseSystem!:   WeaponUseSystem
+  private weaponKeys:         Phaser.Input.Keyboard.Key[] = []
 
   // UI
   private noseHpBar!:      Phaser.GameObjects.Graphics
@@ -88,7 +95,6 @@ export default class BossRollerScene extends Phaser.Scene {
   init(data: { health?: number }) {
     this.playerHp = data?.health ?? PLAYER_MAX_HP
     this.bossPhase       = 1
-    this.noseCurrentHp   = NOSE_HP_MAX
     this.rockList        = []
     this.rockTimer       = ROCK_INTERVAL
     this.suctionCycleTimer = SUCTION_INTERVAL
@@ -100,18 +106,35 @@ export default class BossRollerScene extends Phaser.Scene {
     this.damageCooldown  = 0
     this.punchCooldown   = 0
     this.dustTexture     = false
+    this.retreatTriggered = false
   }
 
   create() {
     this.physics.world.setBounds(0, 80, W, H - 120)
 
     this.drawTunnel()
-    this.drawNose()
+
+    // Phase 1 boss — nose is a real Enemy so it takes weapon damage
+    this.nose = new BossNose(this, NOSE_X, NOSE_Y)
+    this.nose.setDepth(5)
 
     // Player — Webbs instance handles WASD movement internally
     this.webbs = new Webbs(this, PLAYER_SPAWN_X, PLAYER_SPAWN_Y)
     this.webbs.setDepth(10)
     this.webbs.resetHp(this.playerHp)
+
+    // Restore loadout from registry so weapons don't disappear in the boss fight
+    const savedLegTier = this.registry.get('legTier') as number | undefined
+    this.webbs.weaponSystem.setLegTier(savedLegTier !== undefined ? savedLegTier : 1)
+    const savedSlots = this.registry.get('weaponSlots') as WeaponType[] | undefined
+    if (savedSlots) {
+      for (let i = 0; i < savedSlots.length; i++) {
+        if (savedSlots[i] && savedSlots[i] !== WeaponType.Empty) {
+          this.webbs.weaponSystem.equip(i, savedSlots[i])
+        }
+      }
+    }
+    this.webbs.refreshLegColors()
 
     // Camera follows Webbs
     this.cameras.main.startFollow(this.webbs, true, 0.12, 0.12)
@@ -119,12 +142,24 @@ export default class BossRollerScene extends Phaser.Scene {
 
     // Input
     this.spaceKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE)
+    this.qKey     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q)
+    // Suppress browser context menu so the right mouse button is free for later use
+    this.input.mouse?.disableContextMenu()
 
-    // Right-click → web anchor
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (p.rightButtonDown()) this.shootWebAnchor(p.x, p.y)
-      if (p.leftButtonDown()  && this.bossPhase === 2) this.handleAttack(p.worldX, p.worldY)
-    })
+    // Weapon use — keys 1-8 fire equipped weapons against the nose / roller
+    this.weaponUseSystem = new WeaponUseSystem()
+    this.weaponUseSystem.setEnemies([this.nose as unknown as Enemy])
+    this.weaponUseSystem.setWorldBounds(W, H)
+    this.weaponKeys = [
+      Phaser.Input.Keyboard.KeyCodes.ONE,
+      Phaser.Input.Keyboard.KeyCodes.TWO,
+      Phaser.Input.Keyboard.KeyCodes.THREE,
+      Phaser.Input.Keyboard.KeyCodes.FOUR,
+      Phaser.Input.Keyboard.KeyCodes.FIVE,
+      Phaser.Input.Keyboard.KeyCodes.SIX,
+      Phaser.Input.Keyboard.KeyCodes.SEVEN,
+      Phaser.Input.Keyboard.KeyCodes.EIGHT,
+    ].map(code => this.input.keyboard!.addKey(code))
 
     // Anchor line graphic (drawn each frame when anchored)
     this.anchorLine = this.add.graphics()
@@ -141,6 +176,19 @@ export default class BossRollerScene extends Phaser.Scene {
 
     // Entrance flash
     this.cameras.main.flash(300, 0, 0, 0)
+
+    // Boss loot — funnel directly into the shared crafting inventory
+    this.events.on('enemyDied', this.onEnemyDied, this)
+    this.events.once('shutdown', () => this.events.off('enemyDied', this.onEnemyDied, this))
+  }
+
+  private onEnemyDied(data: { loot: Array<{ material: string, quantity: number }> }): void {
+    if (!data.loot || data.loot.length === 0) return
+    const inv = (this.registry.get('craftingInventory') as Record<string, number> | null) ?? {}
+    for (const drop of data.loot) {
+      inv[drop.material] = (inv[drop.material] ?? 0) + drop.quantity
+    }
+    this.registry.set('craftingInventory', inv)
   }
 
   // ── Tunnel environment ────────────────────────────────────────────────────
@@ -204,28 +252,6 @@ export default class BossRollerScene extends Phaser.Scene {
     }
   }
 
-  // ── Nose (Phase 1) ────────────────────────────────────────────────────────
-
-  private drawNose(): void {
-    this.noseGraphic = this.add.graphics()
-    this.noseGraphic.setDepth(5)
-    this.renderNose(0)
-  }
-
-  private renderNose(retreatY: number): void {
-    this.noseGraphic.clear()
-    const ny = NOSE_Y + retreatY
-    // Pink oval pushing through ceiling hole
-    this.noseGraphic.fillStyle(0xff9fad, 1)
-    this.noseGraphic.fillEllipse(NOSE_X, ny, NOSE_OVAL_W, NOSE_OVAL_H)
-    this.noseGraphic.lineStyle(3, 0xcc5577, 1)
-    this.noseGraphic.strokeEllipse(NOSE_X, ny, NOSE_OVAL_W, NOSE_OVAL_H)
-    // Nostrils
-    this.noseGraphic.fillStyle(0xaa2244, 1)
-    this.noseGraphic.fillEllipse(NOSE_X - 18, ny + 8, 16, 10)
-    this.noseGraphic.fillEllipse(NOSE_X + 18, ny + 8, 16, 10)
-  }
-
   // ── UI ────────────────────────────────────────────────────────────────────
 
   private buildUI(): void {
@@ -265,20 +291,15 @@ export default class BossRollerScene extends Phaser.Scene {
 
   private updateNoseHpBar(): void {
     this.noseHpBar.clear()
+    if (!this.nose || this.nose.isDead()) return
     const bw = 360, bh = 16, bx = W / 2 - bw / 2, by = 34
     this.noseHpBar.fillStyle(0x220011, 1)
     this.noseHpBar.fillRect(bx, by, bw, bh)
-    const ratio = this.noseCurrentHp / NOSE_HP_MAX
+    const ratio = this.nose.getHealthRatio()
     this.noseHpBar.fillStyle(0xff5577, 1)
     this.noseHpBar.fillRect(bx, by, bw * ratio, bh)
     this.noseHpBar.lineStyle(1, 0x884455, 1)
     this.noseHpBar.strokeRect(bx, by, bw, bh)
-    // HP pip marks
-    this.noseHpBar.lineStyle(2, 0x220011, 1)
-    for (let i = 1; i < NOSE_HP_MAX; i++) {
-      const px = bx + (bw / NOSE_HP_MAX) * i
-      this.noseHpBar.lineBetween(px, by, px, by + bh)
-    }
   }
 
   private updateRollerHpBar(): void {
@@ -445,7 +466,8 @@ export default class BossRollerScene extends Phaser.Scene {
   }
 
   private rockHitNose(rx: number, ry: number): void {
-    this.noseCurrentHp = Math.max(0, this.noseCurrentHp - 1)
+    // Reflected rocks now do a meaty chunk of damage; standard weapons chip away
+    this.nose.takeDamage(20, WeakPointZone.Head)
     this.cameras.main.shake(200, 0.012)
     this.updateNoseHpBar()
 
@@ -461,26 +483,17 @@ export default class BossRollerScene extends Phaser.Scene {
     })
     emitter.explode(20)
     this.time.delayedCall(800, () => emitter.destroy())
-
-    if (this.noseCurrentHp <= 0) {
-      this.time.delayedCall(300, () => this.retreatNose())
-    }
   }
 
   private retreatNose(): void {
     // Nose slides back up
-    let retreatY = 0
     this.tweens.add({
-      targets:  { v: 0 },
-      v:        -120,
+      targets:  this.nose,
+      y:        NOSE_Y - 120,
+      alpha:    0,
       duration: 700,
       ease:     'Power2.In',
-      onUpdate: (tween) => {
-        retreatY = tween.getValue() as number
-        this.renderNose(retreatY)
-      },
       onComplete: () => {
-        this.noseGraphic.setVisible(false)
         this.clearRocks()
         this.startPhase2()
       },
@@ -497,11 +510,11 @@ export default class BossRollerScene extends Phaser.Scene {
     g.destroy()
   }
 
-  private shootWebAnchor(screenX: number, screenY: number): void {
+  private shootWebAnchor(): void {
     if (this.bossPhase !== 1) return
-    // Anchor to the nearest tunnel wall (clamp to left/right edge)
-    const wx = screenX < W / 2 ? 40 : W - 40
-    const wy = Phaser.Math.Clamp(screenY, 100, H - 100)
+    // Anchor on the wall opposite the suction pull (i.e. on the side Webbs is on)
+    const wx = this.webbs.x < W / 2 ? 40 : W - 40
+    const wy = Phaser.Math.Clamp(this.webbs.y, 100, H - 100)
     this.anchorPoint.set(wx, wy)
     this.webAnchored = true
 
@@ -562,6 +575,9 @@ export default class BossRollerScene extends Phaser.Scene {
       this.roller.on('groundPoundWindup', (x: number, y: number) => this.onGroundPoundWindup(x, y))
       this.roller.on('groundPoundRelease', (x: number, y: number) => this.spawnShockwave(x, y))
       this.roller.on('tailSwipe',        (x: number, y: number, dir: number) => this.onTailSwipe(x, y, dir))
+
+      // Weapons now target the roller too
+      this.weaponUseSystem.setEnemies([this.roller as unknown as Enemy])
     })
   }
 
@@ -689,42 +705,6 @@ export default class BossRollerScene extends Phaser.Scene {
     this.cameras.main.shake(100, 0.006)
   }
 
-  private handleAttack(worldX: number, worldY: number): void {
-    if (!this.roller || this.roller.isDead()) return
-
-    const distToRoller = Phaser.Math.Distance.Between(
-      this.webbs.x, this.webbs.y,
-      this.roller.x, this.roller.y,
-    )
-    if (distToRoller > 160) return
-
-    if (this.roller.isSnoutHit(worldX, worldY)) {
-      this.roller.takeDamage(10, WeakPointZone.Head)  // multiplier → 20 actual
-      this.showHitEffect(worldX, worldY, true)
-      this.cameras.main.shake(160, 0.010)
-    } else if (this.roller.isBodyHit(worldX, worldY)) {
-      this.roller.takeDamage(10, WeakPointZone.Body)
-      this.showHitEffect(worldX, worldY, false)
-      this.cameras.main.shake(70, 0.004)
-    }
-
-    this.updateRollerHpBar()
-  }
-
-  private showHitEffect(x: number, y: number, snout: boolean): void {
-    const g = this.add.graphics().setDepth(15)
-    g.fillStyle(snout ? 0xffaaff : 0xffffff, 0.8)
-    g.fillCircle(x, y, snout ? 24 : 14)
-    this.tweens.add({
-      targets:    g,
-      alpha:      0,
-      scaleX:     snout ? 2.5 : 1.8,
-      scaleY:     snout ? 2.5 : 1.8,
-      duration:   200,
-      onComplete: () => g.destroy(),
-    })
-  }
-
   // ── Body slam contact damage ──────────────────────────────────────────────
 
   private checkBodySlamContact(): void {
@@ -767,9 +747,21 @@ export default class BossRollerScene extends Phaser.Scene {
 
     // Player movement
     this.webbs.update(time, delta)
+    this.weaponUseSystem.update(delta)
+
+    // Weapon keys 1-8 → slots 0-7
+    for (let i = 0; i < this.weaponKeys.length; i++) {
+      if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
+        this.weaponUseSystem.activateWeapon(i, this.webbs, this)
+      }
+    }
+
+    // Q → web anchor (browser-friendly replacement for right-click)
+    if (Phaser.Input.Keyboard.JustDown(this.qKey)) this.shootWebAnchor()
 
     // Pull HP back from Webbs (regen happens inside Webbs.update)
     this.playerHp = this.webbs.hp
+    this.syncRegistry()
 
     // Suction override
     if (this.suctionActive) this.applySuctionToPlayer()
@@ -782,9 +774,17 @@ export default class BossRollerScene extends Phaser.Scene {
 
     this.drawAnchorLine()
     this.updatePlayerHpPips()
+    this.updateNoseHpBar()
   }
 
   private updatePhase1(delta: number): void {
+    // Once the nose is dead (rocks OR weapons), trigger retreat + Phase 2
+    if (this.nose.isDead() && !this.retreatTriggered) {
+      this.retreatTriggered = true
+      this.time.delayedCall(300, () => this.retreatNose())
+      return
+    }
+
     // Rock volley timer
     this.rockTimer -= delta
     if (this.rockTimer <= 0) {
@@ -810,7 +810,7 @@ export default class BossRollerScene extends Phaser.Scene {
         this.suctionActive     = true
         this.suctionActiveTimer = SUCTION_ACTIVE_DUR
         this.hideWarning()
-        this.showWarning('ANCHOR A WALL  [RIGHT-CLICK]')
+        this.showWarning('ANCHOR A WALL  [Q]')
       }
     }
 

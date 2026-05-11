@@ -15,6 +15,12 @@ const CONFIG: EnemyConfig = {
   weakMultiplier:  2.0,
   staggerDuration: 420,
   bodyRadius:      14,
+  knockbackResist: 0.1,   // light, easy to push around
+  loot: [
+    { material: 'ChitinShard', quantity: 1, chance: 0.9 },
+    { material: 'VenomGland',  quantity: 1, chance: 0.25 },
+    { material: 'SilkThread',  quantity: 1, chance: 0.3  },
+  ],
 }
 
 export { CONTACT_RADIUS }

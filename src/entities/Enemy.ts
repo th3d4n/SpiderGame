@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import type { MaterialType } from '../systems/CraftingSystem'
 
 // TS6 erasableSyntaxOnly: use const objects instead of enum
 export const WeakPointZone = {
@@ -10,6 +11,12 @@ export const WeakPointZone = {
 
 export type WeakPointZone = (typeof WeakPointZone)[keyof typeof WeakPointZone]
 
+export interface LootDrop {
+  material: MaterialType
+  quantity: number
+  chance:   number  // 0..1 — probability the drop appears
+}
+
 export interface EnemyConfig {
   health:          number
   speed:           number
@@ -18,6 +25,8 @@ export interface EnemyConfig {
   weakMultiplier:  number   // damage multiplier when hitting a weak zone
   staggerDuration: number   // ms of stagger per hit
   bodyRadius:      number   // arcade physics circle radius
+  knockbackResist?: number  // 0 = full knockback, 1 = immune; defaults to 0
+  loot?:           LootDrop[]
 }
 
 export default abstract class Enemy extends Phaser.GameObjects.Container {
@@ -26,6 +35,8 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
   protected maxHealth:       number
   protected speed:           number
   readonly  damage:          number
+  readonly  knockbackResist: number
+  readonly  loot:            LootDrop[]
   private   weakPoints:      WeakPointZone[]
   private   weakMultiplier:  number
   private   staggerDuration: number
@@ -47,6 +58,8 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
     this.weakPoints      = config.weakPoints
     this.weakMultiplier  = config.weakMultiplier
     this.staggerDuration = config.staggerDuration
+    this.knockbackResist = config.knockbackResist ?? 0
+    this.loot            = config.loot ?? []
 
     scene.add.existing(this)
     scene.physics.add.existing(this)
@@ -77,6 +90,9 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
 
     if (this.health <= 0) {
       this._dead = true
+      // Roll loot and announce death so the scene can spawn pickups at this position
+      const dropped: LootDrop[] = this.loot.filter(d => Math.random() < d.chance)
+      this.scene.events.emit('enemyDied', { x: this.x, y: this.y, loot: dropped })
       this.onDeath()   // onDeath owns the visual from here; no flash tween conflict
       return
     }
@@ -110,7 +126,8 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
   }
 
   applyKnockback(vx: number, vy: number): void {
-    this.pb.setVelocity(vx, vy)
+    const scale = 1 - this.knockbackResist
+    this.pb.setVelocity(this.pb.velocity.x + vx * scale, this.pb.velocity.y + vy * scale)
   }
 
   isStaggered():    boolean { return this._staggered }

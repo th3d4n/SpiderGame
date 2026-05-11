@@ -13,28 +13,28 @@ export const WEAPON_COLORS: Record<WeaponType, number> = {
 // All Phase 1 weapons. requiredTier = minimum leg tier to equip in any unlocked slot.
 export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
   [WeaponType.Sword, {
-    name: 'Sword',
+    name: 'Leg-Attached Broken Sword',
     damage: 25,
     staminaCost: 15,
     type: 'melee',
     requiredTier: 0,
   }],
   [WeaponType.Bow, {
-    name: 'Bow',
+    name: 'Leg-Mounted Bow',
     damage: 20,
     staminaCost: 10,
     type: 'ranged',
     requiredTier: 0,
   }],
   [WeaponType.BoxingGloves, {
-    name: 'Boxing Gloves',
+    name: 'Strapped Boxing Glove',
     damage: 15,
     staminaCost: 5,
     type: 'melee',
     requiredTier: 0,
   }],
   [WeaponType.Axe, {
-    name: 'Axe',
+    name: 'Bolt-On Axe',
     damage: 40,
     staminaCost: 25,
     type: 'melee',

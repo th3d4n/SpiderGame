@@ -9,8 +9,8 @@ const LEG_COLORS = [0xff4444, 0xff8844, 0xffff44, 0x44ff44, 0x44ffff, 0x4444ff, 
 
 // HP and regen
 export const PLAYER_MAX_HP = 100
-const REGEN_DELAY_MS = 3000
-const REGEN_RATE     = 12        // HP per second
+const REGEN_DELAY_MS = 6000
+const REGEN_RATE     = 2         // HP per second — slow trickle, not a panacea
 
 export default class Webbs extends Phaser.GameObjects.Container {
   private sprite!: Phaser.GameObjects.Arc

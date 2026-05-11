@@ -21,6 +21,12 @@ export default class BeetleTank extends Enemy {
       weakMultiplier:  1.8,
       staggerDuration: 700,
       bodyRadius:      26,
+      knockbackResist: 0.65,   // heavy carapace shrugs off most knockback
+      loot: [
+        { material: 'ChitinShard',  quantity: 2, chance: 1.0 },
+        { material: 'BoneFragment', quantity: 1, chance: 0.7 },
+        { material: 'ChitinShard',  quantity: 1, chance: 0.4 },
+      ],
     }
     super(scene, x, y, cfg)
     this.targetRef = target

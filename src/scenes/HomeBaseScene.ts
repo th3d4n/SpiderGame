@@ -111,6 +111,11 @@ export default class HomeBaseScene extends Phaser.Scene {
           this.webbs.weaponSystem.equip(i, savedSlots[i])
         }
       }
+    } else {
+      // First-load loadout — broken sword and bolt-on axe welded to the prosthetic legs
+      this.webbs.weaponSystem.equip(0, WeaponType.Sword)
+      this.webbs.weaponSystem.equip(1, WeaponType.Axe)
+      this.webbs.weaponSystem.equip(2, WeaponType.BoxingGloves)
     }
     this.webbs.refreshLegColors()
 

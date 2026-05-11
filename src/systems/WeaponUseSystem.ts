@@ -12,6 +12,7 @@ const SWORD_SWEEP_DEG   = 90
 const SWORD_DAMAGE      = 18
 const SWORD_STAMINA     = 10
 const SWORD_COOLDOWN    = 280
+const SWORD_KNOCKBACK   = 180
 
 // Axe — slow, wide cleave, big damage + knockback
 const AXE_RADIUS        = 60
@@ -19,7 +20,7 @@ const AXE_SWEEP_DEG     = 160
 const AXE_DAMAGE        = 32
 const AXE_STAMINA       = 18
 const AXE_COOLDOWN      = 520
-const AXE_KNOCKBACK     = 380
+const AXE_KNOCKBACK     = 420
 
 // Boxing Gloves — short range, very fast, tight cone, heavy knockback
 const GLOVES_RADIUS     = 45
@@ -37,6 +38,7 @@ const BOW_DAMAGE        = 22
 const BOW_STAMINA       = 12
 const BOW_COOLDOWN      = 350
 const BOW_PROJ_RADIUS   = 6
+const BOW_KNOCKBACK     = 220
 
 // Flame breather
 const FLAME_RANGE       = 120
@@ -155,7 +157,7 @@ export class WeaponUseSystem {
     })
 
     webbs.playWeaponAnim(slot, 'stab', 200)
-    this.hitsInArc(webbs, SWORD_RADIUS, SWORD_SWEEP_DEG, SWORD_DAMAGE, 0)
+    this.hitsInArc(webbs, SWORD_RADIUS, SWORD_SWEEP_DEG, SWORD_DAMAGE, SWORD_KNOCKBACK)
   }
 
   // ── Axe — slow wide cleave ────────────────────────────────────────────────
@@ -354,6 +356,13 @@ export class WeaponUseSystem {
         const dist = Phaser.Math.Distance.Between(arc.x, arc.y, enemy.x, enemy.y)
         if (dist < BOW_PROJ_RADIUS + 20) {
           enemy.takeDamage(BOW_DAMAGE, WeakPointZone.Body)
+          // Knockback in the projectile's direction of travel
+          const body = arc.body as Phaser.Physics.Arcade.Body
+          const vlen = Math.hypot(body.velocity.x, body.velocity.y) || 1
+          enemy.applyKnockback(
+            (body.velocity.x / vlen) * BOW_KNOCKBACK,
+            (body.velocity.y / vlen) * BOW_KNOCKBACK,
+          )
           arc.destroy()
           toRemove.push(proj)
           hit = true
