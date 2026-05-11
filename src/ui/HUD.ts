@@ -41,7 +41,8 @@ export default class HUDScene extends Phaser.Scene {
   private slotVisuals:  SlotVisual[] = []
   private staminaBar!:  BarVisual
   private energyBar!:   BarVisual
-  private healthPips:   Phaser.GameObjects.Arc[] = []
+  private healthBar!:   BarVisual
+  private healthText!:  Phaser.GameObjects.Text
   private zoneText!:    Phaser.GameObjects.Text
 
   constructor() {
@@ -69,10 +70,10 @@ export default class HUDScene extends Phaser.Scene {
     }).setOrigin(0, 0.5)
   }
 
-  // ── Health pips — top right ──────────────────────────────────────────────
+  // ── Health bar — top right ───────────────────────────────────────────────
 
   private buildHealthPanel(width: number) {
-    const w = 122, h = 34, x = width - w - 10, y = 10
+    const w = 200, h = 34, x = width - w - 10, y = 10
     this.add.rectangle(x + w / 2, y + h / 2, w, h, PANEL_BG, 0.9)
       .setStrokeStyle(1, ACCENT)
     this.add.text(x + 12, y + h / 2, 'HP', {
@@ -80,11 +81,20 @@ export default class HUDScene extends Phaser.Scene {
       fontSize: '11px',
       color: '#888899',
     }).setOrigin(0, 0.5)
-    for (let i = 0; i < 5; i++) {
-      const pip = this.add.arc(x + 44 + i * 16, y + h / 2, 5, 0, 360, false, 0xff4455)
-      pip.setStrokeStyle(1, 0x441122)
-      this.healthPips.push(pip)
-    }
+
+    const barW = 120, barH = 12
+    const bx = x + 38, by = y + (h - barH) / 2
+    this.add.rectangle(bx + barW / 2, by + barH / 2, barW, barH, 0x220a14)
+      .setStrokeStyle(1, 0x441122)
+    const fill = this.add.rectangle(bx, by + barH / 2, barW, barH, 0xff4455)
+      .setOrigin(0, 0.5)
+    this.healthBar = { fill, maxW: barW, barH }
+
+    this.healthText = this.add.text(x + w - 12, y + h / 2, '100/100', {
+      fontFamily: 'monospace',
+      fontSize: '10px',
+      color: '#ccccdd',
+    }).setOrigin(1, 0.5)
   }
 
   // ── Stamina + Energy bars — bottom left ─────────────────────────────────
@@ -168,7 +178,8 @@ export default class HUDScene extends Phaser.Scene {
     const staminaMax:    number       = this.registry.get('staminaMax')    ?? 100
     const energy:        number       = this.registry.get('energy')        ?? 100
     const energyMax:     number       = this.registry.get('energyMax')     ?? 100
-    const health:        number       = this.registry.get('health')        ?? 5
+    const health:        number       = this.registry.get('health')        ?? 100
+    const healthMax:     number       = this.registry.get('healthMax')     ?? 100
     const zoneName:      string       = this.registry.get('zoneName')      ?? 'ANT COLONY'
     const weaponSlots:   WeaponType[] = this.registry.get('weaponSlots')   ?? Array(SLOT_COUNT).fill(WeaponType.Empty)
     const unlockedCount: number       = this.registry.get('unlockedSlots') ?? 2
@@ -176,7 +187,7 @@ export default class HUDScene extends Phaser.Scene {
     this.zoneText.setText(zoneName)
     this.setBarWidth(this.staminaBar, stamina  / (staminaMax  || 1))
     this.setBarWidth(this.energyBar,  energy   / (energyMax   || 1))
-    this.updateHealthPips(health)
+    this.updateHealthBar(health, healthMax)
     this.updateWeaponSlots(weaponSlots, unlockedCount)
   }
 
@@ -184,10 +195,13 @@ export default class HUDScene extends Phaser.Scene {
     bar.fill.setSize(Math.max(0, Math.min(1, ratio)) * bar.maxW, bar.barH)
   }
 
-  private updateHealthPips(health: number): void {
-    for (let i = 0; i < this.healthPips.length; i++) {
-      this.healthPips[i].setFillStyle(health > i ? 0xff4455 : 0x331122)
-    }
+  private updateHealthBar(health: number, healthMax: number): void {
+    const ratio = healthMax > 0 ? health / healthMax : 0
+    this.setBarWidth(this.healthBar, ratio)
+    // Color shift as HP drops
+    const col = ratio > 0.5 ? 0xff4455 : ratio > 0.25 ? 0xff8833 : 0xff2222
+    this.healthBar.fill.setFillStyle(col)
+    this.healthText.setText(`${Math.ceil(health)}/${Math.ceil(healthMax)}`)
   }
 
   private updateWeaponSlots(slots: WeaponType[], unlockedCount: number): void {

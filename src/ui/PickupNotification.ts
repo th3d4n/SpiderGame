@@ -20,14 +20,23 @@ interface PickupEvent {
   quantity:     number
 }
 
-const CARD_W   = 220
+interface CraftedEvent {
+  displayName: string
+  color:       number
+}
+
+type CardEvent =
+  | { kind: 'pickup', materialType: MaterialType, quantity: number }
+  | { kind: 'craft',  displayName: string, color: number }
+
+const CARD_W   = 240
 const CARD_H   = 50
 const STAY_MS  = 1800
 const SLIDE_MS = 150
 const FADE_MS  = 300
 
 export default class PickupNotification extends Phaser.Scene {
-  private queue:  PickupEvent[] = []
+  private queue:  CardEvent[] = []
   private showing = false
 
   constructor() {
@@ -45,18 +54,25 @@ export default class PickupNotification extends Phaser.Scene {
         s.scene.key !== 'HUDScene'
       ) {
         s.events.on('itemPickedUp', this.onPickedUp, this)
+        s.events.on('itemCrafted',  this.onCrafted,  this)
       }
     })
 
     this.events.once('shutdown', () => {
       this.scene.manager.scenes.forEach(s => {
         s.events.off('itemPickedUp', this.onPickedUp, this)
+        s.events.off('itemCrafted',  this.onCrafted,  this)
       })
     })
   }
 
   private onPickedUp(data: PickupEvent): void {
-    this.queue.push(data)
+    this.queue.push({ kind: 'pickup', materialType: data.materialType, quantity: data.quantity })
+    if (!this.showing) this.showNext()
+  }
+
+  private onCrafted(data: CraftedEvent): void {
+    this.queue.push({ kind: 'craft', displayName: data.displayName, color: data.color })
     if (!this.showing) this.showNext()
   }
 
@@ -66,11 +82,19 @@ export default class PickupNotification extends Phaser.Scene {
       return
     }
     this.showing = true
-    const { materialType, quantity } = this.queue.shift()!
-    this.showCard(materialType, quantity)
+    const ev = this.queue.shift()!
+    if (ev.kind === 'pickup') {
+      this.showCard(
+        MAT_LABELS[ev.materialType] ?? ev.materialType,
+        `+${ev.quantity}`,
+        MAT_COLORS[ev.materialType] ?? 0xffffff,
+      )
+    } else {
+      this.showCard(`Crafted: ${ev.displayName}`, 'Added to inventory', ev.color)
+    }
   }
 
-  private showCard(materialType: MaterialType, quantity: number): void {
+  private showCard(title: string, subtitle: string, color: number): void {
     const { width, height } = this.scale
     const cx     = width  / 2
     const startY = height + CARD_H
@@ -87,25 +111,22 @@ export default class PickupNotification extends Phaser.Scene {
     container.add(bg)
 
     // Colored orb
-    const color   = MAT_COLORS[materialType] ?? 0xffffff
-    const orbGlow = this.add.arc(-80, 0, 11, 0, 360, false, color, 0.22)
-    const orb     = this.add.arc(-80, 0,  7, 0, 360, false, color)
+    const orbGlow = this.add.arc(-CARD_W / 2 + 30, 0, 11, 0, 360, false, color, 0.22)
+    const orb     = this.add.arc(-CARD_W / 2 + 30, 0,  7, 0, 360, false, color)
     container.add([orbGlow, orb])
 
-    // Material name
-    const nameText = this.add.text(-60, -8,
-      MAT_LABELS[materialType] ?? materialType,
-      { fontFamily: 'monospace', fontSize: '13px', color: '#ddddff' },
-    ).setOrigin(0, 0)
-    container.add(nameText)
+    // Title
+    const titleText = this.add.text(-CARD_W / 2 + 50, -8, title, {
+      fontFamily: 'monospace', fontSize: '13px', color: '#ddddff',
+    }).setOrigin(0, 0)
+    container.add(titleText)
 
-    // +quantity
+    // Subtitle
     const colStr = '#' + (color).toString(16).padStart(6, '0')
-    const qtyText = this.add.text(-60, 8,
-      `+${quantity}`,
-      { fontFamily: 'monospace', fontSize: '11px', color: colStr },
-    ).setOrigin(0, 0)
-    container.add(qtyText)
+    const subtitleText = this.add.text(-CARD_W / 2 + 50, 8, subtitle, {
+      fontFamily: 'monospace', fontSize: '11px', color: colStr,
+    }).setOrigin(0, 0)
+    container.add(subtitleText)
 
     // Slide up
     this.tweens.add({

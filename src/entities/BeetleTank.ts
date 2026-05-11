@@ -16,7 +16,7 @@ export default class BeetleTank extends Enemy {
     const cfg: EnemyConfig = {
       health:          80,
       speed:           PATROL_SPEED,
-      damage:          2,
+      damage:          20,
       weakPoints:      [WeakPointZone.Underbelly],
       weakMultiplier:  1.8,
       staggerDuration: 700,

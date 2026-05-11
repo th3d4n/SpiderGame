@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { RECIPES, type Recipe, type MaterialType } from '../systems/CraftingSystem'
+import { WEAPON_COLORS } from '../config/WeaponData'
 
 const ACCENT     = 0x7777ff
 const ACCENT_STR = '#7777ff'
@@ -189,6 +190,12 @@ export default class CraftingMenu extends Phaser.Scene {
     // Signal GameScene to equip this weapon
     this.registry.set('pendingEquip', recipe.produces)
     this.registry.set('craftingInventory', { ...this.inventory })
+
+    // Fire notification overlay popup
+    this.events.emit('itemCrafted', {
+      displayName: recipe.displayName,
+      color:       WEAPON_COLORS[recipe.produces] ?? 0xccccdd,
+    })
 
     this.flashStatus(`Crafted: ${recipe.displayName}`, ACCENT_STR)
     this.refreshInventoryPanel()

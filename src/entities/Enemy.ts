@@ -70,8 +70,10 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
   takeDamage(amount: number, zone: WeakPointZone = WeakPointZone.Body): void {
     if (this._dead) return
 
-    const mult  = this.weakPoints.includes(zone) ? this.weakMultiplier : 1
-    this.health = Math.max(0, this.health - amount * mult)
+    const mult     = this.weakPoints.includes(zone) ? this.weakMultiplier : 1
+    const applied  = amount * mult
+    this.health    = Math.max(0, this.health - applied)
+    this.spawnDamagePopup(applied)
 
     if (this.health <= 0) {
       this._dead = true
@@ -83,6 +85,28 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
     this.flashDamage()
     this._staggered  = true
     this.staggerTimer = this.staggerDuration
+  }
+
+  private spawnDamagePopup(amount: number): void {
+    if (amount <= 0) return
+    // Round so DPS ticks (fractional) still read cleanly
+    const shown = Math.max(1, Math.round(amount))
+    const jitter = Phaser.Math.Between(-8, 8)
+    const txt = this.scene.add.text(this.x + jitter, this.y - 28, `-${shown}`, {
+      fontFamily: 'monospace',
+      fontSize:   '14px',
+      color:      '#ffdd55',
+      stroke:     '#000000',
+      strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(60)
+    this.scene.tweens.add({
+      targets:    txt,
+      y:          txt.y - 28,
+      alpha:      0,
+      duration:   650,
+      ease:       'Cubic.easeOut',
+      onComplete: () => txt.destroy(),
+    })
   }
 
   applyKnockback(vx: number, vy: number): void {

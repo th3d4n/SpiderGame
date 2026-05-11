@@ -10,7 +10,7 @@ const CONTACT_RADIUS  = 28    // px — melee range at which it registers a hit
 const CONFIG: EnemyConfig = {
   health:          30,
   speed:           130,
-  damage:          1,
+  damage:          12,
   weakPoints:      [WeakPointZone.Head],
   weakMultiplier:  2.0,
   staggerDuration: 420,

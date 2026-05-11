@@ -1,9 +1,10 @@
 import Phaser from 'phaser'
-import Webbs from '../entities/Webbs'
+import Webbs, { PLAYER_MAX_HP } from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
 import Pickup from '../entities/Pickup'
 import CentipedeAmbusher from '../entities/CentipedeAmbusher'
 import BeetleTank from '../entities/BeetleTank'
+import type Enemy from '../entities/Enemy'
 import { CraftingSystem, MaterialType } from '../systems/CraftingSystem'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
@@ -34,8 +35,8 @@ export default class AntColonyScene extends Phaser.Scene {
   private transitioning      = false
 
   // Player stats — synced to registry each frame
-  private health         = 5
-  private healthMax      = 5
+  private health         = PLAYER_MAX_HP
+  private healthMax      = PLAYER_MAX_HP
   private stamina        = 100
   private energy         = 100
   private contactCooldown = 0
@@ -75,6 +76,7 @@ export default class AntColonyScene extends Phaser.Scene {
     // Webbs spawns at the correct edge based on entry direction
     const spawnX = ZoneTransitionSystem.spawnX(this, WORLD_W, WORLD_W - 200)
     this.webbs = new Webbs(this, spawnX, FLOOR_Y - 60)
+    this.webbs.resetHp(this.health)
 
     // Restore leg tier and equipped weapons from registry — both persist across zones
     const savedLegTier = this.registry.get('legTier') as number | undefined
@@ -124,6 +126,8 @@ export default class AntColonyScene extends Phaser.Scene {
     this.enemies.push(new CentipedeAmbusher(this, 650,  FLOOR_Y - 30, this.webbs))
     this.enemies.push(new CentipedeAmbusher(this, 1350, FLOOR_Y - 30, this.webbs))
     this.enemies.push(new BeetleTank(this, 1850, FLOOR_Y - 30, this.webbs))
+    this.weaponUseSystem.setEnemies(this.enemies as unknown as Enemy[])
+    this.weaponUseSystem.setWorldBounds(WORLD_W, WORLD_H)
 
     // Input
     this.eKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E)
@@ -196,6 +200,9 @@ export default class AntColonyScene extends Phaser.Scene {
     } else {
       this.checkEnemyContact()
     }
+
+    // Pull HP back from Webbs (regen happens inside Webbs.update)
+    this.health = this.webbs.hp
 
     // Zone transitions
     if (this.webbs.x < LEFT_TRIGGER) {
@@ -364,7 +371,8 @@ export default class AntColonyScene extends Phaser.Scene {
         enemy.x,      enemy.y,
       )
       if (dist < CONTACT_RADIUS) {
-        this.health = Math.max(0, this.health - enemy.damage)
+        this.webbs.damage(enemy.damage)
+        this.health = this.webbs.hp
         this.contactCooldown = CONTACT_COOLDOWN
 
         const angle = Phaser.Math.Angle.Between(

@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import Webbs from '../entities/Webbs'
+import Webbs, { PLAYER_MAX_HP } from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
 import Pickup from '../entities/Pickup'
 import { MaterialType } from '../systems/CraftingSystem'
@@ -26,8 +26,8 @@ export default class HomeBaseScene extends Phaser.Scene {
   private transitioning      = false
 
   // Player stats — synced to registry each frame for HUD
-  private health    = 5
-  private healthMax = 5
+  private health    = PLAYER_MAX_HP
+  private healthMax = PLAYER_MAX_HP
   private stamina   = 100
   private energy    = 100
   private contactCooldown = 0
@@ -99,6 +99,7 @@ export default class HomeBaseScene extends Phaser.Scene {
     // Spawn Webbs — position depends on which direction we entered from
     const spawnX = ZoneTransitionSystem.spawnX(this, WORLD_W, WORLD_W / 2 - 200)
     this.webbs = new Webbs(this, spawnX, FLOOR_Y - 60)
+    this.webbs.resetHp(this.health)
 
     // Restore leg tier and equipped weapons from registry — both persist across zones
     const savedLegTier = this.registry.get('legTier') as number | undefined
@@ -139,6 +140,7 @@ export default class HomeBaseScene extends Phaser.Scene {
     // Weapon use system — keys 1-8 registered as tracked Key objects (checked
     // via JustDown in update) so they only fire when this scene is active.
     this.weaponUseSystem = new WeaponUseSystem()
+    this.weaponUseSystem.setWorldBounds(WORLD_W, WORLD_H)
     this.weaponKeys = [
       Phaser.Input.Keyboard.KeyCodes.ONE,
       Phaser.Input.Keyboard.KeyCodes.TWO,
@@ -214,6 +216,9 @@ export default class HomeBaseScene extends Phaser.Scene {
     }
 
     if (this.contactCooldown > 0) this.contactCooldown -= delta
+
+    // Pull HP back from Webbs (regen happens inside Webbs.update)
+    this.health = this.webbs.hp
 
     // Left-exit → Ant Colony
     if (this.webbs.x < LEFT_TRIGGER) {

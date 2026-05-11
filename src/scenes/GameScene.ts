@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import Webbs from '../entities/Webbs'
+import Webbs, { PLAYER_MAX_HP } from '../entities/Webbs'
 import CentipedeAmbusher, { CONTACT_RADIUS } from '../entities/CentipedeAmbusher'
 import Workbench from '../entities/Workbench'
 import { CraftingSystem } from '../systems/CraftingSystem'
@@ -29,8 +29,8 @@ export default class GameScene extends Phaser.Scene {
   public staminaMax = 100
   public energy     = 100
   public energyMax  = 100
-  public health     = 5
-  public healthMax  = 5
+  public health     = PLAYER_MAX_HP
+  public healthMax  = PLAYER_MAX_HP
   public zoneName   = 'ANT COLONY'
 
   // Cooldown so a single contact burst doesn't drain health instantly

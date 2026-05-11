@@ -31,7 +31,7 @@ const ROLLER_SPAWN_Y = H / 2
 // Player config
 const PLAYER_SPAWN_X = W / 2
 const PLAYER_SPAWN_Y = H * 0.68
-const PLAYER_MAX_HP  = 5
+const PLAYER_MAX_HP  = 100
 const DAMAGE_COOLDOWN_MS = 800
 
 interface RockData {
@@ -74,7 +74,7 @@ export default class BossRollerScene extends Phaser.Scene {
   // UI
   private noseHpBar!:      Phaser.GameObjects.Graphics
   private rollerHpBar!:    Phaser.GameObjects.Graphics
-  private playerHpPips:    Phaser.GameObjects.Arc[] = []
+  private playerHpBar!:    Phaser.GameObjects.Graphics
   private bossLabel!:      Phaser.GameObjects.Text
   private phaseText!:      Phaser.GameObjects.Text
   private warningText!:    Phaser.GameObjects.Text
@@ -111,6 +111,7 @@ export default class BossRollerScene extends Phaser.Scene {
     // Player — Webbs instance handles WASD movement internally
     this.webbs = new Webbs(this, PLAYER_SPAWN_X, PLAYER_SPAWN_Y)
     this.webbs.setDepth(10)
+    this.webbs.resetHp(this.playerHp)
 
     // Camera follows Webbs
     this.cameras.main.startFollow(this.webbs, true, 0.12, 0.12)
@@ -239,13 +240,8 @@ export default class BossRollerScene extends Phaser.Scene {
       color: '#ffaacc',
     }).setOrigin(0.5, 0).setDepth(21).setScrollFactor(0)
 
-    // Player HP pips
-    for (let i = 0; i < PLAYER_MAX_HP; i++) {
-      const pip = this.add.arc(12 + i * 18, 12, 6, 0, 360, false, 0xff4455)
-      pip.setStrokeStyle(1, 0x441122)
-      pip.setDepth(21).setScrollFactor(0)
-      this.playerHpPips.push(pip)
-    }
+    // Player HP bar
+    this.playerHpBar = this.add.graphics().setDepth(21).setScrollFactor(0)
 
     // Phase / warning text (center of screen)
     this.phaseText = this.add.text(W / 2, H / 2, '', {
@@ -300,9 +296,15 @@ export default class BossRollerScene extends Phaser.Scene {
   }
 
   private updatePlayerHpPips(): void {
-    for (let i = 0; i < this.playerHpPips.length; i++) {
-      this.playerHpPips[i].setFillStyle(this.playerHp > i ? 0xff4455 : 0x331122)
-    }
+    const bw = 140, bh = 14, bx = 12, by = 8
+    this.playerHpBar.clear()
+    this.playerHpBar.fillStyle(0x331122, 1)
+    this.playerHpBar.fillRect(bx, by, bw, bh)
+    const ratio = Phaser.Math.Clamp(this.playerHp / PLAYER_MAX_HP, 0, 1)
+    this.playerHpBar.fillStyle(0xff4455, 1)
+    this.playerHpBar.fillRect(bx, by, bw * ratio, bh)
+    this.playerHpBar.lineStyle(1, 0x441122, 1)
+    this.playerHpBar.strokeRect(bx, by, bw, bh)
   }
 
   private syncRegistry(): void {
@@ -315,7 +317,8 @@ export default class BossRollerScene extends Phaser.Scene {
 
   private takeDamage(amount: number): void {
     if (this.damageCooldown > 0) return
-    this.playerHp = Math.max(0, this.playerHp - amount)
+    this.webbs.damage(amount)
+    this.playerHp = this.webbs.hp
     this.damageCooldown = DAMAGE_COOLDOWN_MS
     this.updatePlayerHpPips()
     this.syncRegistry()
@@ -640,7 +643,7 @@ export default class BossRollerScene extends Phaser.Scene {
         const dist       = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, cx, cy)
         if (Math.abs(dist - currentR) < 28) {
           playerHit = true
-          this.takeDamage(1)
+          this.takeDamage(22)
         }
       },
       onComplete: () => sw.destroy(),
@@ -676,7 +679,7 @@ export default class BossRollerScene extends Phaser.Scene {
       const angleToPlayer = Phaser.Math.Angle.Between(rx, ry, this.webbs.x, this.webbs.y)
       const diff          = Math.abs(Phaser.Math.Angle.Wrap(angleToPlayer - tailAngle))
       if (diff < sweepAngle / 2) {
-        this.takeDamage(1)
+        this.takeDamage(20)
         // Knock Webbs in tail direction
         const pushAngle = tailAngle + (Math.random() - 0.5) * 0.8
         this.webbs.pb.setVelocity(Math.cos(pushAngle) * 280, Math.sin(pushAngle) * 280)
@@ -731,7 +734,7 @@ export default class BossRollerScene extends Phaser.Scene {
       this.roller.x, this.roller.y,
     )
     if (dist < 70) {
-      this.takeDamage(1)
+      this.takeDamage(25)
       const angle = Phaser.Math.Angle.Between(
         this.roller.x, this.roller.y,
         this.webbs.x,  this.webbs.y,
@@ -764,6 +767,9 @@ export default class BossRollerScene extends Phaser.Scene {
 
     // Player movement
     this.webbs.update(time, delta)
+
+    // Pull HP back from Webbs (regen happens inside Webbs.update)
+    this.playerHp = this.webbs.hp
 
     // Suction override
     if (this.suctionActive) this.applySuctionToPlayer()
@@ -832,7 +838,7 @@ export default class BossRollerScene extends Phaser.Scene {
         rock.arc.x,   rock.arc.y,
       )
       if (dist < 20) {
-        this.takeDamage(1)
+        this.takeDamage(18)
         break
       }
     }

@@ -4,37 +4,45 @@ import { WeakPointZone } from '../entities/Enemy'
 import Enemy from '../entities/Enemy'
 import Webbs from '../entities/Webbs'
 
+// ── Melee weapons — each weapon has its own range, sweep, speed, damage, knockback ──
+
+// Sword — balanced quick arc, medium range
 const SWORD_RADIUS      = 70
 const SWORD_SWEEP_DEG   = 90
-const SWORD_DAMAGE      = 15
+const SWORD_DAMAGE      = 18
 const SWORD_STAMINA     = 10
 const SWORD_COOLDOWN    = 280
 
+// Axe — slow, wide cleave, big damage + knockback
 const AXE_RADIUS        = 60
-const AXE_SWEEP_DEG     = 120
-const AXE_DAMAGE        = 25
+const AXE_SWEEP_DEG     = 160
+const AXE_DAMAGE        = 32
 const AXE_STAMINA       = 18
-const AXE_COOLDOWN      = 400
+const AXE_COOLDOWN      = 520
 const AXE_KNOCKBACK     = 380
 
-const BOW_SPEED         = 400
-const BOW_DAMAGE        = 20
-const BOW_STAMINA       = 12
-const BOW_COOLDOWN      = 350
-const BOW_PROJ_RADIUS   = 6
-
-const GLOVES_RADIUS     = 50
-const GLOVES_DAMAGE     = 30
-const GLOVES_STAMINA    = 15
-const GLOVES_COOLDOWN   = 220
+// Boxing Gloves — short range, very fast, tight cone, heavy knockback
+const GLOVES_RADIUS     = 45
+const GLOVES_CONE_DEG   = 50
+const GLOVES_DAMAGE     = 12
+const GLOVES_STAMINA    = 5
+const GLOVES_COOLDOWN   = 160
 const GLOVES_KNOCKBACK  = 500
 const GLOVES_SHAKE_INT  = 0.01
 const GLOVES_SHAKE_DUR  = 100
 
+// Bow
+const BOW_SPEED         = 400
+const BOW_DAMAGE        = 22
+const BOW_STAMINA       = 12
+const BOW_COOLDOWN      = 350
+const BOW_PROJ_RADIUS   = 6
+
+// Flame breather
 const FLAME_RANGE       = 120
 const FLAME_CONE_DEG    = 45
 const FLAME_ENERGY_RATE = 2     // per frame
-const FLAME_DPS         = 15    // damage per second → checked each tick
+const FLAME_DPS         = 18    // damage per second → checked each tick
 
 interface Projectile {
   arc: Phaser.GameObjects.Arc
@@ -94,6 +102,8 @@ export class WeaponUseSystem {
       this.flameEmitter = this.createFlameEmitter(webbs, scene)
     }
 
+    webbs.playWeaponAnim(legSlot, 'spray', 80)
+
     // Follow Webbs
     this.flameEmitter.setPosition(webbs.x, webbs.y)
     const angleDeg = Phaser.Math.RadToDeg(Math.atan2(webbs.facingY, webbs.facingX))
@@ -127,7 +137,7 @@ export class WeaponUseSystem {
     this.flameDmgTimer = 0
   }
 
-  // ── Sword ────────────────────────────────────────────────────────────────
+  // ── Sword — quick forward arc ─────────────────────────────────────────────
 
   private fireSword(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
     if (webbs.stamina < SWORD_STAMINA) return
@@ -144,10 +154,11 @@ export class WeaponUseSystem {
       onComplete: () => arc.destroy(),
     })
 
+    webbs.playWeaponAnim(slot, 'stab', 200)
     this.hitsInArc(webbs, SWORD_RADIUS, SWORD_SWEEP_DEG, SWORD_DAMAGE, 0)
   }
 
-  // ── Axe ──────────────────────────────────────────────────────────────────
+  // ── Axe — slow wide cleave ────────────────────────────────────────────────
 
   private fireAxe(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
     if (webbs.stamina < AXE_STAMINA) return
@@ -160,10 +171,11 @@ export class WeaponUseSystem {
     scene.tweens.add({
       targets:    arc,
       alpha:      0,
-      duration:   300,
+      duration:   320,
       onComplete: () => arc.destroy(),
     })
 
+    webbs.playWeaponAnim(slot, 'swing', 320)
     this.hitsInArc(webbs, AXE_RADIUS, AXE_SWEEP_DEG, AXE_DAMAGE, AXE_KNOCKBACK)
   }
 
@@ -181,10 +193,11 @@ export class WeaponUseSystem {
     projBody.setCircle(BOW_PROJ_RADIUS)
     projBody.setVelocity(webbs.facingX * BOW_SPEED, webbs.facingY * BOW_SPEED)
 
+    webbs.playWeaponAnim(slot, 'draw', 220)
     this.projectiles.push({ arc: proj })
   }
 
-  // ── Boxing Gloves ─────────────────────────────────────────────────────────
+  // ── Boxing Gloves — quick straight jab, no arc sweep ─────────────────────
 
   private fireGloves(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
     if (webbs.stamina < GLOVES_STAMINA) return
@@ -203,11 +216,14 @@ export class WeaponUseSystem {
     scene.tweens.add({
       targets:    gfx,
       alpha:      0,
-      duration:   180,
+      duration:   140,
       onComplete: () => gfx.destroy(),
     })
 
+    webbs.playWeaponAnim(slot, 'punch', 160)
+
     const facingAngle = Math.atan2(webbs.facingY, webbs.facingX)
+    const halfCone    = Phaser.Math.DegToRad(GLOVES_CONE_DEG / 2)
     let hit = false
     for (const enemy of this.enemies) {
       if (enemy.isDead()) continue
@@ -215,7 +231,7 @@ export class WeaponUseSystem {
       if (dist > GLOVES_RADIUS + 20) continue
       const toEnemy = Math.atan2(enemy.y - webbs.y, enemy.x - webbs.x)
       const diff    = Math.abs(Phaser.Math.Angle.Wrap(toEnemy - facingAngle))
-      if (diff <= Phaser.Math.DegToRad(60)) {
+      if (diff <= halfCone) {
         enemy.takeDamage(GLOVES_DAMAGE, WeakPointZone.Body)
         enemy.applyKnockback(webbs.facingX * GLOVES_KNOCKBACK, webbs.facingY * GLOVES_KNOCKBACK)
         hit = true
