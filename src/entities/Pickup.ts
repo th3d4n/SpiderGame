@@ -18,6 +18,7 @@ const MAT_LABELS: Partial<Record<MaterialType, string>> = {
 export default class Pickup extends Phaser.GameObjects.Container {
   readonly materialType: MaterialType
   readonly quantity: number
+  public  pickupId: number = -1
   private craftingSystem: CraftingSystem
   private collected = false
 

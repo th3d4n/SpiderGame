@@ -109,4 +109,11 @@ export class CraftingSystem {
     }
     return snap
   }
+
+  restoreFromSnapshot(snap: Record<string, number>): void {
+    this.inventory.clear()
+    for (const [mat, amt] of Object.entries(snap)) {
+      this.inventory.set(mat as MaterialType, amt)
+    }
+  }
 }

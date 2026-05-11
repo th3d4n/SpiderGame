@@ -59,19 +59,25 @@ export default class HomeBaseScene extends Phaser.Scene {
     // Workbench at center-right of scene
     this.workbench = new Workbench(this, 1820, FLOOR_Y - 40)
 
-    // Crafting system
+    // Crafting system — restore from registry, or seed initial supplies on first load
     this.craftingSystem = new CraftingSystem()
-    this.craftingSystem.addMaterial('SilkThread',   6)
-    this.craftingSystem.addMaterial('ChitinShard',  4)
-    this.craftingSystem.addMaterial('VenomGland',   2)
-    this.craftingSystem.addMaterial('WebFluid',     4)
-    this.craftingSystem.addMaterial('CrystalDust',  1)
-    this.craftingSystem.addMaterial('BoneFragment', 2)
+    const savedInv = this.registry.get('craftingInventory') as Record<string, number> | null
+    if (savedInv) {
+      this.craftingSystem.restoreFromSnapshot(savedInv)
+    } else {
+      this.craftingSystem.addMaterial('SilkThread',   6)
+      this.craftingSystem.addMaterial('ChitinShard',  4)
+      this.craftingSystem.addMaterial('VenomGland',   2)
+      this.craftingSystem.addMaterial('WebFluid',     4)
+      this.craftingSystem.addMaterial('CrystalDust',  1)
+      this.craftingSystem.addMaterial('BoneFragment', 2)
+      this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
+    }
 
     // Pickup group
     this.pickupGroup = this.physics.add.staticGroup()
 
-    // Spawn pickups around home base
+    // Spawn pickups around home base — skip those previously collected this run
     const pickupDefs = [
       { x: 400,  y: 580, mat: 'SilkThread',  qty: 2 },
       { x: 650,  y: 560, mat: 'ChitinShard', qty: 3 },
@@ -82,15 +88,30 @@ export default class HomeBaseScene extends Phaser.Scene {
       { x: 1600, y: 560, mat: 'CrystalDust', qty: 1 },
       { x: 1800, y: 575, mat: 'ChitinShard', qty: 2 },
     ]
-    pickupDefs.forEach(({ x, y, mat, qty }) => {
+    const collected = (this.registry.get('pickupsCollected_HomeBaseScene') as number[] | undefined) ?? []
+    pickupDefs.forEach(({ x, y, mat, qty }, i) => {
+      if (collected.includes(i)) return
       const p = new Pickup(this, x, y, mat as MaterialType, qty, this.craftingSystem)
+      p.pickupId = i
       this.pickupGroup.add(p, true)
     })
 
     // Spawn Webbs — position depends on which direction we entered from
     const spawnX = ZoneTransitionSystem.spawnX(this, WORLD_W, WORLD_W / 2 - 200)
     this.webbs = new Webbs(this, spawnX, FLOOR_Y - 60)
-    this.webbs.weaponSystem.setLegTier(1)
+
+    // Restore leg tier and equipped weapons from registry — both persist across zones
+    const savedLegTier = this.registry.get('legTier') as number | undefined
+    this.webbs.weaponSystem.setLegTier(savedLegTier !== undefined ? savedLegTier : 1)
+    const savedSlots = this.registry.get('weaponSlots') as WeaponType[] | undefined
+    if (savedSlots) {
+      for (let i = 0; i < savedSlots.length; i++) {
+        if (savedSlots[i] && savedSlots[i] !== WeaponType.Empty) {
+          this.webbs.weaponSystem.equip(i, savedSlots[i])
+        }
+      }
+    }
+    this.webbs.refreshLegColors()
 
     // Expose WeaponSystem and weapon inventory to overlay scenes
     this.registry.set('weaponSystemRef', this.webbs.weaponSystem)
@@ -99,11 +120,20 @@ export default class HomeBaseScene extends Phaser.Scene {
     // Refresh leg colors when EquipScreen closes and this scene resumes
     this.events.on('resume', () => { this.webbs.refreshLegColors() })
 
-    // Overlap: collect pickups on contact
+    // Overlap: collect pickups on contact, then persist collected ID + inventory
     this.physics.add.overlap(
       this.webbs,
       this.pickupGroup,
-      (_webbs, pickup) => { (pickup as unknown as Pickup).collect() },
+      (_webbs, pickup) => {
+        const p = pickup as unknown as Pickup
+        if (p.pickupId >= 0) {
+          const arr = (this.registry.get('pickupsCollected_HomeBaseScene') as number[] | undefined) ?? []
+          if (!arr.includes(p.pickupId)) arr.push(p.pickupId)
+          this.registry.set('pickupsCollected_HomeBaseScene', arr)
+        }
+        p.collect()
+        this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
+      },
     )
 
     // Weapon use system — keys 1-8 registered as tracked Key objects (checked
@@ -577,5 +607,6 @@ export default class HomeBaseScene extends Phaser.Scene {
     this.registry.set('energyMax',     100)
     this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
     this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
+    this.registry.set('legTier',       this.webbs.weaponSystem.getLegTier())
   }
 }

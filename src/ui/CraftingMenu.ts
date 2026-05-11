@@ -41,6 +41,14 @@ export default class CraftingMenu extends Phaser.Scene {
   }
 
   create() {
+    // Reset per-launch state — Phaser reuses the scene instance across stop/launch,
+    // so stale references to destroyed Text objects from a prior session would crash
+    // renderSelection() on the second visit.
+    this.selectedIndex  = 0
+    this.rowTexts       = []
+    this.invCountTexts  = []
+    this.flashTween     = null
+
     const { width, height } = this.scale
 
     this.inventory = this.registry.get('craftingInventory') ?? {}

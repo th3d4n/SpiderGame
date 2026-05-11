@@ -62,12 +62,12 @@ export default class AntColonyScene extends Phaser.Scene {
     // Workbench
     this.workbench = new Workbench(this, 400, FLOOR_Y - 40)
 
-    // Crafting system
+    // Crafting system — share the player's inventory via registry across zones
     this.craftingSystem = new CraftingSystem()
-    this.craftingSystem.addMaterial('SilkThread',   4)
-    this.craftingSystem.addMaterial('ChitinShard',  6)
-    this.craftingSystem.addMaterial('BoneFragment', 3)
-    this.craftingSystem.addMaterial('VenomGland',   1)
+    const savedInv = this.registry.get('craftingInventory') as Record<string, number> | null
+    if (savedInv) {
+      this.craftingSystem.restoreFromSnapshot(savedInv)
+    }
 
     // Pickup group
     this.pickupGroup = this.physics.add.staticGroup()
@@ -75,7 +75,19 @@ export default class AntColonyScene extends Phaser.Scene {
     // Webbs spawns at the correct edge based on entry direction
     const spawnX = ZoneTransitionSystem.spawnX(this, WORLD_W, WORLD_W - 200)
     this.webbs = new Webbs(this, spawnX, FLOOR_Y - 60)
-    this.webbs.weaponSystem.setLegTier(1)
+
+    // Restore leg tier and equipped weapons from registry — both persist across zones
+    const savedLegTier = this.registry.get('legTier') as number | undefined
+    this.webbs.weaponSystem.setLegTier(savedLegTier !== undefined ? savedLegTier : 1)
+    const savedSlots = this.registry.get('weaponSlots') as WeaponType[] | undefined
+    if (savedSlots) {
+      for (let i = 0; i < savedSlots.length; i++) {
+        if (savedSlots[i] && savedSlots[i] !== WeaponType.Empty) {
+          this.webbs.weaponSystem.equip(i, savedSlots[i])
+        }
+      }
+    }
+    this.webbs.refreshLegColors()
 
     // Expose WeaponSystem and weapon inventory to overlay scenes
     this.registry.set('weaponSystemRef', this.webbs.weaponSystem)
@@ -84,11 +96,14 @@ export default class AntColonyScene extends Phaser.Scene {
     // Refresh leg colors when EquipScreen closes and this scene resumes
     this.events.on('resume', () => { this.webbs.refreshLegColors() })
 
-    // Overlap: collect pickups on contact
+    // Overlap: collect pickups on contact, then sync inventory to registry
     this.physics.add.overlap(
       this.webbs,
       this.pickupGroup,
-      (_webbs, pickup) => { (pickup as unknown as Pickup).collect() },
+      (_webbs, pickup) => {
+        (pickup as unknown as Pickup).collect()
+        this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
+      },
     )
 
     // Weapon use system — keys 1-8 registered as tracked Key objects (checked
@@ -357,9 +372,20 @@ export default class AntColonyScene extends Phaser.Scene {
           this.webbs.x, this.webbs.y,
         )
         this.webbs.pb.setVelocity(Math.cos(angle) * 300, Math.sin(angle) * 300)
+
+        if (this.health <= 0) this.playerDied()
         break
       }
     }
+  }
+
+  private playerDied(): void {
+    if (this.transitioning) return
+    this.transitioning = true
+    this.health = this.healthMax
+    this.registry.set('health', this.healthMax)
+    this.cameras.main.fade(700, 0, 0, 0)
+    this.time.delayedCall(700, () => this.scene.start('HomeBaseScene'))
   }
 
   private syncRegistry(): void {
@@ -372,5 +398,6 @@ export default class AntColonyScene extends Phaser.Scene {
     this.registry.set('energyMax',     100)
     this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
     this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
+    this.registry.set('legTier',       this.webbs.weaponSystem.getLegTier())
   }
 }
