@@ -6,6 +6,7 @@ import type Enemy from '../entities/Enemy'
 import { WeakPointZone } from '../entities/Enemy'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
+import { WebLauncherSystem } from '../systems/WebLauncherSystem'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ export default class BossRollerScene extends Phaser.Scene {
 
   // Shared combat
   private weaponUseSystem!:   WeaponUseSystem
+  private webLauncher!:       WebLauncherSystem
   private weaponKeys:         Phaser.Input.Keyboard.Key[] = []
 
   // UI
@@ -150,6 +152,14 @@ export default class BossRollerScene extends Phaser.Scene {
     this.weaponUseSystem = new WeaponUseSystem()
     this.weaponUseSystem.setEnemies([this.nose as unknown as Enemy])
     this.weaponUseSystem.setWorldBounds(W, H)
+
+    // Web launcher — Q attaches to nose/roller (small targets pull to player; nose pulls player to wall)
+    this.webLauncher = new WebLauncherSystem()
+    this.webLauncher.setEnemies([this.nose as unknown as Enemy])
+    this.webLauncher.setWorldBounds(W, H)
+    // Tunnel walls are the screen edges; anchor wherever the projectile lands
+    this.webLauncher.setWallHitTest((x, y) => x < 60 || x > W - 60 || y < 90 || y > H - 60)
+
     this.weaponKeys = [
       Phaser.Input.Keyboard.KeyCodes.ONE,
       Phaser.Input.Keyboard.KeyCodes.TWO,
@@ -748,6 +758,7 @@ export default class BossRollerScene extends Phaser.Scene {
     // Player movement
     this.webbs.update(time, delta)
     this.weaponUseSystem.update(delta)
+    this.webLauncher.update(this, this.webbs, delta)
 
     // Weapon keys 1-8 → slots 0-7
     for (let i = 0; i < this.weaponKeys.length; i++) {
@@ -756,8 +767,14 @@ export default class BossRollerScene extends Phaser.Scene {
       }
     }
 
-    // Q → web anchor (browser-friendly replacement for right-click)
-    if (Phaser.Input.Keyboard.JustDown(this.qKey)) this.shootWebAnchor()
+    // Q → web launcher. If a launcher is equipped its strand also anchors the player
+    // against suction; otherwise fall back to the legacy fixed-wall anchor.
+    if (Phaser.Input.Keyboard.JustDown(this.qKey)) {
+      if (this.webLauncher.isEquipped(this.webbs)) this.webLauncher.onQPressed(this, this.webbs)
+      else                                          this.shootWebAnchor()
+    }
+    // The launcher's attached state doubles as the suction anchor for Phase 1
+    this.webAnchored = this.webAnchored || this.webLauncher.isAttachedToWall()
 
     // Pull HP back from Webbs (regen happens inside Webbs.update)
     this.playerHp = this.webbs.hp

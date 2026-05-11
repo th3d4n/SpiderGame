@@ -5,9 +5,10 @@ export const WEAPON_COLORS: Record<WeaponType, number> = {
   [WeaponType.Sword]:        0xc0c0c0, // silver
   [WeaponType.Bow]:          0x8b6914, // dark gold
   [WeaponType.Axe]:          0x888888, // steel gray
-  [WeaponType.BoxingGloves]: 0xff3333, // punchy red
+  [WeaponType.BoxingGloves]: 0xddccaa, // toothpick wood tone
   [WeaponType.Glider]:       0x87ceeb, // sky blue
   [WeaponType.FlameBreather]:0xff6600, // fire orange
+  [WeaponType.WebLauncher]:  0xeeeeff, // ghostly silk
 }
 
 // All Phase 1 weapons. requiredTier = minimum leg tier to equip in any unlocked slot.
@@ -20,23 +21,23 @@ export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
     requiredTier: 0,
   }],
   [WeaponType.Bow, {
-    name: 'Leg-Mounted Bow',
+    name: 'Web Bow',
     damage: 20,
     staminaCost: 10,
     type: 'ranged',
     requiredTier: 0,
   }],
   [WeaponType.BoxingGloves, {
-    name: 'Strapped Boxing Glove',
-    damage: 15,
+    name: 'Toothpick Stabber',
+    damage: 14,
     staminaCost: 5,
     type: 'melee',
     requiredTier: 0,
   }],
   [WeaponType.Axe, {
     name: 'Bolt-On Axe',
-    damage: 40,
-    staminaCost: 25,
+    damage: 50,
+    staminaCost: 28,
     type: 'melee',
     requiredTier: 1,
   }],
@@ -53,5 +54,12 @@ export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
     staminaCost: 30,
     type: 'ranged',
     requiredTier: 2,
+  }],
+  [WeaponType.WebLauncher, {
+    name: 'Web Launcher',
+    damage: 0,
+    staminaCost: 8,
+    type: 'utility',
+    requiredTier: 0,
   }],
 ])

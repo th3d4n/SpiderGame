@@ -133,13 +133,13 @@ export default class Webbs extends Phaser.GameObjects.Container {
         break
       }
       case WeaponType.BoxingGloves: {
-        // Red oval glove with white stitching
+        // Toothpick — long thin shaft, sharpened tip
+        g.lineStyle(2, c, 1)
+        g.lineBetween(0, 0, 18, 0)
         g.fillStyle(c, 1)
-        g.fillCircle(7, 0, 6)
-        g.lineStyle(1, 0x661111, 1)
-        g.strokeCircle(7, 0, 6)
-        g.fillStyle(0xffffff, 0.8)
-        g.fillRect(3, -1, 4, 2)
+        g.fillTriangle(16, -2, 16, 2, 22, 0)
+        g.lineStyle(1, 0x665533, 1)
+        g.strokeTriangle(16, -2, 16, 2, 22, 0)
         break
       }
       case WeaponType.Glider: {
@@ -160,6 +160,19 @@ export default class Webbs extends Phaser.GameObjects.Container {
         g.strokeRect(0, -3, 10, 6)
         g.fillStyle(c, 1)
         g.fillTriangle(10, -2, 10, 2, 16, 0)
+        break
+      }
+      case WeaponType.WebLauncher: {
+        // Spool of silk in a small housing — circle inside an open frame
+        g.lineStyle(1.5, 0x333344, 1)
+        g.strokeRect(0, -5, 12, 10)
+        g.fillStyle(c, 0.9)
+        g.fillCircle(6, 0, 3.5)
+        g.lineStyle(1, 0x888899, 1)
+        g.strokeCircle(6, 0, 3.5)
+        // Short strand peeking out
+        g.lineStyle(1, c, 1)
+        g.lineBetween(12, 0, 18, 0)
         break
       }
     }

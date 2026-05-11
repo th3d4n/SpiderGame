@@ -13,9 +13,10 @@ const WEAPON_INITIALS: Record<WeaponType, string> = {
   [WeaponType.Sword]:         'S',
   [WeaponType.Bow]:           'B',
   [WeaponType.Axe]:           'A',
-  [WeaponType.BoxingGloves]:  'G',
+  [WeaponType.BoxingGloves]:  'T',
   [WeaponType.Glider]:        'GL',
   [WeaponType.FlameBreather]: 'F',
+  [WeaponType.WebLauncher]:   'W',
 }
 
 export default class EquipScreen extends Phaser.Scene {
@@ -224,9 +225,12 @@ export default class EquipScreen extends Phaser.Scene {
         this.selectedSlot = i
         this.panelFocus   = 'left'
         if (this.inventory.length > 0 && this.selectedWeapon < this.inventory.length) {
-          const weapon = this.inventory[this.selectedWeapon]
+          const weapon   = this.inventory[this.selectedWeapon]
+          const existing = this.weaponSys.getSlot(i)
           if (this.weaponSys.equip(i, weapon)) {
             this.inventory.splice(this.selectedWeapon, 1)
+            // Displaced weapon returns to inventory rather than being destroyed
+            if (existing !== WeaponType.Empty) this.inventory.push(existing)
             if (this.selectedWeapon >= this.inventory.length) {
               this.selectedWeapon = Math.max(0, this.inventory.length - 1)
             }
@@ -250,11 +254,14 @@ export default class EquipScreen extends Phaser.Scene {
     // Equip
     if (JD(this.enterKey)) {
       if (this.inventory.length > 0 && this.selectedWeapon < this.inventory.length) {
-        const weapon = this.inventory[this.selectedWeapon]
-        this.weaponSys.equip(this.selectedSlot, weapon)
-        this.inventory.splice(this.selectedWeapon, 1)
-        if (this.selectedWeapon >= this.inventory.length) {
-          this.selectedWeapon = Math.max(0, this.inventory.length - 1)
+        const weapon   = this.inventory[this.selectedWeapon]
+        const existing = this.weaponSys.getSlot(this.selectedSlot)
+        if (this.weaponSys.equip(this.selectedSlot, weapon)) {
+          this.inventory.splice(this.selectedWeapon, 1)
+          if (existing !== WeaponType.Empty) this.inventory.push(existing)
+          if (this.selectedWeapon >= this.inventory.length) {
+            this.selectedWeapon = Math.max(0, this.inventory.length - 1)
+          }
         }
         this.redrawSlots()
         this.redrawInventory()

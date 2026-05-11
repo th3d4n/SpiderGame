@@ -14,29 +14,29 @@ const SWORD_STAMINA     = 10
 const SWORD_COOLDOWN    = 280
 const SWORD_KNOCKBACK   = 180
 
-// Axe — slow, wide cleave, big damage + knockback
-const AXE_RADIUS        = 60
-const AXE_SWEEP_DEG     = 160
-const AXE_DAMAGE        = 32
-const AXE_STAMINA       = 18
-const AXE_COOLDOWN      = 520
-const AXE_KNOCKBACK     = 420
+// Axe — slow heavy cleave, big damage + knockback
+const AXE_RADIUS        = 62
+const AXE_SWEEP_DEG     = 170
+const AXE_DAMAGE        = 44
+const AXE_STAMINA       = 22
+const AXE_COOLDOWN      = 760
+const AXE_KNOCKBACK     = 520
 
-// Boxing Gloves — short range, very fast, tight cone, heavy knockback
-const GLOVES_RADIUS     = 45
-const GLOVES_CONE_DEG   = 50
-const GLOVES_DAMAGE     = 12
+// Toothpick — long thin stab, narrow cone, modest damage but better reach
+const GLOVES_RADIUS     = 90
+const GLOVES_CONE_DEG   = 28
+const GLOVES_DAMAGE     = 14
 const GLOVES_STAMINA    = 5
-const GLOVES_COOLDOWN   = 160
-const GLOVES_KNOCKBACK  = 500
-const GLOVES_SHAKE_INT  = 0.01
-const GLOVES_SHAKE_DUR  = 100
+const GLOVES_COOLDOWN   = 220
+const GLOVES_KNOCKBACK  = 200
+const GLOVES_SHAKE_INT  = 0.006
+const GLOVES_SHAKE_DUR  = 70
 
-// Bow
-const BOW_SPEED         = 400
+// Bow — slowed projectile so it's dodgeable
+const BOW_SPEED         = 220
 const BOW_DAMAGE        = 22
 const BOW_STAMINA       = 12
-const BOW_COOLDOWN      = 350
+const BOW_COOLDOWN      = 380
 const BOW_PROJ_RADIUS   = 6
 const BOW_KNOCKBACK     = 220
 
@@ -206,23 +206,23 @@ export class WeaponUseSystem {
     webbs.stamina -= GLOVES_STAMINA
     this.cooldowns[slot] = GLOVES_COOLDOWN
 
-    // Punch graphic — short line in facing direction
+    // Stab graphic — long thin line tipped with a small triangle
     const gfx = scene.add.graphics().setDepth(10)
-    gfx.lineStyle(4, 0xff4444)
+    gfx.lineStyle(2, 0xeeddbb)
     const ex = webbs.x + webbs.facingX * GLOVES_RADIUS
     const ey = webbs.y + webbs.facingY * GLOVES_RADIUS
     gfx.lineBetween(webbs.x, webbs.y, ex, ey)
-    gfx.fillStyle(0xff4444)
-    gfx.fillCircle(ex, ey, 8)
+    gfx.fillStyle(0xeeddbb)
+    gfx.fillCircle(ex, ey, 4)
 
     scene.tweens.add({
       targets:    gfx,
       alpha:      0,
-      duration:   140,
+      duration:   160,
       onComplete: () => gfx.destroy(),
     })
 
-    webbs.playWeaponAnim(slot, 'punch', 160)
+    webbs.playWeaponAnim(slot, 'stab', 180)
 
     const facingAngle = Math.atan2(webbs.facingY, webbs.facingX)
     const halfCone    = Phaser.Math.DegToRad(GLOVES_CONE_DEG / 2)

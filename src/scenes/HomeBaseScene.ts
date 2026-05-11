@@ -6,6 +6,7 @@ import { MaterialType } from '../systems/CraftingSystem'
 import { CraftingSystem } from '../systems/CraftingSystem'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
+import { WebLauncherSystem } from '../systems/WebLauncherSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
 
 const WORLD_W   = 2560
@@ -21,6 +22,8 @@ export default class HomeBaseScene extends Phaser.Scene {
   private craftingSystem!:   CraftingSystem
   private pickupGroup!:      Phaser.Physics.Arcade.StaticGroup
   private weaponUseSystem!:  WeaponUseSystem
+  private webLauncher!:      WebLauncherSystem
+  private qKey!:             Phaser.Input.Keyboard.Key
   private weaponKeys:        Phaser.Input.Keyboard.Key[] = []
   private eKey!:             Phaser.Input.Keyboard.Key
   private transitioning      = false
@@ -112,10 +115,12 @@ export default class HomeBaseScene extends Phaser.Scene {
         }
       }
     } else {
-      // First-load loadout — broken sword and bolt-on axe welded to the prosthetic legs
+      // First-load loadout — broken sword and bolt-on axe welded to the prosthetic legs,
+      // plus the web launcher Saudi Webbs is never without
       this.webbs.weaponSystem.equip(0, WeaponType.Sword)
       this.webbs.weaponSystem.equip(1, WeaponType.Axe)
       this.webbs.weaponSystem.equip(2, WeaponType.BoxingGloves)
+      this.webbs.weaponSystem.equip(3, WeaponType.WebLauncher)
     }
     this.webbs.refreshLegColors()
 
@@ -146,6 +151,9 @@ export default class HomeBaseScene extends Phaser.Scene {
     // via JustDown in update) so they only fire when this scene is active.
     this.weaponUseSystem = new WeaponUseSystem()
     this.weaponUseSystem.setWorldBounds(WORLD_W, WORLD_H)
+    this.webLauncher     = new WebLauncherSystem()
+    this.webLauncher.setWorldBounds(WORLD_W, WORLD_H)
+    this.qKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q)
     this.weaponKeys = [
       Phaser.Input.Keyboard.KeyCodes.ONE,
       Phaser.Input.Keyboard.KeyCodes.TWO,
@@ -204,12 +212,18 @@ export default class HomeBaseScene extends Phaser.Scene {
 
     this.webbs.update(time, delta)
     this.weaponUseSystem.update(delta)
+    this.webLauncher.update(this, this.webbs, delta)
 
     // Weapon keys 1-8 → slots 0-7
     for (let i = 0; i < this.weaponKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
         this.weaponUseSystem.activateWeapon(i, this.webbs, this)
       }
+    }
+
+    // Q → web launcher (works in every scene that has one)
+    if (Phaser.Input.Keyboard.JustDown(this.qKey)) {
+      this.webLauncher.onQPressed(this, this.webbs)
     }
 
     // Workbench interaction — guard prevents re-launch on the frame CraftingMenu resumes

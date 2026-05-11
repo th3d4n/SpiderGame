@@ -4,14 +4,15 @@ export const WeaponType = {
   Sword:        'Sword',
   Bow:          'Bow',
   Axe:          'Axe',
-  BoxingGloves: 'BoxingGloves',
+  BoxingGloves: 'BoxingGloves',   // visual + behavior is now a toothpick stabber
   Glider:       'Glider',
   FlameBreather:'FlameBreather',
+  WebLauncher:  'WebLauncher',
 } as const
 
 export type WeaponType = (typeof WeaponType)[keyof typeof WeaponType]
 
-export type WeaponCategory = 'melee' | 'ranged' | 'traversal'
+export type WeaponCategory = 'melee' | 'ranged' | 'traversal' | 'utility'
 
 export interface WeaponConfig {
   name: string

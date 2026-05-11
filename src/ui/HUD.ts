@@ -17,9 +17,10 @@ const WEAPON_LABELS: Record<WeaponType, string> = {
   [WeaponType.Sword]:         'SW',
   [WeaponType.Bow]:           'BW',
   [WeaponType.Axe]:           'AX',
-  [WeaponType.BoxingGloves]:  'BX',
+  [WeaponType.BoxingGloves]:  'TP',
   [WeaponType.Glider]:        'GL',
   [WeaponType.FlameBreather]: 'FB',
+  [WeaponType.WebLauncher]:   'WL',
 }
 
 interface SlotVisual {
