@@ -36,6 +36,7 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
   protected speed:           number
   readonly  damage:          number
   readonly  knockbackResist: number
+  readonly  bodyRadius:      number
   readonly  loot:            LootDrop[]
   private   weakPoints:      WeakPointZone[]
   private   weakMultiplier:  number
@@ -43,6 +44,10 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
   private   _staggered       = false
   private   _dead            = false
   private   staggerTimer     = 0
+  private   _stuckThistles   = 0
+
+  addStuckThistle(): void { this._stuckThistles += 1 }
+  getStuckThistles(): number { return this._stuckThistles }
 
   constructor(
     scene:  Phaser.Scene,
@@ -59,6 +64,7 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
     this.weakMultiplier  = config.weakMultiplier
     this.staggerDuration = config.staggerDuration
     this.knockbackResist = config.knockbackResist ?? 0
+    this.bodyRadius      = config.bodyRadius
     this.loot            = config.loot ?? []
 
     scene.add.existing(this)
@@ -92,7 +98,11 @@ export default abstract class Enemy extends Phaser.GameObjects.Container {
       this._dead = true
       // Roll loot and announce death so the scene can spawn pickups at this position
       const dropped: LootDrop[] = this.loot.filter(d => Math.random() < d.chance)
-      this.scene.events.emit('enemyDied', { x: this.x, y: this.y, loot: dropped })
+      this.scene.events.emit('enemyDied', {
+        x: this.x, y: this.y,
+        loot: dropped,
+        stuckThistles: this._stuckThistles,
+      })
       this.onDeath()   // onDeath owns the visual from here; no flash tween conflict
       return
     }

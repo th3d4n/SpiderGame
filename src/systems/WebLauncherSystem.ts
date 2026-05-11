@@ -126,14 +126,14 @@ export class WebLauncherSystem {
         landed = true
       }
 
-      // Out of range / world
-      if (!landed && (
-        p.traveled > MAX_RANGE ||
-        p.arc.x < 0 || p.arc.x > this.worldW ||
-        p.arc.y < 0 || p.arc.y > this.worldH
-      )) {
-        this.release(scene)
-        return
+      // Reached max range or world edge — stick where it landed as a temporary anchor.
+      // (Web is always "sticky" — it stops mid-air at max range rather than vanishing.)
+      const outOfWorld = p.arc.x < 0 || p.arc.x > this.worldW || p.arc.y < 0 || p.arc.y > this.worldH
+      if (!landed && (p.traveled > MAX_RANGE || outOfWorld)) {
+        const lx = Phaser.Math.Clamp(p.arc.x, 4, this.worldW - 4)
+        const ly = Phaser.Math.Clamp(p.arc.y, 4, this.worldH - 4)
+        this.state.attached = { kind: 'wall', x: lx, y: ly }
+        landed = true
       }
 
       if (landed) {

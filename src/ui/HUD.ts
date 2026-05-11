@@ -45,6 +45,8 @@ export default class HUDScene extends Phaser.Scene {
   private healthBar!:   BarVisual
   private healthText!:  Phaser.GameObjects.Text
   private zoneText!:    Phaser.GameObjects.Text
+  private ammoText!:    Phaser.GameObjects.Text
+  private ammoPanel!:   Phaser.GameObjects.Rectangle
 
   constructor() {
     super({ key: 'HUDScene' })
@@ -54,8 +56,25 @@ export default class HUDScene extends Phaser.Scene {
     const { width, height } = this.scale
     this.buildZonePanel()
     this.buildHealthPanel(width)
+    this.buildAmmoPanel(width)
     this.buildBarsPanel(width, height)
     this.buildWeaponRing(width, height)
+  }
+
+  // ── Thistle ammo counter — only visible while a bow is equipped ──────────
+
+  private buildAmmoPanel(width: number) {
+    const w = 130, h = 26
+    const x = width - w - 10, y = 50
+    this.ammoPanel = this.add.rectangle(x + w / 2, y + h / 2, w, h, PANEL_BG, 0.9)
+      .setStrokeStyle(1, 0xaa88cc)
+    this.ammoText = this.add.text(x + 10, y + h / 2, '✱ THISTLES: 0', {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#cc99ff',
+    }).setOrigin(0, 0.5)
+    this.ammoPanel.setVisible(false)
+    this.ammoText.setVisible(false)
   }
 
   // ── Zone label — top left ────────────────────────────────────────────────
@@ -190,6 +209,18 @@ export default class HUDScene extends Phaser.Scene {
     this.setBarWidth(this.energyBar,  energy   / (energyMax   || 1))
     this.updateHealthBar(health, healthMax)
     this.updateWeaponSlots(weaponSlots, unlockedCount)
+    this.updateAmmo(weaponSlots)
+  }
+
+  private updateAmmo(slots: WeaponType[]): void {
+    const bowEquipped = slots.some(s => s === WeaponType.Bow)
+    this.ammoPanel.setVisible(bowEquipped)
+    this.ammoText.setVisible(bowEquipped)
+    if (!bowEquipped) return
+    const inv = (this.registry.get('craftingInventory') as Record<string, number> | null) ?? {}
+    const count = inv['Thistle'] ?? 0
+    this.ammoText.setText(`✱ THISTLES: ${count}`)
+    this.ammoText.setColor(count > 0 ? '#cc99ff' : '#cc4455')
   }
 
   private setBarWidth(bar: BarVisual, ratio: number): void {

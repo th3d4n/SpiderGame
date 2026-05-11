@@ -6,6 +6,7 @@ const MAT_COLORS: Partial<Record<MaterialType, number>> = {
   [MaterialType.ChitinShard]: 0x886633,
   [MaterialType.CrystalDust]: 0x888899,
   [MaterialType.VenomGland]:  0x44aa44,
+  [MaterialType.Thistle]:     0xcc99ff,
 }
 
 const MAT_LABELS: Partial<Record<MaterialType, string>> = {
@@ -13,6 +14,7 @@ const MAT_LABELS: Partial<Record<MaterialType, string>> = {
   [MaterialType.ChitinShard]: 'Chitin',
   [MaterialType.CrystalDust]: 'Crystal',
   [MaterialType.VenomGland]:  'Venom',
+  [MaterialType.Thistle]:     'Thistle',
 }
 
 export default class Pickup extends Phaser.GameObjects.Container {

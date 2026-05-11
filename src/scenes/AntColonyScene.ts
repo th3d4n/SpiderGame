@@ -93,6 +93,17 @@ export default class AntColonyScene extends Phaser.Scene {
     // Pickup group
     this.pickupGroup = this.physics.add.staticGroup()
 
+    // Scatter a few thistles around the maze as bow ammo to discover
+    const thistleSeeds = [
+      { x: 5400, y: 1480 }, { x: 4600, y: 1500 }, { x: 3700, y: 800  },
+      { x: 3000, y: 2450 }, { x: 2200, y: 700  }, { x: 1400, y: 1500 },
+      { x: 800,  y: 900  }, { x: 350,  y: 500  },
+    ]
+    for (const t of thistleSeeds) {
+      const p = new Pickup(this, t.x, t.y, 'Thistle', 1, this.craftingSystem)
+      this.pickupGroup.add(p, true)
+    }
+
     // Spawn Webbs right next to the home portal
     this.webbs = new Webbs(this, HOME_PORTAL_X - 90, HOME_PORTAL_Y)
     this.webbs.resetHp(this.health)
@@ -124,9 +135,13 @@ export default class AntColonyScene extends Phaser.Scene {
       },
     )
 
-    // Enemy loot drops
-    this.events.on('enemyDied', this.spawnLootAt, this)
-    this.events.once('shutdown', () => this.events.off('enemyDied', this.spawnLootAt, this))
+    // Enemy loot drops + bow ammo recovery
+    this.events.on('enemyDied',      this.spawnLootAt,       this)
+    this.events.on('thistleDropped', this.spawnThistleAt,    this)
+    this.events.once('shutdown', () => {
+      this.events.off('enemyDied',      this.spawnLootAt,       this)
+      this.events.off('thistleDropped', this.spawnThistleAt,    this)
+    })
 
     // Weapon systems
     this.weaponUseSystem = new WeaponUseSystem()
@@ -275,8 +290,9 @@ export default class AntColonyScene extends Phaser.Scene {
     // Side chambers are formed by horizontal ceiling/floor walls plus vertical dividers.
 
     // CEILING of corridor (separates corridor from upper chambers)
-    // Has gaps at column centers so player can drop UP into upper chambers
-    const ceilingGapsX = [800, 2200, 3700, 4900]
+    // Has gaps at column centers so player can drop UP into upper chambers.
+    // The x=300 gap is the only route into the upper-left boss antechamber.
+    const ceilingGapsX = [300, 800, 2200, 3700, 4900]
     let prevX = T
     for (const gx of ceilingGapsX) {
       walls.push({ x: prevX, y: 1250, w: gx - 180 - prevX, h: 50 })
@@ -347,7 +363,7 @@ export default class AntColonyScene extends Phaser.Scene {
     }
 
     // Corridor ceiling gaps
-    for (const gx of [800, 2200, 3700, 4900]) drawGap(gx, 1275)
+    for (const gx of [300, 800, 2200, 3700, 4900]) drawGap(gx, 1275)
     // Corridor floor gaps
     for (const gx of [1400, 3000, 4400])      drawGap(gx, 1700)
     // Vertical divider gaps (corridor-height openings)
@@ -526,8 +542,8 @@ export default class AntColonyScene extends Phaser.Scene {
     this.time.delayedCall(700, () => this.scene.start('HomeBaseScene'))
   }
 
-  private spawnLootAt(data: { x: number, y: number, loot: Array<{ material: MaterialType, quantity: number }> }): void {
-    // Loot first
+  private spawnLootAt(data: { x: number, y: number, loot: Array<{ material: MaterialType, quantity: number }>, stuckThistles?: number }): void {
+    // Material loot
     if (data.loot && data.loot.length > 0) {
       data.loot.forEach((drop, i) => {
         const offX = (i - (data.loot.length - 1) / 2) * 22
@@ -535,8 +551,23 @@ export default class AntColonyScene extends Phaser.Scene {
         this.pickupGroup.add(p, true)
       })
     }
-    // Then bookkeep — mark the matching spawn point dead for respawn
+    // Each thistle embedded in the corpse has a 70-90% chance to be recoverable.
+    const stuck = data.stuckThistles ?? 0
+    for (let i = 0; i < stuck; i++) {
+      const chance = Phaser.Math.FloatBetween(0.7, 0.9)
+      if (Math.random() < chance) {
+        const offX = Phaser.Math.Between(-26, 26)
+        const offY = Phaser.Math.Between(-14, 14)
+        this.spawnThistleAt({ x: data.x + offX, y: data.y + offY })
+      }
+    }
+    // Mark the spawn point for respawn
     this.markEnemyDead(data.x, data.y)
+  }
+
+  private spawnThistleAt(data: { x: number, y: number }): void {
+    const p = new Pickup(this, data.x, data.y, 'Thistle', 1, this.craftingSystem)
+    this.pickupGroup.add(p, true)
   }
 
   // ── Squeeze-through animation ─────────────────────────────────────────────

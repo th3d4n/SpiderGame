@@ -15,6 +15,7 @@ const MAT_ABBREV: Record<MaterialType, string> = {
   WebFluid:     'WBF',
   CrystalDust:  'CRS',
   BoneFragment: 'BNF',
+  Thistle:      'THS',
 }
 
 function formatCost(materials: Partial<Record<MaterialType, number>>): string {

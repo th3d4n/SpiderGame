@@ -7,6 +7,7 @@ export const MaterialType = {
   WebFluid:     'WebFluid',
   CrystalDust:  'CrystalDust',
   BoneFragment: 'BoneFragment',
+  Thistle:      'Thistle',     // bow ammunition — fired by Web Bow, recoverable on miss/kill
 } as const
 export type MaterialType = (typeof MaterialType)[keyof typeof MaterialType]
 

@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import Webbs, { PLAYER_MAX_HP } from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
 import Pickup from '../entities/Pickup'
+import WeaponPickup from '../entities/WeaponPickup'
 import { MaterialType } from '../systems/CraftingSystem'
 import { CraftingSystem } from '../systems/CraftingSystem'
 import { WeaponType } from '../systems/WeaponSystem'
@@ -21,6 +22,7 @@ export default class HomeBaseScene extends Phaser.Scene {
   private workbench!:        Workbench
   private craftingSystem!:   CraftingSystem
   private pickupGroup!:      Phaser.Physics.Arcade.StaticGroup
+  private weaponPickupGroup!:Phaser.Physics.Arcade.StaticGroup
   private weaponUseSystem!:  WeaponUseSystem
   private webLauncher!:      WebLauncherSystem
   private qKey!:             Phaser.Input.Keyboard.Key
@@ -79,6 +81,7 @@ export default class HomeBaseScene extends Phaser.Scene {
 
     // Pickup group
     this.pickupGroup = this.physics.add.staticGroup()
+    this.weaponPickupGroup = this.physics.add.staticGroup()
 
     // Spawn pickups around home base — skip those previously collected this run
     const pickupDefs = [
@@ -90,6 +93,9 @@ export default class HomeBaseScene extends Phaser.Scene {
       { x: 1400, y: 580, mat: 'SilkThread',  qty: 1 },
       { x: 1600, y: 560, mat: 'CrystalDust', qty: 1 },
       { x: 1800, y: 575, mat: 'ChitinShard', qty: 2 },
+      { x: 1500, y: 540, mat: 'Thistle',     qty: 1 },
+      { x: 2000, y: 550, mat: 'Thistle',     qty: 1 },
+      { x: 700,  y: 540, mat: 'Thistle',     qty: 1 },
     ]
     const collected = (this.registry.get('pickupsCollected_HomeBaseScene') as number[] | undefined) ?? []
     pickupDefs.forEach(({ x, y, mat, qty }, i) => {
@@ -98,6 +104,13 @@ export default class HomeBaseScene extends Phaser.Scene {
       p.pickupId = i
       this.pickupGroup.add(p, true)
     })
+
+    // Toothpick weapon pickup — only the FIRST melee weapon Webbs can find. Skip if already grabbed.
+    const grabbedWeapons = (this.registry.get('weaponPickupsCollected') as string[] | undefined) ?? []
+    if (!grabbedWeapons.includes('hb-toothpick')) {
+      const tp = new WeaponPickup(this, 1200, FLOOR_Y - 30, WeaponType.BoxingGloves, 'hb-toothpick')
+      this.weaponPickupGroup.add(tp, true)
+    }
 
     // Spawn Webbs — position depends on which direction we entered from
     const spawnX = ZoneTransitionSystem.spawnX(this, WORLD_W, WORLD_W / 2 - 200)
@@ -115,12 +128,9 @@ export default class HomeBaseScene extends Phaser.Scene {
         }
       }
     } else {
-      // First-load loadout — broken sword and bolt-on axe welded to the prosthetic legs,
-      // plus the web launcher Saudi Webbs is never without
-      this.webbs.weaponSystem.equip(0, WeaponType.Sword)
-      this.webbs.weaponSystem.equip(1, WeaponType.Axe)
-      this.webbs.weaponSystem.equip(2, WeaponType.BoxingGloves)
-      this.webbs.weaponSystem.equip(3, WeaponType.WebLauncher)
+      // First-load loadout — Webbs only has his web launcher to start.
+      // Everything else must be found in the world or crafted.
+      this.webbs.weaponSystem.equip(0, WeaponType.WebLauncher)
     }
     this.webbs.refreshLegColors()
 
@@ -147,12 +157,28 @@ export default class HomeBaseScene extends Phaser.Scene {
       },
     )
 
+    // Weapon pickups → drop into inventory and mark collected so they don't respawn
+    this.physics.add.overlap(
+      this.webbs,
+      this.weaponPickupGroup,
+      (_webbs, pickup) => {
+        const wp = pickup as unknown as WeaponPickup
+        if (wp.collect()) {
+          const arr = (this.registry.get('weaponPickupsCollected') as string[] | undefined) ?? []
+          if (!arr.includes(wp.pickupId)) arr.push(wp.pickupId)
+          this.registry.set('weaponPickupsCollected', arr)
+        }
+      },
+    )
+
     // Weapon use system — keys 1-8 registered as tracked Key objects (checked
     // via JustDown in update) so they only fire when this scene is active.
     this.weaponUseSystem = new WeaponUseSystem()
     this.weaponUseSystem.setWorldBounds(WORLD_W, WORLD_H)
     this.webLauncher     = new WebLauncherSystem()
     this.webLauncher.setWorldBounds(WORLD_W, WORLD_H)
+    // Home base has no walls — webs always anchor at projectile endpoint (handled by max-range stick)
+    this.webLauncher.setWallHitTest(() => false)
     this.qKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q)
     this.weaponKeys = [
       Phaser.Input.Keyboard.KeyCodes.ONE,

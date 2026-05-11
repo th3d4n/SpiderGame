@@ -32,8 +32,8 @@ const GLOVES_KNOCKBACK  = 200
 const GLOVES_SHAKE_INT  = 0.006
 const GLOVES_SHAKE_DUR  = 70
 
-// Bow — slowed projectile so it's dodgeable
-const BOW_SPEED         = 220
+// Web Bow — slowed projectile so it's dodgeable; consumes a Thistle from inventory per shot
+const BOW_SPEED         = 320
 const BOW_DAMAGE        = 22
 const BOW_STAMINA       = 12
 const BOW_COOLDOWN      = 380
@@ -47,7 +47,8 @@ const FLAME_ENERGY_RATE = 2     // per frame
 const FLAME_DPS         = 18    // damage per second → checked each tick
 
 interface Projectile {
-  arc: Phaser.GameObjects.Arc
+  arc:       Phaser.GameObjects.Arc
+  isThistle: boolean
 }
 
 export class WeaponUseSystem {
@@ -184,11 +185,24 @@ export class WeaponUseSystem {
   // ── Bow ──────────────────────────────────────────────────────────────────
 
   private fireBow(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
+    // Web Bow fires thistles drawn from the player's inventory in the registry
+    const inv: Record<string, number> = scene.registry.get('craftingInventory') ?? {}
+    const thistleCount = inv['Thistle'] ?? 0
+    if (thistleCount <= 0) {
+      // Out of ammo — emit a tick so the HUD can flash a warning
+      scene.events.emit('bowOutOfAmmo')
+      return
+    }
     if (webbs.stamina < BOW_STAMINA) return
     webbs.stamina -= BOW_STAMINA
     this.cooldowns[slot] = BOW_COOLDOWN
 
-    const proj = scene.add.arc(webbs.x, webbs.y, BOW_PROJ_RADIUS, 0, 360, false, 0x44aa44)
+    // Consume one thistle and persist back to the registry
+    inv['Thistle'] = thistleCount - 1
+    scene.registry.set('craftingInventory', inv)
+
+    const proj = scene.add.arc(webbs.x, webbs.y, BOW_PROJ_RADIUS, 0, 360, false, 0xcc99ff)
+    proj.setStrokeStyle(1, 0xffffff, 0.6)
     proj.setDepth(10)
     scene.physics.add.existing(proj)
     const projBody = proj.body as Phaser.Physics.Arcade.Body
@@ -196,7 +210,7 @@ export class WeaponUseSystem {
     projBody.setVelocity(webbs.facingX * BOW_SPEED, webbs.facingY * BOW_SPEED)
 
     webbs.playWeaponAnim(slot, 'draw', 220)
-    this.projectiles.push({ arc: proj })
+    this.projectiles.push({ arc: proj, isThistle: true })
   }
 
   // ── Boxing Gloves — quick straight jab, no arc sweep ─────────────────────
@@ -230,7 +244,7 @@ export class WeaponUseSystem {
     for (const enemy of this.enemies) {
       if (enemy.isDead()) continue
       const dist = Phaser.Math.Distance.Between(webbs.x, webbs.y, enemy.x, enemy.y)
-      if (dist > GLOVES_RADIUS + 20) continue
+      if (dist - enemy.bodyRadius > GLOVES_RADIUS) continue
       const toEnemy = Math.atan2(enemy.y - webbs.y, enemy.x - webbs.x)
       const diff    = Math.abs(Phaser.Math.Angle.Wrap(toEnemy - facingAngle))
       if (diff <= halfCone) {
@@ -292,7 +306,10 @@ export class WeaponUseSystem {
     for (const enemy of this.enemies) {
       if (enemy.isDead()) continue
       const dist = Phaser.Math.Distance.Between(webbs.x, webbs.y, enemy.x, enemy.y)
-      if (dist > radius) continue
+      // Edge-of-range counts: if any part of the enemy's body is inside the swing,
+      // it gets hit. Subtracting enemy bodyRadius from center-to-center distance
+      // lets the axe connect when the player just barely clips the side of a beetle.
+      if (dist - enemy.bodyRadius > radius) continue
       const toEnemy = Math.atan2(enemy.y - webbs.y, enemy.x - webbs.x)
       const diff    = Math.abs(Phaser.Math.Angle.Wrap(toEnemy - facingAngle))
       if (diff <= halfRad) {
@@ -339,22 +356,26 @@ export class WeaponUseSystem {
       const { arc } = proj
       if (!arc.active) { toRemove.push(proj); continue }
 
-      // Out of world bounds
-      if (
+      // Out of world bounds — thistle drops at last visible position so it can be picked back up
+      const outOfWorld =
         arc.x < 0 || arc.x > this.worldW ||
         arc.y < 0 || arc.y > this.worldH
-      ) {
+      if (outOfWorld) {
+        const lx = Phaser.Math.Clamp(arc.x, 8, this.worldW  - 8)
+        const ly = Phaser.Math.Clamp(arc.y, 8, this.worldH - 8)
+        if (proj.isThistle) arc.scene.events.emit('thistleDropped', { x: lx, y: ly })
         arc.destroy()
         toRemove.push(proj)
         continue
       }
 
-      // Enemy hits
+      // Enemy hits — checked against body edges so an arrow grazing the side counts
       let hit = false
       for (const enemy of this.enemies) {
         if (enemy.isDead()) continue
         const dist = Phaser.Math.Distance.Between(arc.x, arc.y, enemy.x, enemy.y)
-        if (dist < BOW_PROJ_RADIUS + 20) {
+        if (dist - enemy.bodyRadius < BOW_PROJ_RADIUS + 4) {
+          if (proj.isThistle) enemy.addStuckThistle()
           enemy.takeDamage(BOW_DAMAGE, WeakPointZone.Body)
           // Knockback in the projectile's direction of travel
           const body = arc.body as Phaser.Physics.Arcade.Body
