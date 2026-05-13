@@ -35,6 +35,11 @@ const RESPAWN_MS = 18000
 // Squeeze-through animation — kicks in inside narrow corridors
 const SQUEEZE_TRIGGER_GAP = 110
 
+// Pickup detection — generous radius so any leg or the body rolls over it
+const PICKUP_REACH = 50
+// Web Launcher pickup-attach radius
+const WEB_PICKUP_HIT = 24
+
 type EnemyKind = 'centipede' | 'beetle'
 interface Wall { x: number; y: number; w: number; h: number }
 interface SpawnPoint { kind: EnemyKind; x: number; y: number; respawnTimer: number; alive: boolean; ref?: CentipedeAmbusher | BeetleTank }
@@ -62,6 +67,8 @@ export default class AntColonyScene extends Phaser.Scene {
   private stamina        = 100
   private energy         = 100
   private contactCooldown = 0
+  // Last weapon-key pressed — left-click reuses this slot with mouse-aim
+  private activeSlot      = -1
 
   constructor() {
     super({ key: 'AntColonyScene' })
@@ -126,14 +133,8 @@ export default class AntColonyScene extends Phaser.Scene {
     this.registry.set('weaponInventory', (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? [])
     this.events.on('resume', () => { this.webbs.refreshLegColors() })
 
-    // Pickup overlap
-    this.physics.add.overlap(
-      this.webbs, this.pickupGroup,
-      (_w, pickup) => {
-        (pickup as unknown as Pickup).collect()
-        this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
-      },
-    )
+    // Pickup collection runs through a manual proximity sweep in update() so the
+    // entire spider — body and legs — picks things up, not just the tiny body box.
 
     // Enemy loot drops + bow ammo recovery
     this.events.on('enemyDied',      this.spawnLootAt,       this)
@@ -149,6 +150,17 @@ export default class AntColonyScene extends Phaser.Scene {
     this.webLauncher     = new WebLauncherSystem()
     this.webLauncher.setWorldBounds(WORLD_W, WORLD_H)
     this.webLauncher.setWallHitTest((x, y) => this.pointInWall(x, y))
+    // Web can reel in any active pickup orb
+    this.webLauncher.setPickupHitTest((wx, wy) => {
+      for (const obj of this.pickupGroup.getChildren()) {
+        const p = obj as unknown as Pickup
+        if (!p.active) continue
+        if (Phaser.Math.Distance.Between(wx, wy, p.x, p.y) < WEB_PICKUP_HIT) {
+          return { x: p.x, y: p.y, active: p.active, collect: () => this.collectMaterialPickup(p) }
+        }
+      }
+      return null
+    })
     this.weaponKeys = [
       Phaser.Input.Keyboard.KeyCodes.ONE,
       Phaser.Input.Keyboard.KeyCodes.TWO,
@@ -173,6 +185,12 @@ export default class AntColonyScene extends Phaser.Scene {
         this.registry.set('equipCallerScene', 'AntColonyScene')
         this.scene.launch('EquipScreen')
       }
+    })
+
+    // Left-click → re-fire the last-used weapon toward the mouse cursor
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.button !== 0) return
+      this.fireActiveWeaponAtPointer(pointer)
     })
 
     // Camera
@@ -221,12 +239,23 @@ export default class AntColonyScene extends Phaser.Scene {
 
     for (let i = 0; i < this.weaponKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
-        this.weaponUseSystem.activateWeapon(i, this.webbs, this)
+        const weapon = this.webbs.weaponSystem.getSlot(i)
+        if (weapon === WeaponType.Empty) continue
+        this.activeSlot = i
+        const aim = this.aimToPointer()
+        if (weapon === WeaponType.WebLauncher) {
+          this.webLauncher.onQPressed(this, this.webbs, aim)
+        } else {
+          this.weaponUseSystem.activateWeapon(i, this.webbs, this, aim)
+        }
       }
     }
     if (Phaser.Input.Keyboard.JustDown(this.qKey)) {
-      this.webLauncher.onQPressed(this, this.webbs)
+      this.webLauncher.onQPressed(this, this.webbs, this.aimToPointer())
     }
+
+    // Pickup proximity sweep — body + legs roll over pickups
+    this.collectPickupsInRange()
 
     // Enemy ticking + respawn timers
     for (const sp of this.spawnPoints) {
@@ -613,6 +642,40 @@ export default class AntColonyScene extends Phaser.Scene {
       if (this.pointInWall(x + dx * d, y + dy * d)) return d
     }
     return MAX
+  }
+
+  // ── Pickup / input helpers ────────────────────────────────────────────────
+
+  private aimToPointer(): { dx: number, dy: number } {
+    const p = this.input.activePointer
+    return { dx: p.worldX - this.webbs.x, dy: p.worldY - this.webbs.y }
+  }
+
+  private fireActiveWeaponAtPointer(pointer: Phaser.Input.Pointer): void {
+    if (this.activeSlot < 0) return
+    const weapon = this.webbs.weaponSystem.getSlot(this.activeSlot)
+    if (weapon === WeaponType.Empty) return
+    const aim = { dx: pointer.worldX - this.webbs.x, dy: pointer.worldY - this.webbs.y }
+    if (weapon === WeaponType.WebLauncher) {
+      this.webLauncher.onQPressed(this, this.webbs, aim)
+    } else {
+      this.weaponUseSystem.activateWeapon(this.activeSlot, this.webbs, this, aim)
+    }
+  }
+
+  private collectPickupsInRange(): void {
+    for (const obj of this.pickupGroup.getChildren()) {
+      const p = obj as unknown as Pickup
+      if (!p.active) continue
+      if (Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, p.x, p.y) < PICKUP_REACH) {
+        this.collectMaterialPickup(p)
+      }
+    }
+  }
+
+  private collectMaterialPickup(p: Pickup): void {
+    p.collect()
+    this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
   }
 
   private syncRegistry(): void {

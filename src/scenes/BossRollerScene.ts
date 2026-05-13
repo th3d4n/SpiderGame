@@ -79,6 +79,8 @@ export default class BossRollerScene extends Phaser.Scene {
   private weaponUseSystem!:   WeaponUseSystem
   private webLauncher!:       WebLauncherSystem
   private weaponKeys:         Phaser.Input.Keyboard.Key[] = []
+  // Last weapon-key pressed — left-click reuses this slot with mouse-aim
+  private activeSlot          = -1
 
   // UI
   private noseHpBar!:      Phaser.GameObjects.Graphics
@@ -170,6 +172,12 @@ export default class BossRollerScene extends Phaser.Scene {
       Phaser.Input.Keyboard.KeyCodes.SEVEN,
       Phaser.Input.Keyboard.KeyCodes.EIGHT,
     ].map(code => this.input.keyboard!.addKey(code))
+
+    // Left-click → re-fire the last-used weapon toward the mouse cursor
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.button !== 0) return
+      this.fireActiveWeaponAtPointer(pointer)
+    })
 
     // Anchor line graphic (drawn each frame when anchored)
     this.anchorLine = this.add.graphics()
@@ -342,6 +350,25 @@ export default class BossRollerScene extends Phaser.Scene {
     this.registry.set('health',    this.playerHp)
     this.registry.set('healthMax', PLAYER_MAX_HP)
     this.registry.set('zoneName',  'ANT COLONY — BOSS')
+  }
+
+  // ── Mouse aim helpers ─────────────────────────────────────────────────────
+
+  private aimToPointer(): { dx: number, dy: number } {
+    const p = this.input.activePointer
+    return { dx: p.worldX - this.webbs.x, dy: p.worldY - this.webbs.y }
+  }
+
+  private fireActiveWeaponAtPointer(pointer: Phaser.Input.Pointer): void {
+    if (this.activeSlot < 0) return
+    const weapon = this.webbs.weaponSystem.getSlot(this.activeSlot)
+    if (weapon === WeaponType.Empty) return
+    const aim = { dx: pointer.worldX - this.webbs.x, dy: pointer.worldY - this.webbs.y }
+    if (weapon === WeaponType.WebLauncher) {
+      this.webLauncher.onQPressed(this, this.webbs, aim)
+    } else {
+      this.weaponUseSystem.activateWeapon(this.activeSlot, this.webbs, this, aim)
+    }
   }
 
   // ── Player damage ─────────────────────────────────────────────────────────
@@ -760,17 +787,25 @@ export default class BossRollerScene extends Phaser.Scene {
     this.weaponUseSystem.update(delta)
     this.webLauncher.update(this, this.webbs, delta)
 
-    // Weapon keys 1-8 → slots 0-7
+    // Weapon keys 1-8 → fire that slot AND mark it active for left-click reuse
     for (let i = 0; i < this.weaponKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
-        this.weaponUseSystem.activateWeapon(i, this.webbs, this)
+        const weapon = this.webbs.weaponSystem.getSlot(i)
+        if (weapon === WeaponType.Empty) continue
+        this.activeSlot = i
+        const aim = this.aimToPointer()
+        if (weapon === WeaponType.WebLauncher) {
+          this.webLauncher.onQPressed(this, this.webbs, aim)
+        } else {
+          this.weaponUseSystem.activateWeapon(i, this.webbs, this, aim)
+        }
       }
     }
 
     // Q → web launcher. If a launcher is equipped its strand also anchors the player
     // against suction; otherwise fall back to the legacy fixed-wall anchor.
     if (Phaser.Input.Keyboard.JustDown(this.qKey)) {
-      if (this.webLauncher.isEquipped(this.webbs)) this.webLauncher.onQPressed(this, this.webbs)
+      if (this.webLauncher.isEquipped(this.webbs)) this.webLauncher.onQPressed(this, this.webbs, this.aimToPointer())
       else                                          this.shootWebAnchor()
     }
     // The launcher's attached state doubles as the suction anchor for Phase 1

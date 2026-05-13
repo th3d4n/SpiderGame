@@ -3,32 +3,45 @@ import type Enemy from '../entities/Enemy'
 import Webbs from '../entities/Webbs'
 import { WeaponType } from './WeaponSystem'
 
-// The Web Launcher fires a silk strand in the player's facing direction. It
-// attaches to whatever it hits first (enemy, pickup, or wall). A second Q press
-// within the double-tap window triggers a pull:
-//   - Small/movable target → target is yanked to the player
-//   - Heavy or immovable target (wall, boss) → player is yanked to the target
-// A single Q with no follow-up releases after IDLE_RELEASE_MS.
+// Web Launcher — fires a silk strand toward an aim direction (mouse or facing).
+// Auto-anchors / auto-pulls based on what it hits:
+//   - Pickup  → strand reels the pickup toward the player; on contact it auto-collects.
+//   - Enemy   → light enemies are yanked to the player; heavy enemies pull the player.
+//   - Wall    → briefly yanks the player toward the wall, then stays attached as an
+//               anchor (used by the boss fight to resist suction).
+//   - Nothing → after max range the strand recalls back to the player and releases.
 
 const PROJECTILE_SPEED      = 700
 const MAX_RANGE             = 480
-const DOUBLE_TAP_WINDOW_MS  = 380
 const PULL_DURATION_MS      = 350
 const PULL_VELOCITY         = 900
 const IDLE_RELEASE_MS       = 4500
 const COOLDOWN_MS           = 220
 const STAMINA_COST          = 8
 
-// Anything with this much "mass" or more gets treated as immovable for pull purposes
+// Anything with this much "mass" or more pulls the player instead of being pulled.
 const PLAYER_PULL_MASS_THRESHOLD = 0.5
 
+// How close a pulled pickup needs to be before it auto-collects.
+const PICKUP_REACH = 36
+
+// Recall-phase release radius (when the recalled projectile gets back to player).
+const RECALL_RELEASE = 18
+
+export interface PullablePickup {
+  x: number
+  y: number
+  active: boolean
+  collect: () => unknown
+}
+
 type Target =
-  | { kind: 'enemy',   ref: Enemy }
-  | { kind: 'wall',    x: number, y: number }       // static world point
-  | { kind: 'object',  ref: Phaser.GameObjects.GameObject & { x: number, y: number, body?: Phaser.Physics.Arcade.Body } }
+  | { kind: 'enemy',  ref: Enemy }
+  | { kind: 'wall',   x: number, y: number }
+  | { kind: 'pickup', ref: PullablePickup }
 
 interface WebState {
-  projectile?: { arc: Phaser.GameObjects.Arc, vx: number, vy: number, traveled: number }
+  projectile?: { arc: Phaser.GameObjects.Arc, vx: number, vy: number, traveled: number, recalling: boolean }
   attached?:   Target
   line?:       Phaser.GameObjects.Graphics
   age:         number
@@ -37,20 +50,19 @@ interface WebState {
 }
 
 export class WebLauncherSystem {
-  private state:        WebState | null = null
-  private lastFireTime  = -Infinity
-  private cooldown      = 0
-  private enemies:      Enemy[] = []
-  private worldW        = 6000
-  private worldH        = 3000
-  private wallHitTest:  (x: number, y: number) => boolean = () => false
+  private state:           WebState | null = null
+  private cooldown         = 0
+  private enemies:         Enemy[] = []
+  private worldW           = 6000
+  private worldH           = 3000
+  private wallHitTest:     (x: number, y: number) => boolean = () => false
+  private pickupHitTest:   (x: number, y: number) => PullablePickup | null = () => null
 
   setEnemies(enemies: Enemy[]): void   { this.enemies = enemies }
   setWorldBounds(w: number, h: number): void { this.worldW = w; this.worldH = h }
-  // Scene supplies a function that returns true when a point is inside a wall
   setWallHitTest(fn: (x: number, y: number) => boolean): void { this.wallHitTest = fn }
+  setPickupHitTest(fn: (x: number, y: number) => PullablePickup | null): void { this.pickupHitTest = fn }
 
-  // Returns the slot index of any equipped Web Launcher, or -1
   private equippedSlot(webbs: Webbs): number {
     for (let i = 0; i < 8; i++) {
       if (webbs.weaponSystem.getSlot(i) === WeaponType.WebLauncher) return i
@@ -58,28 +70,17 @@ export class WebLauncherSystem {
     return -1
   }
 
-  isEquipped(webbs: Webbs): boolean {
-    return this.equippedSlot(webbs) >= 0
-  }
+  isEquipped(webbs: Webbs): boolean { return this.equippedSlot(webbs) >= 0 }
+  isAttachedToWall(): boolean       { return this.state?.attached?.kind === 'wall' }
+  isAttached(): boolean             { return !!this.state?.attached }
 
-  isAttachedToWall(): boolean {
-    return this.state?.attached?.kind === 'wall'
-  }
-
-  isAttached(): boolean {
-    return !!this.state?.attached
-  }
-
-  // Called whenever Q is pressed (JustDown)
-  onQPressed(scene: Phaser.Scene, webbs: Webbs): void {
+  // Called whenever Q is pressed. If a web is in flight or attached, cancel it. Otherwise fire.
+  onQPressed(scene: Phaser.Scene, webbs: Webbs, aim?: { dx: number, dy: number }): void {
     const slot = this.equippedSlot(webbs)
     if (slot < 0) return
-    const now = scene.time.now
 
-    // If we already have an attached web and we're inside the double-tap window, pull.
-    if (this.state?.attached && (now - this.lastFireTime) < DOUBLE_TAP_WINDOW_MS) {
-      this.startPull(webbs)
-      this.lastFireTime = now
+    if (this.state) {
+      this.release(scene)
       return
     }
 
@@ -87,11 +88,8 @@ export class WebLauncherSystem {
     if (webbs.stamina < STAMINA_COST) return
     webbs.stamina -= STAMINA_COST
 
-    // Cancel any prior shot and start a new one
-    this.release(scene)
-    this.fire(scene, webbs, slot)
+    this.fire(scene, webbs, slot, aim)
     this.cooldown = COOLDOWN_MS
-    this.lastFireTime = now
   }
 
   update(scene: Phaser.Scene, webbs: Webbs, delta: number): void {
@@ -107,78 +105,110 @@ export class WebLauncherSystem {
       p.arc.y += p.vy * (delta / 1000)
       p.traveled += Math.hypot(p.vx, p.vy) * (delta / 1000)
 
-      // Hit-tests
-      let landed = false
+      if (p.recalling) {
+        // Aim the projectile back at the player every frame so it tracks
+        const angle = Phaser.Math.Angle.Between(p.arc.x, p.arc.y, webbs.x, webbs.y)
+        p.vx = Math.cos(angle) * PROJECTILE_SPEED
+        p.vy = Math.sin(angle) * PROJECTILE_SPEED
+
+        if (Phaser.Math.Distance.Between(p.arc.x, p.arc.y, webbs.x, webbs.y) < RECALL_RELEASE) {
+          this.release(scene)
+          return
+        }
+        this.drawLine(scene, webbs)
+        return
+      }
+
+      // Pickup
+      const pickupHit = this.pickupHitTest(p.arc.x, p.arc.y)
+      if (pickupHit) {
+        this.state.attached = { kind: 'pickup', ref: pickupHit }
+        this.landProjectile(scene, pickupHit.x, pickupHit.y)
+        this.startPull(webbs)
+        this.drawLine(scene, webbs)
+        return
+      }
 
       // Enemy
       for (const e of this.enemies) {
         if (e.isDead()) continue
         if (Phaser.Math.Distance.Between(p.arc.x, p.arc.y, e.x, e.y) < 28) {
           this.state.attached = { kind: 'enemy', ref: e }
-          landed = true
-          break
+          this.landProjectile(scene, e.x, e.y)
+          this.startPull(webbs)
+          this.drawLine(scene, webbs)
+          return
         }
       }
 
       // Wall
-      if (!landed && this.wallHitTest(p.arc.x, p.arc.y)) {
+      if (this.wallHitTest(p.arc.x, p.arc.y)) {
         this.state.attached = { kind: 'wall', x: p.arc.x, y: p.arc.y }
-        landed = true
+        this.landProjectile(scene, p.arc.x, p.arc.y)
+        this.startPull(webbs)
+        this.drawLine(scene, webbs)
+        return
       }
 
-      // Reached max range or world edge — stick where it landed as a temporary anchor.
-      // (Web is always "sticky" — it stops mid-air at max range rather than vanishing.)
+      // Max range or out of world → switch to recall (no attachment)
       const outOfWorld = p.arc.x < 0 || p.arc.x > this.worldW || p.arc.y < 0 || p.arc.y > this.worldH
-      if (!landed && (p.traveled > MAX_RANGE || outOfWorld)) {
-        const lx = Phaser.Math.Clamp(p.arc.x, 4, this.worldW - 4)
-        const ly = Phaser.Math.Clamp(p.arc.y, 4, this.worldH - 4)
-        this.state.attached = { kind: 'wall', x: lx, y: ly }
-        landed = true
+      if (p.traveled > MAX_RANGE || outOfWorld) {
+        p.recalling = true
+        p.traveled = 0
       }
 
-      if (landed) {
-        p.arc.destroy()
-        this.state.projectile = undefined
-        // Brief impact flash at landing point
-        const flashX = this.state.attached!.kind === 'enemy'
-          ? (this.state.attached as Extract<Target, { kind: 'enemy' }>).ref.x
-          : (this.state.attached as Extract<Target, { kind: 'wall' }>).x
-        const flashY = this.state.attached!.kind === 'enemy'
-          ? (this.state.attached as Extract<Target, { kind: 'enemy' }>).ref.y
-          : (this.state.attached as Extract<Target, { kind: 'wall' }>).y
-        const flash = scene.add.arc(flashX, flashY, 10, 0, 360, false, 0xffffff, 0.6).setDepth(11)
-        scene.tweens.add({ targets: flash, alpha: 0, scaleX: 2, scaleY: 2, duration: 220, onComplete: () => flash.destroy() })
-      }
+      this.drawLine(scene, webbs)
+      return
     }
 
     // Active pull
     if (this.state.attached && this.state.pulling) {
       this.state.pullElapsed += delta
-      this.applyPullVelocity(webbs)
+      this.applyPullVelocity(webbs, delta)
+
+      // Pickups auto-collect when close enough — release the web on collect
+      if (this.state.attached.kind === 'pickup') {
+        const pk = this.state.attached.ref
+        if (!pk.active || Phaser.Math.Distance.Between(pk.x, pk.y, webbs.x, webbs.y) < PICKUP_REACH) {
+          if (pk.active) pk.collect()
+          this.release(scene)
+          return
+        }
+      }
+
       if (this.state.pullElapsed >= PULL_DURATION_MS) {
-        this.release(scene)
-        return
+        // Walls stay attached after the yank so the player can hold the anchor.
+        // Enemies/pickups release after the yank completes.
+        this.state.pulling = false
+        if (this.state.attached.kind !== 'wall') {
+          this.release(scene)
+          return
+        }
       }
     }
 
-    // Auto-release attached webs after the idle window
+    // Auto-release after idle window
     if (this.state.attached && !this.state.pulling && this.state.age > IDLE_RELEASE_MS) {
       this.release(scene)
       return
     }
 
-    // Draw the strand from player to current endpoint
     this.drawLine(scene, webbs)
   }
 
-  private fire(scene: Phaser.Scene, webbs: Webbs, slot: number): void {
-    const vx = webbs.facingX * PROJECTILE_SPEED
-    const vy = webbs.facingY * PROJECTILE_SPEED
+  private fire(scene: Phaser.Scene, webbs: Webbs, slot: number, aim?: { dx: number, dy: number }): void {
+    let dx = webbs.facingX
+    let dy = webbs.facingY
+    if (aim) {
+      const len = Math.hypot(aim.dx, aim.dy) || 1
+      dx = aim.dx / len
+      dy = aim.dy / len
+    }
     const arc = scene.add.arc(webbs.x, webbs.y, 5, 0, 360, false, 0xeeeeff).setDepth(10)
     arc.setStrokeStyle(1, 0xaaaacc)
 
     this.state = {
-      projectile:  { arc, vx, vy, traveled: 0 },
+      projectile:  { arc, vx: dx * PROJECTILE_SPEED, vy: dy * PROJECTILE_SPEED, traveled: 0, recalling: false },
       age:         0,
       pulling:     false,
       pullElapsed: 0,
@@ -186,16 +216,22 @@ export class WebLauncherSystem {
     webbs.playWeaponAnim(slot, 'draw', 240)
   }
 
+  private landProjectile(scene: Phaser.Scene, x: number, y: number): void {
+    if (!this.state?.projectile) return
+    this.state.projectile.arc.destroy()
+    this.state.projectile = undefined
+    const flash = scene.add.arc(x, y, 10, 0, 360, false, 0xffffff, 0.6).setDepth(11)
+    scene.tweens.add({ targets: flash, alpha: 0, scaleX: 2, scaleY: 2, duration: 220, onComplete: () => flash.destroy() })
+  }
+
   private startPull(webbs: Webbs): void {
     if (!this.state?.attached) return
     this.state.pulling = true
     this.state.pullElapsed = 0
-    // Immediate kick — applyPullVelocity will keep refreshing it
-    this.applyPullVelocity(webbs)
+    this.applyPullVelocity(webbs, 0)
   }
 
-  // Decide whether the target moves or the player moves, then set velocity.
-  private applyPullVelocity(webbs: Webbs): void {
+  private applyPullVelocity(webbs: Webbs, delta: number): void {
     if (!this.state?.attached) return
     const target = this.state.attached
 
@@ -203,18 +239,22 @@ export class WebLauncherSystem {
       const e = target.ref
       const heavy = e.knockbackResist >= PLAYER_PULL_MASS_THRESHOLD
       if (heavy) {
-        // Pull player to enemy
         const angle = Phaser.Math.Angle.Between(webbs.x, webbs.y, e.x, e.y)
         webbs.pb.setVelocity(Math.cos(angle) * PULL_VELOCITY, Math.sin(angle) * PULL_VELOCITY)
       } else {
-        // Yank enemy to player
         const angle = Phaser.Math.Angle.Between(e.x, e.y, webbs.x, webbs.y)
         e.pb.setVelocity(Math.cos(angle) * PULL_VELOCITY, Math.sin(angle) * PULL_VELOCITY)
       }
     } else if (target.kind === 'wall') {
-      // Walls always pull the player
       const angle = Phaser.Math.Angle.Between(webbs.x, webbs.y, target.x, target.y)
       webbs.pb.setVelocity(Math.cos(angle) * PULL_VELOCITY, Math.sin(angle) * PULL_VELOCITY)
+    } else if (target.kind === 'pickup') {
+      // Pickup has no body — translate its container position directly toward the player
+      const pk = target.ref
+      const angle = Phaser.Math.Angle.Between(pk.x, pk.y, webbs.x, webbs.y)
+      const step  = PULL_VELOCITY * (delta / 1000)
+      pk.x += Math.cos(angle) * step
+      pk.y += Math.sin(angle) * step
     }
   }
 
@@ -233,12 +273,11 @@ export class WebLauncherSystem {
       ey = this.state.projectile.arc.y
     } else if (this.state.attached) {
       const a = this.state.attached
-      if (a.kind === 'enemy')      { ex = a.ref.x; ey = a.ref.y }
-      else if (a.kind === 'wall')  { ex = a.x;     ey = a.y     }
-      else                         { ex = a.ref.x; ey = a.ref.y }
+      if      (a.kind === 'enemy')  { ex = a.ref.x; ey = a.ref.y }
+      else if (a.kind === 'wall')   { ex = a.x;     ey = a.y     }
+      else                          { ex = a.ref.x; ey = a.ref.y }
     }
     g.lineBetween(webbs.x, webbs.y, ex, ey)
-    // Anchor dot
     g.fillStyle(0xeeeeff, 1)
     g.fillCircle(ex, ey, 3)
   }
@@ -248,10 +287,8 @@ export class WebLauncherSystem {
     if (this.state.projectile) this.state.projectile.arc.destroy()
     if (this.state.line)       this.state.line.destroy()
     this.state = null
-    // scene param kept for future cleanup hooks (sound, particles)
     void scene
   }
 
-  // Convenience for scenes that want to forcibly end the web (e.g. on shutdown)
   forceRelease(scene: Phaser.Scene): void { this.release(scene) }
 }

@@ -17,6 +17,11 @@ const FLOOR_Y   = WORLD_H - 60   // visual floor top edge
 // Left-exit trigger
 const LEFT_TRIGGER = 100
 
+// Pickup detection — generous radius so any leg or the body rolls over it
+const PICKUP_REACH = 50
+// Web Launcher pickup-attach radius
+const WEB_PICKUP_HIT = 24
+
 export default class HomeBaseScene extends Phaser.Scene {
   private webbs!:            Webbs
   private workbench!:        Workbench
@@ -36,6 +41,8 @@ export default class HomeBaseScene extends Phaser.Scene {
   private stamina   = 100
   private energy    = 100
   private contactCooldown = 0
+  // Last weapon-key pressed — left-click reuses this slot with mouse-aim
+  private activeSlot      = -1
 
   constructor() {
     super({ key: 'HomeBaseScene' })
@@ -141,35 +148,9 @@ export default class HomeBaseScene extends Phaser.Scene {
     // Refresh leg colors when EquipScreen closes and this scene resumes
     this.events.on('resume', () => { this.webbs.refreshLegColors() })
 
-    // Overlap: collect pickups on contact, then persist collected ID + inventory
-    this.physics.add.overlap(
-      this.webbs,
-      this.pickupGroup,
-      (_webbs, pickup) => {
-        const p = pickup as unknown as Pickup
-        if (p.pickupId >= 0) {
-          const arr = (this.registry.get('pickupsCollected_HomeBaseScene') as number[] | undefined) ?? []
-          if (!arr.includes(p.pickupId)) arr.push(p.pickupId)
-          this.registry.set('pickupsCollected_HomeBaseScene', arr)
-        }
-        p.collect()
-        this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
-      },
-    )
-
-    // Weapon pickups → drop into inventory and mark collected so they don't respawn
-    this.physics.add.overlap(
-      this.webbs,
-      this.weaponPickupGroup,
-      (_webbs, pickup) => {
-        const wp = pickup as unknown as WeaponPickup
-        if (wp.collect()) {
-          const arr = (this.registry.get('weaponPickupsCollected') as string[] | undefined) ?? []
-          if (!arr.includes(wp.pickupId)) arr.push(wp.pickupId)
-          this.registry.set('weaponPickupsCollected', arr)
-        }
-      },
-    )
+    // Pickup collection is handled by a manual proximity sweep in update() so
+    // that the entire spider — body and legs — registers contact, not just the
+    // tiny default container body.
 
     // Weapon use system — keys 1-8 registered as tracked Key objects (checked
     // via JustDown in update) so they only fire when this scene is active.
@@ -177,8 +158,30 @@ export default class HomeBaseScene extends Phaser.Scene {
     this.weaponUseSystem.setWorldBounds(WORLD_W, WORLD_H)
     this.webLauncher     = new WebLauncherSystem()
     this.webLauncher.setWorldBounds(WORLD_W, WORLD_H)
-    // Home base has no walls — webs always anchor at projectile endpoint (handled by max-range stick)
-    this.webLauncher.setWallHitTest(() => false)
+    // Treat world edges + floor + ceiling strip as wall surfaces so the web
+    // can anchor on them. Missed shots fall through to the recall path.
+    this.webLauncher.setWallHitTest((x, y) =>
+      x <= 4 || x >= WORLD_W - 4 || y <= 30 || y >= FLOOR_Y
+    )
+    // Web can reel in pickups (material orbs or weapon pickups). collect() also
+    // runs the scene's persistence logic so reeled-in pickups stay collected.
+    this.webLauncher.setPickupHitTest((wx, wy) => {
+      for (const obj of this.pickupGroup.getChildren()) {
+        const p = obj as unknown as Pickup
+        if (!p.active) continue
+        if (Phaser.Math.Distance.Between(wx, wy, p.x, p.y) < WEB_PICKUP_HIT) {
+          return { x: p.x, y: p.y, active: p.active, collect: () => this.collectMaterialPickup(p) }
+        }
+      }
+      for (const obj of this.weaponPickupGroup.getChildren()) {
+        const wp = obj as unknown as WeaponPickup
+        if (!wp.active) continue
+        if (Phaser.Math.Distance.Between(wx, wy, wp.x, wp.y) < WEB_PICKUP_HIT) {
+          return { x: wp.x, y: wp.y, active: wp.active, collect: () => this.collectWeaponPickup(wp) }
+        }
+      }
+      return null
+    })
     this.qKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q)
     this.weaponKeys = [
       Phaser.Input.Keyboard.KeyCodes.ONE,
@@ -200,6 +203,12 @@ export default class HomeBaseScene extends Phaser.Scene {
         this.registry.set('equipCallerScene', 'HomeBaseScene')
         this.scene.launch('EquipScreen')
       }
+    })
+
+    // Left-click → re-fire the last-used weapon toward the mouse cursor
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.button !== 0) return
+      this.fireActiveWeaponAtPointer(pointer)
     })
 
     // Camera
@@ -240,17 +249,28 @@ export default class HomeBaseScene extends Phaser.Scene {
     this.weaponUseSystem.update(delta)
     this.webLauncher.update(this, this.webbs, delta)
 
-    // Weapon keys 1-8 → slots 0-7
+    // Weapon keys 1-8 → fire that slot AND set it as the active slot for left-click
     for (let i = 0; i < this.weaponKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
-        this.weaponUseSystem.activateWeapon(i, this.webbs, this)
+        const weapon = this.webbs.weaponSystem.getSlot(i)
+        if (weapon === WeaponType.Empty) continue
+        this.activeSlot = i
+        const aim = this.aimToPointer()
+        if (weapon === WeaponType.WebLauncher) {
+          this.webLauncher.onQPressed(this, this.webbs, aim)
+        } else {
+          this.weaponUseSystem.activateWeapon(i, this.webbs, this, aim)
+        }
       }
     }
 
     // Q → web launcher (works in every scene that has one)
     if (Phaser.Input.Keyboard.JustDown(this.qKey)) {
-      this.webLauncher.onQPressed(this, this.webbs)
+      this.webLauncher.onQPressed(this, this.webbs, this.aimToPointer())
     }
+
+    // Run proximity-based pickup collection every frame
+    this.collectPickupsInRange()
 
     // Workbench interaction — guard prevents re-launch on the frame CraftingMenu resumes
     if (!this.scene.isActive('CraftingMenu') && this.workbench.update(this.webbs, this.eKey)) {
@@ -645,6 +665,60 @@ export default class HomeBaseScene extends Phaser.Scene {
       frequency: 160,
       quantity:  1,
     }).setDepth(2)
+  }
+
+  // ── Pickup / input helpers ────────────────────────────────────────────────
+
+  private aimToPointer(): { dx: number, dy: number } {
+    const p = this.input.activePointer
+    return { dx: p.worldX - this.webbs.x, dy: p.worldY - this.webbs.y }
+  }
+
+  private fireActiveWeaponAtPointer(pointer: Phaser.Input.Pointer): void {
+    if (this.activeSlot < 0) return
+    const weapon = this.webbs.weaponSystem.getSlot(this.activeSlot)
+    if (weapon === WeaponType.Empty) return
+    const aim = { dx: pointer.worldX - this.webbs.x, dy: pointer.worldY - this.webbs.y }
+    if (weapon === WeaponType.WebLauncher) {
+      this.webLauncher.onQPressed(this, this.webbs, aim)
+    } else {
+      this.weaponUseSystem.activateWeapon(this.activeSlot, this.webbs, this, aim)
+    }
+  }
+
+  private collectPickupsInRange(): void {
+    for (const obj of this.pickupGroup.getChildren()) {
+      const p = obj as unknown as Pickup
+      if (!p.active) continue
+      if (Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, p.x, p.y) < PICKUP_REACH) {
+        this.collectMaterialPickup(p)
+      }
+    }
+    for (const obj of this.weaponPickupGroup.getChildren()) {
+      const wp = obj as unknown as WeaponPickup
+      if (!wp.active) continue
+      if (Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, wp.x, wp.y) < PICKUP_REACH) {
+        this.collectWeaponPickup(wp)
+      }
+    }
+  }
+
+  private collectMaterialPickup(p: Pickup): void {
+    if (p.pickupId >= 0) {
+      const arr = (this.registry.get('pickupsCollected_HomeBaseScene') as number[] | undefined) ?? []
+      if (!arr.includes(p.pickupId)) arr.push(p.pickupId)
+      this.registry.set('pickupsCollected_HomeBaseScene', arr)
+    }
+    p.collect()
+    this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
+  }
+
+  private collectWeaponPickup(wp: WeaponPickup): void {
+    if (wp.collect()) {
+      const arr = (this.registry.get('weaponPickupsCollected') as string[] | undefined) ?? []
+      if (!arr.includes(wp.pickupId)) arr.push(wp.pickupId)
+      this.registry.set('weaponPickupsCollected', arr)
+    }
   }
 
   private syncRegistry(): void {

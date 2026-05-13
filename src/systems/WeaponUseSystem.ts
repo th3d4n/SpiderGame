@@ -80,16 +80,36 @@ export class WeaponUseSystem {
   }
 
   // ── One-shot weapon activation ────────────────────────────────────────────
+  // `aim` lets the caller override the firing direction (e.g. mouse cursor).
+  // When provided, webbs.facingX/Y is temporarily overridden for the synchronous
+  // fire* call and restored before returning — fire methods read facing once at
+  // activation, so the projectile/melee gets the right direction.
 
-  activateWeapon(legSlot: number, webbs: Webbs, scene: Phaser.Scene): void {
+  activateWeapon(legSlot: number, webbs: Webbs, scene: Phaser.Scene, aim?: { dx: number, dy: number }): void {
     if (this.cooldowns[legSlot] > 0) return
     const weaponType = webbs.weaponSystem.getSlot(legSlot)
+    if (weaponType === WeaponType.Empty) return
 
-    switch (weaponType) {
-      case WeaponType.Sword:        this.fireSword(legSlot, webbs, scene);  break
-      case WeaponType.Axe:          this.fireAxe(legSlot, webbs, scene);    break
-      case WeaponType.Bow:          this.fireBow(legSlot, webbs, scene);    break
-      case WeaponType.BoxingGloves: this.fireGloves(legSlot, webbs, scene); break
+    const oldFx = webbs.facingX
+    const oldFy = webbs.facingY
+    if (aim) {
+      const len = Math.hypot(aim.dx, aim.dy) || 1
+      webbs.facingX = aim.dx / len
+      webbs.facingY = aim.dy / len
+    }
+
+    try {
+      switch (weaponType) {
+        case WeaponType.Sword:        this.fireSword(legSlot, webbs, scene);  break
+        case WeaponType.Axe:          this.fireAxe(legSlot, webbs, scene);    break
+        case WeaponType.Bow:          this.fireBow(legSlot, webbs, scene);    break
+        case WeaponType.BoxingGloves: this.fireGloves(legSlot, webbs, scene); break
+      }
+    } finally {
+      if (aim) {
+        webbs.facingX = oldFx
+        webbs.facingY = oldFy
+      }
     }
   }
 
