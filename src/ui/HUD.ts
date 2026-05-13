@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
+import { drawWeaponIcon } from './WeaponIcon'
 
 const ACCENT     = 0x7777ff
 const ACCENT_STR = '#7777ff'
@@ -12,30 +13,16 @@ const SLOT_RING_R = 55  // radius of the slot arrangement ring
 const SLOT_R      = 13  // radius of each individual slot circle
 const SLOT_COUNT  = 8
 
-const WEAPON_LABELS: Record<WeaponType, string> = {
-  [WeaponType.Empty]:         '·',
-  [WeaponType.Sword]:         'SW',
-  [WeaponType.Bow]:           'BW',
-  [WeaponType.Axe]:           'AX',
-  [WeaponType.BoxingGloves]:  'TP',
-  [WeaponType.Glider]:        'GL',
-  [WeaponType.FlameBreather]: 'FB',
-  [WeaponType.WebLauncher]:   'WL',
-}
-
 interface SlotVisual {
   bg:    Phaser.GameObjects.Arc
   label: Phaser.GameObjects.Text
+  icon:  Phaser.GameObjects.Graphics
 }
 
 interface BarVisual {
   fill: Phaser.GameObjects.Rectangle
   maxW: number
   barH: number
-}
-
-function numToHex(n: number): string {
-  return '#' + n.toString(16).padStart(6, '0')
 }
 
 export default class HUDScene extends Phaser.Scene {
@@ -181,13 +168,15 @@ export default class HUDScene extends Phaser.Scene {
       const bg = this.add.arc(sx, sy, SLOT_R, 0, 360, false, PANEL_BG)
       bg.setStrokeStyle(1.5, LOCKED_COL)
 
+      const icon = this.add.graphics().setPosition(sx, sy).setScale(0.55)
+
       const label = this.add.text(sx, sy, '×', {
         fontFamily: 'monospace',
         fontSize: '9px',
         color: DIM_STR,
       }).setOrigin(0.5)
 
-      this.slotVisuals.push({ bg, label })
+      this.slotVisuals.push({ bg, label, icon })
     }
   }
 
@@ -238,26 +227,29 @@ export default class HUDScene extends Phaser.Scene {
 
   private updateWeaponSlots(slots: WeaponType[], unlockedCount: number): void {
     for (let i = 0; i < SLOT_COUNT; i++) {
-      const { bg, label } = this.slotVisuals[i]
+      const { bg, label, icon } = this.slotVisuals[i]
       const weapon  = slots[i]
       const unlocked = i < unlockedCount
+
+      icon.clear()
 
       if (!unlocked) {
         bg.setFillStyle(0x080810)
         bg.setStrokeStyle(1.5, LOCKED_COL)
-        label.setText('×').setColor(DIM_STR)
+        label.setText('×').setColor(DIM_STR).setVisible(true)
         continue
       }
 
       if (weapon === WeaponType.Empty) {
         bg.setFillStyle(PANEL_BG)
         bg.setStrokeStyle(1.5, ACCENT)
-        label.setText('·').setColor('#555566')
+        label.setText('·').setColor('#555566').setVisible(true)
       } else {
         const col = WEAPON_COLORS[weapon]
         bg.setFillStyle(PANEL_BG)
         bg.setStrokeStyle(1.5, col)
-        label.setText(WEAPON_LABELS[weapon]).setColor(numToHex(col))
+        drawWeaponIcon(icon, weapon, col)
+        label.setVisible(false)
       }
     }
   }

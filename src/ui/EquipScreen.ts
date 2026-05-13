@@ -1,23 +1,13 @@
 import Phaser from 'phaser'
 import { WeaponType, WeaponSystem } from '../systems/WeaponSystem'
-import { WEAPON_COLORS } from '../config/WeaponData'
+import { WEAPON_COLORS, WEAPON_DATA, WEAPON_STATS } from '../config/WeaponData'
+import { drawWeaponIcon } from './WeaponIcon'
 
 const ACCENT      = 0x7777ff
 const ACCENT_STR  = '#7777ff'
 const PANEL_BG    = 0x0d0d1a
 const SLOT_RING_R = 100  // radius of slot ring in equip screen
 const SLOT_R      = 18
-
-const WEAPON_INITIALS: Record<WeaponType, string> = {
-  [WeaponType.Empty]:         '--',
-  [WeaponType.Sword]:         'S',
-  [WeaponType.Bow]:           'B',
-  [WeaponType.Axe]:           'A',
-  [WeaponType.BoxingGloves]:  'T',
-  [WeaponType.Glider]:        'GL',
-  [WeaponType.FlameBreather]: 'F',
-  [WeaponType.WebLauncher]:   'W',
-}
 
 export default class EquipScreen extends Phaser.Scene {
   // Navigation state
@@ -26,9 +16,16 @@ export default class EquipScreen extends Phaser.Scene {
   private selectedWeapon  = 0
 
   // Visual references for dirty-redraw
-  private slotCircles:  Phaser.GameObjects.Arc[]  = []
-  private slotLabels:   Phaser.GameObjects.Text[] = []
+  private slotCircles:  Phaser.GameObjects.Arc[]      = []
+  private slotIcons:    Phaser.GameObjects.Graphics[] = []
+  private slotLabels:   Phaser.GameObjects.Text[]     = []
   private weaponRows:   Phaser.GameObjects.Container[] = []
+
+  // Detail / tooltip panel
+  private detailName!:  Phaser.GameObjects.Text
+  private detailIcon!:  Phaser.GameObjects.Graphics
+  private detailStats!: Phaser.GameObjects.Text
+  private detailBlurb!: Phaser.GameObjects.Text
 
   // Data
   private weaponSys!: WeaponSystem
@@ -51,6 +48,7 @@ export default class EquipScreen extends Phaser.Scene {
     this.selectedSlot  = 0
     this.selectedWeapon = 0
     this.slotCircles   = []
+    this.slotIcons     = []
     this.slotLabels    = []
     this.weaponRows    = []
 
@@ -58,14 +56,16 @@ export default class EquipScreen extends Phaser.Scene {
     this.weaponSys = this.registry.get('weaponSystemRef') as WeaponSystem
     this.inventory = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
 
-    // Pause the gameplay scene while the equip screen is open
+    // Pause the gameplay scene while the equip screen is open. Also sleep the
+    // HUD so its bottom-left bars don't show through the controls hint.
     const callerScene = this.registry.get('equipCallerScene') as string ?? 'HomeBaseScene'
     this.scene.pause(callerScene)
+    if (this.scene.isActive('HUDScene')) this.scene.sleep('HUDScene')
 
     const { width, height } = this.scale
 
     // Dark overlay
-    this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.72)
+    this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.78)
 
     // Title
     this.add.text(width / 2, 28, 'LOADOUT', {
@@ -76,10 +76,12 @@ export default class EquipScreen extends Phaser.Scene {
 
     this.buildLeftPanel(width, height)
     this.buildRightPanel(width)
-    this.buildControls(height)
+    this.buildDetailPanel(width, height)
+    this.buildControls(width, height)
     this.setupInput()
     this.redrawSlots()
     this.redrawInventory()
+    this.refreshDetailPanel()
   }
 
   // ── Left panel — 8 leg slot circles in ring ──────────────────────────────
@@ -108,6 +110,11 @@ export default class EquipScreen extends Phaser.Scene {
       circle.setStrokeStyle(1.5, 0x333344)
       this.slotCircles.push(circle)
 
+      // Weapon icon (hidden when slot is empty)
+      const icon = this.add.graphics().setPosition(sx, sy).setScale(0.85)
+      this.slotIcons.push(icon)
+
+      // Fallback label (slot number or × for locked / · for empty)
       const label = this.add.text(sx, sy, `${i + 1}`, {
         fontFamily: 'monospace',
         fontSize:   '9px',
@@ -143,7 +150,38 @@ export default class EquipScreen extends Phaser.Scene {
     }).setOrigin(0, 0)
   }
 
-  private buildControls(height: number): void {
+  // ── Detail / tooltip panel — bottom strip showing the focused weapon ─────
+
+  private buildDetailPanel(width: number, height: number): void {
+    const panelW = width - 80, panelH = 92
+    const px = 40, py = height - panelH - 92
+
+    this.add.rectangle(px + panelW / 2, py + panelH / 2, panelW, panelH, PANEL_BG, 0.9)
+      .setStrokeStyle(1, 0x222233)
+
+    // Icon on the left
+    this.detailIcon = this.add.graphics().setPosition(px + 36, py + panelH / 2).setScale(1.6)
+
+    // Weapon name + range/type line
+    this.detailName = this.add.text(px + 70, py + 16, '', {
+      fontFamily: 'monospace',
+      fontSize:   '14px',
+      color:      '#ccccdd',
+    })
+    this.detailStats = this.add.text(px + 70, py + 36, '', {
+      fontFamily: 'monospace',
+      fontSize:   '11px',
+      color:      '#888899',
+    })
+    this.detailBlurb = this.add.text(px + 70, py + 58, '', {
+      fontFamily: 'monospace',
+      fontSize:   '10px',
+      color:      '#666677',
+      wordWrap:   { width: panelW - 100 },
+    })
+  }
+
+  private buildControls(width: number, height: number): void {
     const controls = [
       ['1-8',   'Equip weapon to that slot'],
       ['ENTER', 'Equip to selected slot'],
@@ -153,8 +191,9 @@ export default class EquipScreen extends Phaser.Scene {
       ['I/ESC', 'Close'],
     ]
 
-    const startX = 20
+    // Bottom-right corner so the controls don't overlap the detail panel
     const startY = height - 12 - controls.length * 16
+    const startX = width - 290
 
     for (let i = 0; i < controls.length; i++) {
       const [key, desc] = controls[i]
@@ -203,6 +242,7 @@ export default class EquipScreen extends Phaser.Scene {
       const callerScene = this.registry.get('equipCallerScene') as string ?? 'HomeBaseScene'
       this.registry.set('weaponInventory', [...this.inventory])
       this.scene.resume(callerScene)
+      if (this.scene.isSleeping('HUDScene')) this.scene.wake('HUDScene')
       this.scene.stop('EquipScreen')
       return
     }
@@ -212,11 +252,13 @@ export default class EquipScreen extends Phaser.Scene {
       this.panelFocus = 'left'
       this.redrawSlots()
       this.redrawInventory()
+      this.refreshDetailPanel()
     }
     if (JD(this.cursors.right!)) {
       this.panelFocus = 'right'
       this.redrawSlots()
       this.redrawInventory()
+      this.refreshDetailPanel()
     }
 
     // Number keys → select slot, and equip the current weapon immediately if one is selected
@@ -238,16 +280,17 @@ export default class EquipScreen extends Phaser.Scene {
         }
         this.redrawSlots()
         this.redrawInventory()
+        this.refreshDetailPanel()
       }
     }
 
     if (this.panelFocus === 'left') {
-      if (JD(this.cursors.up!))   { this.selectedSlot = (this.selectedSlot + 7) % 8; this.redrawSlots() }
-      if (JD(this.cursors.down!)) { this.selectedSlot = (this.selectedSlot + 1) % 8; this.redrawSlots() }
+      if (JD(this.cursors.up!))   { this.selectedSlot = (this.selectedSlot + 7) % 8; this.redrawSlots(); this.refreshDetailPanel() }
+      if (JD(this.cursors.down!)) { this.selectedSlot = (this.selectedSlot + 1) % 8; this.redrawSlots(); this.refreshDetailPanel() }
     } else {
       if (this.inventory.length > 0) {
-        if (JD(this.cursors.up!))   { this.selectedWeapon = (this.selectedWeapon + this.inventory.length - 1) % this.inventory.length; this.redrawInventory() }
-        if (JD(this.cursors.down!)) { this.selectedWeapon = (this.selectedWeapon + 1) % this.inventory.length; this.redrawInventory() }
+        if (JD(this.cursors.up!))   { this.selectedWeapon = (this.selectedWeapon + this.inventory.length - 1) % this.inventory.length; this.redrawInventory(); this.refreshDetailPanel() }
+        if (JD(this.cursors.down!)) { this.selectedWeapon = (this.selectedWeapon + 1) % this.inventory.length; this.redrawInventory(); this.refreshDetailPanel() }
       }
     }
 
@@ -265,6 +308,7 @@ export default class EquipScreen extends Phaser.Scene {
         }
         this.redrawSlots()
         this.redrawInventory()
+        this.refreshDetailPanel()
       }
     }
 
@@ -276,6 +320,7 @@ export default class EquipScreen extends Phaser.Scene {
         this.inventory.push(current)
         this.redrawSlots()
         this.redrawInventory()
+        this.refreshDetailPanel()
       }
     }
   }
@@ -285,36 +330,35 @@ export default class EquipScreen extends Phaser.Scene {
   private redrawSlots(): void {
     for (let i = 0; i < 8; i++) {
       const circle = this.slotCircles[i]
+      const icon   = this.slotIcons[i]
       const label  = this.slotLabels[i]
       const locked = !this.weaponSys.isSlotUnlocked(i)
       const weapon = this.weaponSys.getSlot(i)
       const isSel  = this.panelFocus === 'left' && i === this.selectedSlot
 
+      icon.clear()
+
       if (locked) {
         circle.setStrokeStyle(1, 0x1a1a22, 0.5)
-        label.setText('×').setColor('#1a1a22')
-      } else if (isSel) {
-        circle.setStrokeStyle(2.5, ACCENT)
-        if (weapon !== WeaponType.Empty) {
-          const col = WEAPON_COLORS[weapon]
-          label.setText(WEAPON_INITIALS[weapon]).setColor('#' + col.toString(16).padStart(6, '0'))
-        } else {
-          label.setText('?').setColor(ACCENT_STR)
-        }
-      } else if (weapon !== WeaponType.Empty) {
-        const col = WEAPON_COLORS[weapon]
-        circle.setStrokeStyle(1.5, col)
-        label.setText(WEAPON_INITIALS[weapon]).setColor('#' + col.toString(16).padStart(6, '0'))
-      } else {
-        circle.setStrokeStyle(1.5, 0x333344)
-        label.setText('·').setColor('#333344')
+        label.setText('×').setColor('#1a1a22').setVisible(true)
+        continue
       }
+      if (weapon === WeaponType.Empty) {
+        circle.setStrokeStyle(isSel ? 2.5 : 1.5, isSel ? ACCENT : 0x333344)
+        label.setText(isSel ? '?' : '·').setColor(isSel ? ACCENT_STR : '#333344').setVisible(true)
+        continue
+      }
+      // Weapon equipped → draw the icon, hide the letter label
+      const col = WEAPON_COLORS[weapon]
+      circle.setStrokeStyle(isSel ? 2.5 : 1.5, isSel ? ACCENT : col)
+      drawWeaponIcon(icon, weapon, col)
+      label.setVisible(false)
     }
   }
 
   private redrawInventory(): void {
     // Destroy previous rows
-    for (const row of this.weaponRows) row.destroy()
+    for (const row of this.weaponRows) row.destroy(true)
     this.weaponRows = []
 
     const { width, height } = this.scale
@@ -340,6 +384,7 @@ export default class EquipScreen extends Phaser.Scene {
       const rowY    = py + i * 36
       const col     = WEAPON_COLORS[weapon]
       const colStr  = '#' + col.toString(16).padStart(6, '0')
+      const name    = WEAPON_DATA.get(weapon)?.name ?? weapon
 
       const row = this.add.container(0, 0)
 
@@ -350,27 +395,68 @@ export default class EquipScreen extends Phaser.Scene {
         row.add(hi)
       }
 
-      // Color orb
-      const orb = this.add.arc(px + 12, rowY + 12, 8, 0, 360, false, col)
-      row.add(orb)
+      // Icon
+      const icon = this.add.graphics().setPosition(px + 16, rowY + 12)
+      drawWeaponIcon(icon, weapon, col)
+      row.add(icon)
 
-      // Weapon name
-      const nameText = this.add.text(px + 28, rowY + 4, weapon, {
+      // Display name
+      const nameText = this.add.text(px + 38, rowY + 4, name, {
         fontFamily: 'monospace',
-        fontSize:   '13px',
+        fontSize:   '12px',
         color:      isSel ? colStr : '#aaaacc',
       })
       row.add(nameText)
 
-      // Tier indicator
-      const initial = this.add.text(px + 28, rowY + 20, `[${WEAPON_INITIALS[weapon]}]`, {
+      // Subtitle: damage / cooldown summary
+      const cfg = WEAPON_DATA.get(weapon)
+      const stats = WEAPON_STATS[weapon]
+      const sub = `${cfg?.type ?? '—'}  ·  ${cfg?.damage ?? 0} dmg  ·  ${stats.cooldownMs}ms`
+      const subText = this.add.text(px + 38, rowY + 20, sub, {
         fontFamily: 'monospace',
         fontSize:   '9px',
-        color:      '#444455',
+        color:      '#555566',
       })
-      row.add(initial)
+      row.add(subText)
 
       this.weaponRows.push(row)
     }
+  }
+
+  // Show full description of the currently focused weapon (slot or inventory).
+  private refreshDetailPanel(): void {
+    const focusedWeapon = this.getFocusedWeapon()
+    this.detailIcon.clear()
+
+    if (focusedWeapon === WeaponType.Empty) {
+      this.detailName.setText('— Empty Slot —').setColor('#555566')
+      this.detailStats.setText('')
+      this.detailBlurb.setText(this.panelFocus === 'left'
+        ? 'Select a weapon from the right panel and press ENTER or the slot number to equip.'
+        : 'No weapons in inventory yet. Craft at a workbench or find them in the world.')
+      return
+    }
+
+    const cfg   = WEAPON_DATA.get(focusedWeapon)
+    const stats = WEAPON_STATS[focusedWeapon]
+    const col   = WEAPON_COLORS[focusedWeapon]
+    const colStr = '#' + col.toString(16).padStart(6, '0')
+
+    drawWeaponIcon(this.detailIcon, focusedWeapon, col)
+    this.detailName.setText(cfg?.name ?? focusedWeapon).setColor(colStr)
+    const statsLine =
+      `${cfg?.type ?? '—'}   damage ${cfg?.damage ?? 0}   ` +
+      `cd ${stats.cooldownMs}ms   stamina ${cfg?.staminaCost ?? 0}   ` +
+      `range ${stats.range}   tier ${cfg?.requiredTier ?? 0}`
+    this.detailStats.setText(statsLine)
+    this.detailBlurb.setText(stats.blurb)
+  }
+
+  private getFocusedWeapon(): WeaponType {
+    if (this.panelFocus === 'left') {
+      return this.weaponSys.getSlot(this.selectedSlot)
+    }
+    if (this.inventory.length === 0) return WeaponType.Empty
+    return this.inventory[Math.min(this.selectedWeapon, this.inventory.length - 1)] ?? WeaponType.Empty
   }
 }

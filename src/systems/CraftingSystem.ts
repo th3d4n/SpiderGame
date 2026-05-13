@@ -27,6 +27,9 @@ export interface Recipe {
   materials:    Partial<Record<MaterialType, number>>
   requiredTier: number
   produces:     WeaponType
+  // When true, this recipe is shown in the workbench but cannot be crafted —
+  // the weapon must be discovered in the world instead.
+  findOnly?:    boolean
 }
 
 export const RECIPES: Recipe[] = [
@@ -53,10 +56,11 @@ export const RECIPES: Recipe[] = [
   },
   {
     id:          RecipeType.BoxingGloves,
-    displayName: 'Boxing Gloves',
+    displayName: 'Toothpick Stabber',
     materials:   { [MaterialType.SilkThread]: 2, [MaterialType.WebFluid]: 3 },
     requiredTier: 1,
     produces:    WeaponType.BoxingGloves,
+    findOnly:    true,
   },
   {
     id:          RecipeType.Glider,
@@ -86,6 +90,7 @@ export class CraftingSystem {
   }
 
   canCraft(recipe: Recipe, legTier: number): boolean {
+    if (recipe.findOnly) return false
     if (legTier < recipe.requiredTier) return false
     for (const mat of Object.keys(recipe.materials) as MaterialType[]) {
       const needed = recipe.materials[mat] ?? 0

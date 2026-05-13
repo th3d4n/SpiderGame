@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_COLORS, WEAPON_DATA } from '../config/WeaponData'
+import { drawWeaponIcon } from '../ui/WeaponIcon'
 
 // A weapon lying on the ground. Walk over it to add the weapon to your inventory
 // (where it can be assigned to a leg slot via the EquipScreen). Each WeaponPickup
@@ -28,9 +29,9 @@ export default class WeaponPickup extends Phaser.GameObjects.Container {
     glow.setStrokeStyle(1, 0xffffff, 0.4)
     this.add(glow)
 
-    // Tiny weapon emblem — same icon used on the leg tip
+    // Tiny weapon emblem — same icon used in inventory / HUD / workbench
     const icon = scene.add.graphics()
-    this.drawIcon(icon, weapon, color)
+    drawWeaponIcon(icon, weapon, color)
     this.add(icon)
 
     // Floating label
@@ -97,37 +98,4 @@ export default class WeaponPickup extends Phaser.GameObjects.Container {
     return true
   }
 
-  // Mirror of Webbs' weapon-tip drawings so the ground pickup matches the equipped look
-  private drawIcon(g: Phaser.GameObjects.Graphics, weapon: WeaponType, c: number): void {
-    switch (weapon) {
-      case WeaponType.Sword:
-        g.fillStyle(c, 1); g.fillTriangle(-7, -2, -7, 2, 7, 0)
-        g.fillStyle(0x665533, 1); g.fillRect(-8, -4, 2, 8)
-        break
-      case WeaponType.Bow:
-        g.lineStyle(2, c, 1)
-        g.beginPath(); g.arc(0, 0, 7, Phaser.Math.DegToRad(-80), Phaser.Math.DegToRad(80)); g.strokePath()
-        g.lineStyle(1, 0xeeeeee, 0.9); g.lineBetween(0, -7, 0, 7)
-        break
-      case WeaponType.Axe:
-        g.lineStyle(2, 0x553322, 1); g.lineBetween(-6, 0, 4, 0)
-        g.fillStyle(c, 1); g.fillTriangle(2, -7, 2, 7, 10, 0)
-        break
-      case WeaponType.BoxingGloves:
-        g.lineStyle(2, c, 1); g.lineBetween(-7, 0, 5, 0)
-        g.fillStyle(c, 1); g.fillTriangle(4, -2, 4, 2, 9, 0)
-        break
-      case WeaponType.Glider:
-        g.fillStyle(c, 0.85); g.fillTriangle(-6, -1, 6, -6, 6, -1); g.fillTriangle(-6, 1, 6, 6, 6, 1)
-        break
-      case WeaponType.FlameBreather:
-        g.fillStyle(0x333333, 1); g.fillRect(-5, -3, 8, 6)
-        g.fillStyle(c, 1); g.fillTriangle(3, -2, 3, 2, 8, 0)
-        break
-      case WeaponType.WebLauncher:
-        g.lineStyle(1.5, 0x333344, 1); g.strokeRect(-5, -5, 10, 10)
-        g.fillStyle(c, 0.9); g.fillCircle(0, 0, 3.5)
-        break
-    }
-  }
 }

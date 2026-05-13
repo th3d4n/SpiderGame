@@ -63,3 +63,56 @@ export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
     requiredTier: 0,
   }],
 ])
+
+// Display-only stats that show up in the inventory tooltip. Damage/stamina come
+// from WEAPON_DATA. The cooldown values are duplicated from WeaponUseSystem +
+// WebLauncherSystem so the tooltip can show attack speed without UI code
+// reaching into the gameplay systems — keep these in sync if those are tuned.
+export interface WeaponStats {
+  cooldownMs: number
+  range:      string
+  blurb:      string
+}
+
+export const WEAPON_STATS: Record<WeaponType, WeaponStats> = {
+  [WeaponType.Empty]: {
+    cooldownMs: 0,
+    range:      '—',
+    blurb:      'Nothing equipped.',
+  },
+  [WeaponType.Sword]: {
+    cooldownMs: 280,
+    range:      '70u arc',
+    blurb:      'Quick 90° forward arc. Reliable damage, modest knockback.',
+  },
+  [WeaponType.Bow]: {
+    cooldownMs: 380,
+    range:      'long',
+    blurb:      'Fires a thistle. Consumes 1 Thistle per shot; misses can be recovered.',
+  },
+  [WeaponType.Axe]: {
+    cooldownMs: 760,
+    range:      '62u cleave',
+    blurb:      'Slow 170° heavy cleave. Big damage, huge knockback.',
+  },
+  [WeaponType.BoxingGloves]: {
+    cooldownMs: 220,
+    range:      '90u stab',
+    blurb:      'Long thin stab in a narrow cone. Cheap and fast.',
+  },
+  [WeaponType.Glider]: {
+    cooldownMs: 0,
+    range:      'traversal',
+    blurb:      'Traversal aid. No combat damage.',
+  },
+  [WeaponType.FlameBreather]: {
+    cooldownMs: 0,
+    range:      '120u cone',
+    blurb:      'Continuous flame cone. Drains energy while held.',
+  },
+  [WeaponType.WebLauncher]: {
+    cooldownMs: 220,
+    range:      '480u line',
+    blurb:      'Reels in pickups, yanks light enemies, pulls you to walls. Anchors against suction.',
+  },
+}

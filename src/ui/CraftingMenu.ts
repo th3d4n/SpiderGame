@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { RECIPES, type Recipe, type MaterialType } from '../systems/CraftingSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
+import { drawWeaponIcon } from './WeaponIcon'
 
 const ACCENT     = 0x7777ff
 const ACCENT_STR = '#7777ff'
@@ -80,17 +81,23 @@ export default class CraftingMenu extends Phaser.Scene {
     // Divider
     this.add.line(width / 2, py + 44, -panelW / 2 + 16, 0, panelW / 2 - 16, 0, ACCENT, 0.3)
 
-    // Recipe rows
+    // Recipe rows — icon + label side by side
     const rowStartY = py + 60
     const rowH      = 32
     RECIPES.forEach((recipe, i) => {
       const y = rowStartY + i * rowH
-      const text = this.add.text(px + 20, y, this.rowLabel(recipe), {
+      const color = WEAPON_COLORS[recipe.produces] ?? 0xccccdd
+      const icon = this.add.graphics()
+      icon.setPosition(px + 28, y + 8)
+      drawWeaponIcon(icon, recipe.produces, color)
+      const text = this.add.text(px + 46, y, this.rowLabel(recipe), {
         fontFamily: 'monospace',
         fontSize:   '12px',
         color:      DIM_STR,
       })
       this.rowTexts.push(text)
+      // Hold the icon as part of the row so it can be tinted alongside the text
+      void icon
     })
 
     // Cost display
@@ -127,6 +134,7 @@ export default class CraftingMenu extends Phaser.Scene {
   }
 
   private rowLabel(recipe: Recipe): string {
+    if (recipe.findOnly) return `${recipe.displayName} [FIND ONLY]`
     const locked = recipe.requiredTier > this.legTier ? ' [LOCKED]' : ''
     return `${recipe.displayName}${locked}`
   }
@@ -178,6 +186,11 @@ export default class CraftingMenu extends Phaser.Scene {
   }
 
   private tryCraft(): void {
+    const recipeSel = RECIPES[this.selectedIndex]
+    if (recipeSel.findOnly) {
+      this.flashStatus('Cannot craft — find this weapon in the world', '#cc4455')
+      return
+    }
     if (!this.canCraftSelected()) {
       this.flashStatus('Cannot craft — missing materials', '#cc4455')
       return
