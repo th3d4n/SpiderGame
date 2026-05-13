@@ -13,6 +13,8 @@ const SWORD_DAMAGE      = 18
 const SWORD_STAMINA     = 10
 const SWORD_COOLDOWN    = 280
 const SWORD_KNOCKBACK   = 180
+const SWORD_SHAKE_INT   = 0.004
+const SWORD_SHAKE_DUR   = 80
 
 // Axe — slow heavy cleave, big damage + knockback. Reach extends past sword's
 // 70u arc so the cleave feels meaningfully bigger.
@@ -22,6 +24,8 @@ const AXE_DAMAGE        = 44
 const AXE_STAMINA       = 22
 const AXE_COOLDOWN      = 760
 const AXE_KNOCKBACK     = 520
+const AXE_SHAKE_INT     = 0.012
+const AXE_SHAKE_DUR     = 180
 
 // Toothpick — long thin stab, narrow cone, modest damage but better reach
 const GLOVES_RADIUS     = 90
@@ -179,7 +183,11 @@ export class WeaponUseSystem {
     })
 
     webbs.playWeaponAnim(slot, 'stab', 200)
-    this.hitsInArc(webbs, SWORD_RADIUS, SWORD_SWEEP_DEG, SWORD_DAMAGE, SWORD_KNOCKBACK)
+    const hit = this.hitsInArc(
+      webbs, SWORD_RADIUS, SWORD_SWEEP_DEG, SWORD_DAMAGE, SWORD_KNOCKBACK,
+      (_e, hx, hy) => this.spawnHitVfx(scene, 'sword', hx, hy, webbs.facingX, webbs.facingY),
+    )
+    if (hit) scene.cameras.main.shake(SWORD_SHAKE_DUR, SWORD_SHAKE_INT)
   }
 
   // ── Axe — slow wide cleave ────────────────────────────────────────────────
@@ -200,7 +208,11 @@ export class WeaponUseSystem {
     })
 
     webbs.playWeaponAnim(slot, 'swing', 320)
-    this.hitsInArc(webbs, AXE_RADIUS, AXE_SWEEP_DEG, AXE_DAMAGE, AXE_KNOCKBACK)
+    const hit = this.hitsInArc(
+      webbs, AXE_RADIUS, AXE_SWEEP_DEG, AXE_DAMAGE, AXE_KNOCKBACK,
+      (_e, hx, hy) => this.spawnHitVfx(scene, 'axe', hx, hy, webbs.facingX, webbs.facingY),
+    )
+    if (hit) scene.cameras.main.shake(AXE_SHAKE_DUR, AXE_SHAKE_INT)
   }
 
   // ── Bow ──────────────────────────────────────────────────────────────────
@@ -271,6 +283,9 @@ export class WeaponUseSystem {
       if (diff <= halfCone) {
         enemy.takeDamage(GLOVES_DAMAGE, WeakPointZone.Body)
         enemy.applyKnockback(webbs.facingX * GLOVES_KNOCKBACK, webbs.facingY * GLOVES_KNOCKBACK)
+        const hx = enemy.x - Math.cos(toEnemy) * enemy.bodyRadius
+        const hy = enemy.y - Math.sin(toEnemy) * enemy.bodyRadius
+        this.spawnHitVfx(scene, 'gloves', hx, hy, webbs.facingX, webbs.facingY)
         hit = true
       }
     }
@@ -320,9 +335,11 @@ export class WeaponUseSystem {
     sweepDeg: number,
     damage: number,
     knockback: number,
-  ): void {
+    onHit?: (enemy: Enemy, hitX: number, hitY: number) => void,
+  ): boolean {
     const facingAngle = Math.atan2(webbs.facingY, webbs.facingX)
     const halfRad     = Phaser.Math.DegToRad(sweepDeg / 2)
+    let anyHit = false
 
     for (const enemy of this.enemies) {
       if (enemy.isDead()) continue
@@ -340,7 +357,121 @@ export class WeaponUseSystem {
           const ky = Math.sin(toEnemy) * knockback
           enemy.applyKnockback(kx, ky)
         }
+        if (onHit) {
+          // Hit point sits on the front face of the enemy, toward the attacker.
+          const hx = enemy.x - Math.cos(toEnemy) * enemy.bodyRadius
+          const hy = enemy.y - Math.sin(toEnemy) * enemy.bodyRadius
+          onHit(enemy, hx, hy)
+        }
+        anyHit = true
       }
+    }
+    return anyHit
+  }
+
+  // ── Hit VFX ───────────────────────────────────────────────────────────────
+  // Quick visual splashes themed per weapon. Sword draws ichor droplets; axe
+  // tears chunks of meat plus a wide cleave arc; toothpick gives a tiny spark
+  // burst. All effects auto-destroy after their lifespan.
+
+  private spawnHitVfx(
+    scene: Phaser.Scene,
+    kind: 'sword' | 'axe' | 'gloves',
+    x: number, y: number,
+    dirX: number, dirY: number,
+  ): void {
+    WeaponUseSystem.ensureHitTextures(scene)
+    const angle = Math.atan2(dirY, dirX)
+    const angleDeg = Phaser.Math.RadToDeg(angle)
+
+    switch (kind) {
+      case 'sword': {
+        const emitter = scene.add.particles(x, y, 'hit-ichor', {
+          speed:     { min: 70, max: 200 },
+          angle:     { min: angleDeg - 80, max: angleDeg + 80 },
+          scale:     { start: 1.0, end: 0 },
+          alpha:     { start: 0.95, end: 0 },
+          lifespan:  380,
+          gravityY:  220,
+          emitting:  false,
+        }).setDepth(11)
+        emitter.explode(7)
+        scene.time.delayedCall(900, () => emitter.destroy())
+        break
+      }
+      case 'axe': {
+        // Chunkier meat spray
+        const chunks = scene.add.particles(x, y, 'hit-chunk', {
+          speed:     { min: 110, max: 280 },
+          angle:     { min: angleDeg - 95, max: angleDeg + 95 },
+          scale:     { start: 1.3, end: 0.3 },
+          alpha:     { start: 1, end: 0 },
+          rotate:    { min: 0, max: 360 },
+          lifespan:  620,
+          gravityY:  340,
+          emitting:  false,
+        }).setDepth(11)
+        chunks.explode(11)
+        // Cleave arc — short flash showing the weight of the swing
+        const slash = scene.add.graphics().setDepth(12)
+        slash.lineStyle(4, 0xff6655, 0.85)
+        const halfSweep = Phaser.Math.DegToRad(70)
+        slash.beginPath()
+        slash.arc(x, y, 26, angle - halfSweep, angle + halfSweep)
+        slash.strokePath()
+        scene.tweens.add({
+          targets:    slash,
+          alpha:      0,
+          scaleX:     1.6,
+          scaleY:     1.6,
+          duration:   260,
+          onComplete: () => slash.destroy(),
+        })
+        scene.time.delayedCall(1300, () => chunks.destroy())
+        break
+      }
+      case 'gloves': {
+        // Tight stab spark — small fan of bright dots
+        const sparks = scene.add.particles(x, y, 'hit-spark', {
+          speed:     { min: 60, max: 130 },
+          angle:     { min: angleDeg - 22, max: angleDeg + 22 },
+          scale:     { start: 0.9, end: 0 },
+          alpha:     { start: 1, end: 0 },
+          lifespan:  240,
+          emitting:  false,
+        }).setDepth(11)
+        sparks.explode(5)
+        scene.time.delayedCall(700, () => sparks.destroy())
+        break
+      }
+    }
+  }
+
+  private static ensureHitTextures(scene: Phaser.Scene): void {
+    if (!scene.textures.exists('hit-ichor')) {
+      const g = scene.add.graphics()
+      g.fillStyle(0x68a82c, 1)         // green ichor
+      g.fillCircle(3, 3, 3)
+      g.fillStyle(0x3d6b14, 0.85)
+      g.fillCircle(3, 3, 2)
+      g.generateTexture('hit-ichor', 6, 6)
+      g.destroy()
+    }
+    if (!scene.textures.exists('hit-chunk')) {
+      const g = scene.add.graphics()
+      g.fillStyle(0x6a2210, 1)         // dark meat
+      g.fillRect(0, 0, 6, 4)
+      g.fillStyle(0x9d3a1c, 1)
+      g.fillRect(1, 1, 3, 2)
+      g.generateTexture('hit-chunk', 6, 4)
+      g.destroy()
+    }
+    if (!scene.textures.exists('hit-spark')) {
+      const g = scene.add.graphics()
+      g.fillStyle(0xffeeaa, 1)
+      g.fillCircle(2, 2, 2)
+      g.generateTexture('hit-spark', 4, 4)
+      g.destroy()
     }
   }
 
@@ -401,10 +532,11 @@ export class WeaponUseSystem {
           // Knockback in the projectile's direction of travel
           const body = arc.body as Phaser.Physics.Arcade.Body
           const vlen = Math.hypot(body.velocity.x, body.velocity.y) || 1
-          enemy.applyKnockback(
-            (body.velocity.x / vlen) * BOW_KNOCKBACK,
-            (body.velocity.y / vlen) * BOW_KNOCKBACK,
-          )
+          const dirX = body.velocity.x / vlen
+          const dirY = body.velocity.y / vlen
+          enemy.applyKnockback(dirX * BOW_KNOCKBACK, dirY * BOW_KNOCKBACK)
+          // Small ichor burst at the impact point
+          this.spawnHitVfx(arc.scene, 'sword', arc.x, arc.y, dirX, dirY)
           arc.destroy()
           toRemove.push(proj)
           hit = true

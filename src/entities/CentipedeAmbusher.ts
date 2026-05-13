@@ -2,10 +2,22 @@ import Phaser from 'phaser'
 import Enemy, { WeakPointZone, type EnemyConfig } from './Enemy'
 
 type AmbusherState = 'HIDING' | 'BURSTING' | 'CHASING'
+type ChaseMode    = 'TRACKING' | 'WINDUP' | 'LUNGING' | 'RECOVERING'
 
 const TRIGGER_RADIUS  = 190   // px — distance that wakes the ambusher
 const BURST_DURATION  = 900   // ms — emergence animation length
 const CONTACT_RADIUS  = 28    // px — melee range at which it registers a hit
+
+// Chase tuning — slow stalk that occasionally lunges instead of orbiting
+const TRACK_SPEED    = 70
+const LUNGE_RANGE    = 150
+const LUNGE_SPEED    = 320
+const WINDUP_MS      = 320
+const LUNGE_MS       = 280
+const RECOVER_MS     = 620
+// While tracking we re-aim slowly so the centipede doesn't spin in place when
+// the player circles it.
+const TRACK_TURN_RATE = 4.5  // rad/sec
 
 const CONFIG: EnemyConfig = {
   health:          30,
@@ -27,8 +39,16 @@ export { CONTACT_RADIUS }
 
 export default class CentipedeAmbusher extends Enemy {
   private ambusherState: AmbusherState = 'HIDING'
+  private chaseMode:     ChaseMode = 'TRACKING'
   private target:    { x: number; y: number }
   private burstTimer = 0
+  private modeTimer  = 0
+  private lungeVX    = 0
+  private lungeVY    = 0
+  private mandibleL!: Phaser.GameObjects.Line
+  private mandibleR!: Phaser.GameObjects.Line
+  private eyeL!: Phaser.GameObjects.Arc
+  private eyeR!: Phaser.GameObjects.Arc
 
   constructor(
     scene:  Phaser.Scene,
@@ -45,7 +65,7 @@ export default class CentipedeAmbusher extends Enemy {
 
   // ── Visuals ───────────────────────────────────────────────────────────────
   // Head at local (0, 0); body trails in local +Y (behind direction of movement).
-  // Container rotation in moveTowardTarget() orients +Y away from the target.
+  // Container rotation orients local -Y toward the target while tracking.
 
   protected buildVisuals(): void {
     // Subtle ground crack to hint a buried enemy
@@ -70,22 +90,23 @@ export default class CentipedeAmbusher extends Enemy {
     head.setStrokeStyle(1.5, 0x2a1408)
     this.add(head)
 
-    // Mandibles
-    const mL = this.scene.add.line(0, 0, -2, -2, -13, -12, 0x8b6914)
-    mL.setLineWidth(2)
-    this.add(mL)
-    const mR = this.scene.add.line(0, 0, 2, -2, 13, -12, 0x8b6914)
-    mR.setLineWidth(2)
-    this.add(mR)
+    // Mandibles — keep references so we can animate them during the lunge tell
+    this.mandibleL = this.scene.add.line(0, 0, -2, -2, -13, -12, 0x8b6914)
+    this.mandibleL.setLineWidth(2)
+    this.add(this.mandibleL)
+    this.mandibleR = this.scene.add.line(0, 0, 2, -2, 13, -12, 0x8b6914)
+    this.mandibleR.setLineWidth(2)
+    this.add(this.mandibleR)
 
     // Weak point indicator — glowing amber dot above head
     const wp = this.scene.add.arc(0, -10, 4, 0, 360, false, 0xffaa00)
     wp.setStrokeStyle(1, 0xffff44)
     this.add(wp)
 
-    // Eyes
-    this.add(this.scene.add.arc(-5, -4, 2, 0, 360, false, 0xff2222))
-    this.add(this.scene.add.arc( 5, -4, 2, 0, 360, false, 0xff2222))
+    // Eyes — kept as refs so they can flare red during the windup tell
+    this.eyeL = this.scene.add.arc(-5, -4, 2, 0, 360, false, 0xff2222)
+    this.eyeR = this.scene.add.arc( 5, -4, 2, 0, 360, false, 0xff2222)
+    this.add([this.eyeL, this.eyeR])
   }
 
   // ── Particle burst ────────────────────────────────────────────────────────
@@ -112,15 +133,14 @@ export default class CentipedeAmbusher extends Enemy {
       emitting: false,
     })
     emitter.explode(24)
-    // Clean up after the last particle fades
     this.scene.time.delayedCall(1400, () => emitter.destroy())
   }
 
   // ── State transitions ─────────────────────────────────────────────────────
 
   private enterBurst(): void {
-    this.ambusherState     = 'BURSTING'
-    this.burstTimer = BURST_DURATION
+    this.ambusherState = 'BURSTING'
+    this.burstTimer    = BURST_DURATION
     this.playBurstEffect()
     this.setScale(0.05)
     this.scene.tweens.add({
@@ -134,23 +154,103 @@ export default class CentipedeAmbusher extends Enemy {
   }
 
   private enterChase(): void {
-    this.ambusherState= 'CHASING'
+    this.ambusherState = 'CHASING'
+    this.chaseMode     = 'TRACKING'
+    this.modeTimer     = 0
     this.pb.setEnable(true)
   }
 
-  // ── Per-frame movement ────────────────────────────────────────────────────
+  // ── Smooth turn helper — eases container rotation toward a target angle ──
 
-  private moveTowardTarget(): void {
-    const angle = Phaser.Math.Angle.Between(
-      this.x, this.y,
-      this.target.x, this.target.y,
-    )
-    this.pb.setVelocity(
-      Math.cos(angle) * this.speed,
-      Math.sin(angle) * this.speed,
-    )
-    // Rotate container so local -Y faces the target (head forward, body trailing)
-    this.setRotation(angle + Math.PI / 2)
+  private turnToward(targetAngle: number, delta: number, rate: number): void {
+    const cur = this.rotation
+    const diff = Phaser.Math.Angle.Wrap(targetAngle - cur)
+    const maxStep = rate * (delta / 1000)
+    const step = Phaser.Math.Clamp(diff, -maxStep, maxStep)
+    this.setRotation(cur + step)
+  }
+
+  // ── Lunge tell — flare eyes brighter, flare mandibles outward ─────────────
+
+  private playWindupTell(): void {
+    this.eyeL.setFillStyle(0xffaa44)
+    this.eyeR.setFillStyle(0xffaa44)
+    this.eyeL.setScale(1.4)
+    this.eyeR.setScale(1.4)
+    // Flare the mandibles wider
+    this.mandibleL.setTo(-2, -2, -16, -14)
+    this.mandibleR.setTo( 2, -2,  16, -14)
+  }
+
+  private resetWindupTell(): void {
+    this.eyeL.setFillStyle(0xff2222)
+    this.eyeR.setFillStyle(0xff2222)
+    this.eyeL.setScale(1)
+    this.eyeR.setScale(1)
+    this.mandibleL.setTo(-2, -2, -13, -12)
+    this.mandibleR.setTo( 2, -2,  13, -12)
+  }
+
+  // ── Chase / attack cycle ──────────────────────────────────────────────────
+
+  private updateChase(delta: number): void {
+    if (this.isStaggered()) {
+      this.pb.setVelocity(0, 0)
+      return
+    }
+    this.modeTimer -= delta
+
+    switch (this.chaseMode) {
+      case 'TRACKING': {
+        const dx = this.target.x - this.x
+        const dy = this.target.y - this.y
+        const dist = Math.hypot(dx, dy) || 1
+        const angle = Math.atan2(dy, dx)
+        // Slow stalk + gentle re-aim — body no longer spins to mirror the player
+        this.pb.setVelocity((dx / dist) * TRACK_SPEED, (dy / dist) * TRACK_SPEED)
+        this.turnToward(angle + Math.PI / 2, delta, TRACK_TURN_RATE)
+
+        if (dist < LUNGE_RANGE) {
+          this.chaseMode = 'WINDUP'
+          this.modeTimer = WINDUP_MS
+          this.pb.setVelocity(0, 0)
+          this.playWindupTell()
+        }
+        break
+      }
+
+      case 'WINDUP': {
+        // Freeze in place during the tell. Camera-shake feel for the player.
+        this.pb.setVelocity(0, 0)
+        if (this.modeTimer <= 0) {
+          // Lock orientation in toward the player at lunge start
+          const angle = Phaser.Math.Angle.Between(this.x, this.y, this.target.x, this.target.y)
+          this.setRotation(angle + Math.PI / 2)
+          this.lungeVX = Math.cos(angle) * LUNGE_SPEED
+          this.lungeVY = Math.sin(angle) * LUNGE_SPEED
+          this.chaseMode = 'LUNGING'
+          this.modeTimer = LUNGE_MS
+        }
+        break
+      }
+
+      case 'LUNGING': {
+        this.pb.setVelocity(this.lungeVX, this.lungeVY)
+        if (this.modeTimer <= 0) {
+          this.chaseMode = 'RECOVERING'
+          this.modeTimer = RECOVER_MS
+          this.pb.setVelocity(0, 0)
+          this.resetWindupTell()
+        }
+        break
+      }
+
+      case 'RECOVERING': {
+        this.pb.setVelocity(0, 0)
+        if (this.modeTimer <= 0) this.chaseMode = 'TRACKING'
+        break
+      }
+    }
   }
 
   // ── Main update ───────────────────────────────────────────────────────────
@@ -175,7 +275,7 @@ export default class CentipedeAmbusher extends Enemy {
 
       case 'CHASING': {
         this.updateStagger(delta)
-        if (!this.isStaggered()) this.moveTowardTarget()
+        this.updateChase(delta)
         break
       }
     }

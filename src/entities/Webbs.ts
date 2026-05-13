@@ -225,8 +225,35 @@ export default class Webbs extends Phaser.GameObjects.Container {
   }
 
   damage(amount: number): void {
+    if (amount <= 0) return
     this.hp = Math.max(0, this.hp - amount)
     this.timeSinceDamage = 0
+    this.playDamageFlash()
+  }
+
+  // Visible "hit" feedback — body flashes red briefly and a quick red ring
+  // expands outward so the player can tell they took a hit without looking at
+  // the HP bar. Lives outside the container so the squeeze tween doesn't fight
+  // a scale tween here.
+  private playDamageFlash(): void {
+    this.sprite.setFillStyle(0xff3344)
+    this.scene.time.delayedCall(140, () => {
+      if (!this.sprite.active) return
+      this.sprite.setFillStyle(0x222222)
+    })
+
+    const ring = this.scene.add.arc(this.x, this.y, 18, 0, 360, false, 0xff4444, 0.55)
+    ring.setStrokeStyle(2, 0xff8866, 0.85)
+    ring.setDepth(20)
+    this.scene.tweens.add({
+      targets:    ring,
+      scaleX:     2.4,
+      scaleY:     2.4,
+      alpha:      0,
+      duration:   320,
+      ease:       'Quad.easeOut',
+      onComplete: () => ring.destroy(),
+    })
   }
 
   isDead(): boolean { return this.hp <= 0 }

@@ -64,6 +64,10 @@ export default class AntColonyScene extends Phaser.Scene {
   private wallGroup!:        Phaser.Physics.Arcade.StaticGroup
   private fog!:              Phaser.GameObjects.RenderTexture
   private fogEraserGfx!:     Phaser.GameObjects.Graphics
+  // Positions of all the green algae "lanterns" scattered around the colony.
+  // Each beacon gets a bright above-fog dot so it stays visible through the
+  // shroud; the larger uncovered glow lives below the fog.
+  private lanternBeacons:    Array<{ x: number, y: number, size: number }> = []
   private transitioning      = false
   private squeezeTween?:     Phaser.Tweens.Tween
 
@@ -82,6 +86,7 @@ export default class AntColonyScene extends Phaser.Scene {
     this.transitioning  = false
     this.spawnPoints    = []
     this.contactCooldown = 0
+    this.lanternBeacons = []
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H)
 
     const savedHp = this.registry.get('health') as number | undefined
@@ -92,6 +97,9 @@ export default class AntColonyScene extends Phaser.Scene {
     this.drawWalls()
     this.drawGapMarkers()
     this.drawPortals()
+    // Above-fog visibility dots for every algae lantern in the level — relies on
+    // beacon positions collected by drawBackground() and drawGapMarkers() above.
+    this.drawLanternBeacons()
 
     // Workbench tucked just inside the entry chamber
     this.workbench = new Workbench(this, WORLD_W - 350, 1500)
@@ -493,12 +501,16 @@ export default class AntColonyScene extends Phaser.Scene {
   }
 
   private drawGapMarkers(): void {
-    // Bright glow at each passage so the player can see openings through the fog
+    // Bright glow at each passage — large "lantern" that lights the area when
+    // uncovered. The below-fog graphics live here at depth 3 so they show
+    // their full halo once the fog has been cleared. The matching above-fog
+    // visibility dot is drawn separately in drawLanternBeacons().
     const g = this.add.graphics().setDepth(3)
     const drawGap = (cx: number, cy: number) => {
       g.fillStyle(0x66ffaa, 0.18); g.fillCircle(cx, cy, 36)
       g.fillStyle(0x99ffcc, 0.35); g.fillCircle(cx, cy, 18)
       g.fillStyle(0xddffee, 0.7);  g.fillCircle(cx, cy, 6)
+      this.lanternBeacons.push({ x: cx, y: cy, size: 5 })
     }
 
     // Corridor ceiling gaps
@@ -523,7 +535,9 @@ export default class AntColonyScene extends Phaser.Scene {
       const ry = rng.integerInRange(0, WORLD_H)
       g.fillRect(rx, ry, rng.integerInRange(40, 140), rng.integerInRange(20, 60))
     }
-    // Glowing fungus dots
+    // Luminescent algae lanterns — below-fog soft halos. The matching above-fog
+    // visibility dot is drawn in drawLanternBeacons() so the algae glow is
+    // visible even in the shroud.
     for (let i = 0; i < 80; i++) {
       const fx = rng.integerInRange(120, WORLD_W - 120)
       const fy = rng.integerInRange(120, WORLD_H - 120)
@@ -531,7 +545,30 @@ export default class AntColonyScene extends Phaser.Scene {
       g.fillStyle(0x44ff88, 0.05); g.fillCircle(fx, fy, r * 3.5)
       g.fillStyle(0x66ffaa, 0.12); g.fillCircle(fx, fy, r * 1.8)
       g.fillStyle(0x99ffcc, 0.7);  g.fillCircle(fx, fy, r)
+      this.lanternBeacons.push({ x: fx, y: fy, size: Math.max(2, Math.round(r * 0.55)) })
     }
+  }
+
+  // Single above-fog Graphics rendering every lantern as a small ADD-blend dot.
+  // Sits at depth 60 (over fog at 51) so the eerie green points of light are
+  // visible from inside the shroud without illuminating the surrounding cavern.
+  private drawLanternBeacons(): void {
+    const g = this.add.graphics().setDepth(60).setBlendMode(Phaser.BlendModes.ADD)
+    for (const b of this.lanternBeacons) {
+      g.fillStyle(0x66ff99, 0.85)
+      g.fillCircle(b.x, b.y, b.size)
+      g.fillStyle(0xeeffee, 0.9)
+      g.fillCircle(b.x, b.y, Math.max(1, b.size - 2))
+    }
+    // Gentle breath so the whole field of dots pulses subtly together
+    this.tweens.add({
+      targets:  g,
+      alpha:    { from: 0.7, to: 1 },
+      duration: 2200,
+      yoyo:     true,
+      repeat:   -1,
+      ease:     'Sine.easeInOut',
+    })
   }
 
   private drawPortals(): void {
