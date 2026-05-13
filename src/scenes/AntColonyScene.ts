@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import Webbs, { PLAYER_MAX_HP } from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
 import Pickup from '../entities/Pickup'
+import HpModule from '../entities/HpModule'
 import CentipedeAmbusher from '../entities/CentipedeAmbusher'
 import BeetleTank from '../entities/BeetleTank'
 import type Enemy from '../entities/Enemy'
@@ -28,9 +29,12 @@ const CONTACT_RADIUS   = 28 + 16
 
 // Fog of war reveal radius
 const FOG_REVEAL_R = 240
+// Number of raycasts per visibility polygon — higher = smoother edges, more cost
+const FOG_RAY_COUNT = 72
+const FOG_RAY_STEP  = 8     // px per ray sample
 
-// Respawn timer for fallen enemies (ms)
-const RESPAWN_MS = 18000
+// Respawn timer for fallen enemies (ms) — long enough that combats feel won
+const RESPAWN_MS = 22000
 
 // Squeeze-through animation — kicks in inside narrow corridors
 const SQUEEZE_TRIGGER_GAP = 110
@@ -49,6 +53,7 @@ export default class AntColonyScene extends Phaser.Scene {
   private workbench!:        Workbench
   private craftingSystem!:   CraftingSystem
   private pickupGroup!:      Phaser.Physics.Arcade.StaticGroup
+  private hpModuleGroup!:    Phaser.Physics.Arcade.StaticGroup
   private weaponUseSystem!:  WeaponUseSystem
   private webLauncher!:      WebLauncherSystem
   private qKey!:             Phaser.Input.Keyboard.Key
@@ -58,6 +63,7 @@ export default class AntColonyScene extends Phaser.Scene {
   private wallRects:         Wall[] = []
   private wallGroup!:        Phaser.Physics.Arcade.StaticGroup
   private fog!:              Phaser.GameObjects.RenderTexture
+  private fogEraserGfx!:     Phaser.GameObjects.Graphics
   private transitioning      = false
   private squeezeTween?:     Phaser.Tweens.Tween
 
@@ -99,6 +105,7 @@ export default class AntColonyScene extends Phaser.Scene {
 
     // Pickup group
     this.pickupGroup = this.physics.add.staticGroup()
+    this.hpModuleGroup = this.physics.add.staticGroup()
 
     // Scatter a few thistles around the maze as bow ammo to discover
     const thistleSeeds = [
@@ -109,6 +116,36 @@ export default class AntColonyScene extends Phaser.Scene {
     for (const t of thistleSeeds) {
       const p = new Pickup(this, t.x, t.y, 'Thistle', 1, this.craftingSystem)
       this.pickupGroup.add(p, true)
+    }
+
+    // Surprise bonus material caches tucked into side chambers and dead-ends
+    const surpriseSeeds: Array<{ x: number, y: number, mat: MaterialType, qty: number }> = [
+      { x: 1080, y: 260,  mat: 'CrystalDust',  qty: 2 },   // top-left upper chamber
+      { x: 2670, y: 220,  mat: 'ChitinShard',  qty: 3 },   // mid-upper chamber
+      { x: 4030, y: 720,  mat: 'VenomGland',   qty: 2 },   // upper-right pocket
+      { x: 4680, y: 280,  mat: 'BoneFragment', qty: 2 },   // right ceiling alcove
+      { x: 870,  y: 2780, mat: 'SilkThread',   qty: 4 },   // lower-left dead end
+      { x: 2360, y: 2620, mat: 'WebFluid',     qty: 3 },   // mid-lower chamber
+      { x: 3680, y: 2820, mat: 'CrystalDust',  qty: 1 },   // lower-right
+      { x: 4680, y: 2680, mat: 'ChitinShard',  qty: 2 },   // far-right lower pocket
+    ]
+    for (const s of surpriseSeeds) {
+      const p = new Pickup(this, s.x, s.y, s.mat, s.qty, this.craftingSystem)
+      this.pickupGroup.add(p, true)
+    }
+
+    // Energy modules — instant +25 HP heals, nested off the main path
+    const hpSeeds = [
+      { x: 1180, y: 540 },   // upper-left chamber
+      { x: 3260, y: 380 },   // upper-mid chamber
+      { x: 4830, y: 880 },   // right-upper alcove
+      { x: 1480, y: 2700 },  // lower-left chamber
+      { x: 3960, y: 2480 },  // lower-right chamber
+      { x: 520,  y: 420 },   // boss antechamber reward
+    ]
+    for (const h of hpSeeds) {
+      const m = new HpModule(this, h.x, h.y)
+      this.hpModuleGroup.add(m, true)
     }
 
     // Spawn Webbs right next to the home portal
@@ -139,9 +176,11 @@ export default class AntColonyScene extends Phaser.Scene {
     // Enemy loot drops + bow ammo recovery
     this.events.on('enemyDied',      this.spawnLootAt,       this)
     this.events.on('thistleDropped', this.spawnThistleAt,    this)
+    this.events.on('hpModulePicked', this.onHpModulePicked,  this)
     this.events.once('shutdown', () => {
       this.events.off('enemyDied',      this.spawnLootAt,       this)
       this.events.off('thistleDropped', this.spawnThistleAt,    this)
+      this.events.off('hpModulePicked', this.onHpModulePicked,  this)
     })
 
     // Weapon systems
@@ -150,13 +189,20 @@ export default class AntColonyScene extends Phaser.Scene {
     this.webLauncher     = new WebLauncherSystem()
     this.webLauncher.setWorldBounds(WORLD_W, WORLD_H)
     this.webLauncher.setWallHitTest((x, y) => this.pointInWall(x, y))
-    // Web can reel in any active pickup orb
+    // Web can reel in any active pickup orb (materials or HP modules)
     this.webLauncher.setPickupHitTest((wx, wy) => {
       for (const obj of this.pickupGroup.getChildren()) {
         const p = obj as unknown as Pickup
         if (!p.active) continue
         if (Phaser.Math.Distance.Between(wx, wy, p.x, p.y) < WEB_PICKUP_HIT) {
           return { x: p.x, y: p.y, active: p.active, collect: () => this.collectMaterialPickup(p) }
+        }
+      }
+      for (const obj of this.hpModuleGroup.getChildren()) {
+        const m = obj as unknown as HpModule
+        if (!m.active) continue
+        if (Phaser.Math.Distance.Between(wx, wy, m.x, m.y) < WEB_PICKUP_HIT) {
+          return { x: m.x, y: m.y, active: m.active, collect: () => m.collect() }
         }
       }
       return null
@@ -198,16 +244,12 @@ export default class AntColonyScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.webbs, true, 0.1, 0.1)
     this.cameras.main.setZoom(1.0)
 
-    // Fog of war
+    // Fog of war — fully opaque, carved by a per-frame visibility polygon so the
+    // player cannot see through walls into unexplored areas. Carved areas persist
+    // (cumulative reveal), so once you've seen a tile it stays visible.
     this.fog = this.add.renderTexture(0, 0, WORLD_W, WORLD_H).setOrigin(0).setDepth(50)
-    this.fog.fill(0x000000, 0.9)
-    const eraser = this.make.graphics({}, false)
-    for (let r = FOG_REVEAL_R; r > 0; r -= 6) {
-      eraser.fillStyle(0xffffff, 1 - (r / FOG_REVEAL_R))
-      eraser.fillCircle(FOG_REVEAL_R, FOG_REVEAL_R, r)
-    }
-    eraser.generateTexture('fog-eraser', FOG_REVEAL_R * 2, FOG_REVEAL_R * 2)
-    eraser.destroy()
+    this.fog.fill(0x000000, 1)
+    this.fogEraserGfx = this.make.graphics({}, false)
 
     if (!this.scene.isActive('HUDScene')) this.scene.launch('HUDScene')
     if (!this.scene.isActive('PickupNotification')) this.scene.launch('PickupNotification')
@@ -281,8 +323,8 @@ export default class AntColonyScene extends Phaser.Scene {
     // Squeeze-through detection — visual flourish when the player is in a tight gap
     this.updateSqueezeEffect()
 
-    // Fog of war
-    this.fog.erase('fog-eraser', this.webbs.x - FOG_REVEAL_R, this.webbs.y - FOG_REVEAL_R)
+    // Fog of war — raycast visibility polygon
+    this.updateFog()
 
     // Proximity portal triggers
     const distHome = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, HOME_PORTAL_X, HOME_PORTAL_Y)
@@ -363,6 +405,12 @@ export default class AntColonyScene extends Phaser.Scene {
 
     // Boss antechamber wall — protects the boss portal so player threads up a passage
     walls.push({ x: 250, y: 600, w: 700, h: 50 })  // ceiling of antechamber
+
+    // Corridor obstacles — force vertical detours through chambers rather than a
+    // straight east-west walk. Player must zig-zag using ceiling/floor gaps.
+    walls.push({ x: 2980, y: 1280, w: 60, h: 420 })  // hard block @ x=3000 — must detour via chamber
+    walls.push({ x: 4400, y: 1280, w: 50, h: 260 })  // half-block top @ x=4400 — duck under
+    walls.push({ x: 1400, y: 1500, w: 50, h: 220 })  // half-block bottom @ x=1400 — step over
 
     return walls
   }
@@ -544,6 +592,43 @@ export default class AntColonyScene extends Phaser.Scene {
     return false
   }
 
+  // Cast a ray from (px, py) in direction (dx, dy) and return the first point
+  // that hits a wall, or the max-range endpoint if no wall is in the way.
+  private castVisibilityRay(px: number, py: number, dx: number, dy: number, maxDist: number): { x: number, y: number } {
+    for (let d = FOG_RAY_STEP; d <= maxDist; d += FOG_RAY_STEP) {
+      const x = px + dx * d
+      const y = py + dy * d
+      if (this.pointInWall(x, y)) {
+        return { x, y }
+      }
+    }
+    return { x: px + dx * maxDist, y: py + dy * maxDist }
+  }
+
+  // Build a star-shaped visibility polygon around the player and erase it from
+  // the fog texture. Walls cut the rays short so unseen areas stay black.
+  private updateFog(): void {
+    const px = this.webbs.x
+    const py = this.webbs.y
+
+    this.fogEraserGfx.clear()
+    this.fogEraserGfx.fillStyle(0xffffff, 1)
+    this.fogEraserGfx.beginPath()
+
+    for (let i = 0; i <= FOG_RAY_COUNT; i++) {
+      const angle = (i / FOG_RAY_COUNT) * Math.PI * 2
+      const dx = Math.cos(angle)
+      const dy = Math.sin(angle)
+      const hit = this.castVisibilityRay(px, py, dx, dy, FOG_REVEAL_R)
+      if (i === 0) this.fogEraserGfx.moveTo(hit.x, hit.y)
+      else         this.fogEraserGfx.lineTo(hit.x, hit.y)
+    }
+    this.fogEraserGfx.closePath()
+    this.fogEraserGfx.fillPath()
+
+    this.fog.erase(this.fogEraserGfx)
+  }
+
   private checkEnemyContact(): void {
     for (const sp of this.spawnPoints) {
       if (!sp.alive || !sp.ref || sp.ref.isDead()) continue
@@ -671,11 +756,34 @@ export default class AntColonyScene extends Phaser.Scene {
         this.collectMaterialPickup(p)
       }
     }
+    for (const obj of this.hpModuleGroup.getChildren()) {
+      const m = obj as unknown as HpModule
+      if (!m.active) continue
+      if (Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, m.x, m.y) < PICKUP_REACH) {
+        m.collect()
+      }
+    }
   }
 
   private collectMaterialPickup(p: Pickup): void {
     p.collect()
     this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
+  }
+
+  private onHpModulePicked(data: { amount: number, x: number, y: number }): void {
+    const before = this.webbs.hp
+    this.webbs.hp = Math.min(this.webbs.hpMax, before + data.amount)
+    this.health = this.webbs.hp
+    // Small green flash centered on the pickup
+    const ring = this.add.arc(data.x, data.y, 8, 0, 360, false, 0x66ff99, 0.6).setDepth(40)
+    this.tweens.add({
+      targets:    ring,
+      alpha:      0,
+      scaleX:     5,
+      scaleY:     5,
+      duration:   420,
+      onComplete: () => ring.destroy(),
+    })
   }
 
   private syncRegistry(): void {

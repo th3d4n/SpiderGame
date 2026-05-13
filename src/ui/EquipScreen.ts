@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { WeaponType, WeaponSystem } from '../systems/WeaponSystem'
-import { WEAPON_COLORS, WEAPON_DATA, WEAPON_STATS } from '../config/WeaponData'
+import { WEAPON_COLORS, WEAPON_DATA, WEAPON_STATS, dpsFor } from '../config/WeaponData'
 import { drawWeaponIcon } from './WeaponIcon'
 
 const ACCENT      = 0x7777ff
@@ -108,6 +108,14 @@ export default class EquipScreen extends Phaser.Scene {
 
       const circle = this.add.arc(sx, sy, SLOT_R, 0, 360, false, PANEL_BG)
       circle.setStrokeStyle(1.5, 0x333344)
+      circle.setInteractive({ useHandCursor: true })
+      circle.on('pointerdown', () => {
+        this.selectedSlot = i
+        this.panelFocus   = 'left'
+        this.redrawSlots()
+        this.redrawInventory()
+        this.refreshDetailPanel()
+      })
       this.slotCircles.push(circle)
 
       // Weapon icon (hidden when slot is empty)
@@ -388,11 +396,23 @@ export default class EquipScreen extends Phaser.Scene {
 
       const row = this.add.container(0, 0)
 
-      // Selection highlight
+      // Always add an invisible hit area sized to the row so clicks select it
+      const hit = this.add.rectangle(px + 170, rowY + 12, 340, 28, 0x000000, 0)
+      hit.setInteractive({ useHandCursor: true })
+      hit.on('pointerdown', () => {
+        this.panelFocus = 'right'
+        this.selectedWeapon = i
+        this.redrawSlots()
+        this.redrawInventory()
+        this.refreshDetailPanel()
+      })
+      row.add(hit)
+
+      // Selection highlight (drawn on top of the hit area, still passes events through)
       if (isSel) {
-        const hi = this.add.rectangle(px + 170, rowY + 12, 340, 28, 0x1a1a3e, 0.8)
-        hi.setStrokeStyle(1, ACCENT, 0.5)
-        row.add(hi)
+        const highlight = this.add.rectangle(px + 170, rowY + 12, 340, 28, 0x1a1a3e, 0.8)
+        highlight.setStrokeStyle(1, ACCENT, 0.5)
+        row.add(highlight)
       }
 
       // Icon
@@ -408,10 +428,9 @@ export default class EquipScreen extends Phaser.Scene {
       })
       row.add(nameText)
 
-      // Subtitle: damage / cooldown summary
+      // Subtitle: damage / DPS summary
       const cfg = WEAPON_DATA.get(weapon)
-      const stats = WEAPON_STATS[weapon]
-      const sub = `${cfg?.type ?? '—'}  ·  ${cfg?.damage ?? 0} dmg  ·  ${stats.cooldownMs}ms`
+      const sub = `${cfg?.type ?? '—'}  ·  ${cfg?.damage ?? 0} dmg  ·  ${dpsFor(weapon)}`
       const subText = this.add.text(px + 38, rowY + 20, sub, {
         fontFamily: 'monospace',
         fontSize:   '9px',
@@ -446,7 +465,7 @@ export default class EquipScreen extends Phaser.Scene {
     this.detailName.setText(cfg?.name ?? focusedWeapon).setColor(colStr)
     const statsLine =
       `${cfg?.type ?? '—'}   damage ${cfg?.damage ?? 0}   ` +
-      `cd ${stats.cooldownMs}ms   stamina ${cfg?.staminaCost ?? 0}   ` +
+      `${dpsFor(focusedWeapon)}   stamina ${cfg?.staminaCost ?? 0}   ` +
       `range ${stats.range}   tier ${cfg?.requiredTier ?? 0}`
     this.detailStats.setText(statsLine)
     this.detailBlurb.setText(stats.blurb)

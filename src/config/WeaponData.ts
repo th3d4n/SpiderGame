@@ -12,18 +12,20 @@ export const WEAPON_COLORS: Record<WeaponType, number> = {
 }
 
 // All Phase 1 weapons. requiredTier = minimum leg tier to equip in any unlocked slot.
+// Damage values mirror the constants in WeaponUseSystem (and FLAME_DPS for the
+// flame breather, which deals continuous damage). Keep these in sync when tuning.
 export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
   [WeaponType.Sword, {
     name: 'Leg-Attached Broken Sword',
-    damage: 25,
-    staminaCost: 15,
+    damage: 18,
+    staminaCost: 10,
     type: 'melee',
     requiredTier: 0,
   }],
   [WeaponType.Bow, {
     name: 'Web Bow',
-    damage: 20,
-    staminaCost: 10,
+    damage: 22,
+    staminaCost: 12,
     type: 'ranged',
     requiredTier: 0,
   }],
@@ -36,8 +38,8 @@ export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
   }],
   [WeaponType.Axe, {
     name: 'Bolt-On Axe',
-    damage: 50,
-    staminaCost: 28,
+    damage: 44,
+    staminaCost: 22,
     type: 'melee',
     requiredTier: 1,
   }],
@@ -50,8 +52,8 @@ export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
   }],
   [WeaponType.FlameBreather, {
     name: 'Flame Breather',
-    damage: 30,
-    staminaCost: 30,
+    damage: 18,
+    staminaCost: 0,
     type: 'ranged',
     requiredTier: 2,
   }],
@@ -92,7 +94,7 @@ export const WEAPON_STATS: Record<WeaponType, WeaponStats> = {
   },
   [WeaponType.Axe]: {
     cooldownMs: 760,
-    range:      '62u cleave',
+    range:      '88u cleave',
     blurb:      'Slow 170° heavy cleave. Big damage, huge knockback.',
   },
   [WeaponType.BoxingGloves]: {
@@ -106,7 +108,7 @@ export const WEAPON_STATS: Record<WeaponType, WeaponStats> = {
     blurb:      'Traversal aid. No combat damage.',
   },
   [WeaponType.FlameBreather]: {
-    cooldownMs: 0,
+    cooldownMs: 1000,   // damage is already DPS; cd of 1s makes dpsFor() return the raw value
     range:      '120u cone',
     blurb:      'Continuous flame cone. Drains energy while held.',
   },
@@ -115,4 +117,14 @@ export const WEAPON_STATS: Record<WeaponType, WeaponStats> = {
     range:      '480u line',
     blurb:      'Reels in pickups, yanks light enemies, pulls you to walls. Anchors against suction.',
   },
+}
+
+// Sustained damage per second the weapon can output if mashed against a target.
+// Returns "—" for utility / no-damage weapons.
+export function dpsFor(weapon: WeaponType): string {
+  const cfg   = WEAPON_DATA.get(weapon)
+  const stats = WEAPON_STATS[weapon]
+  if (!cfg || cfg.damage <= 0 || stats.cooldownMs <= 0) return '—'
+  const dps = cfg.damage / (stats.cooldownMs / 1000)
+  return `${dps.toFixed(1)} dps`
 }

@@ -14,8 +14,9 @@ const SWORD_STAMINA     = 10
 const SWORD_COOLDOWN    = 280
 const SWORD_KNOCKBACK   = 180
 
-// Axe — slow heavy cleave, big damage + knockback
-const AXE_RADIUS        = 62
+// Axe — slow heavy cleave, big damage + knockback. Reach extends past sword's
+// 70u arc so the cleave feels meaningfully bigger.
+const AXE_RADIUS        = 88
 const AXE_SWEEP_DEG     = 170
 const AXE_DAMAGE        = 44
 const AXE_STAMINA       = 22
