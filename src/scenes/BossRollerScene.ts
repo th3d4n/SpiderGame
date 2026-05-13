@@ -349,6 +349,10 @@ export default class BossRollerScene extends Phaser.Scene {
   private syncRegistry(): void {
     this.registry.set('health',    this.playerHp)
     this.registry.set('healthMax', PLAYER_MAX_HP)
+    this.registry.set('stamina',   this.webbs?.stamina    ?? 100)
+    this.registry.set('staminaMax',this.webbs?.maxStamina ?? 100)
+    this.registry.set('energy',    this.webbs?.energy     ?? 100)
+    this.registry.set('energyMax', this.webbs?.maxEnergy  ?? 100)
     this.registry.set('zoneName',  'ANT COLONY — BOSS')
   }
 

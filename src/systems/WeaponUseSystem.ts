@@ -164,8 +164,8 @@ export class WeaponUseSystem {
   // ── Sword — quick forward arc ─────────────────────────────────────────────
 
   private fireSword(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
-    if (webbs.stamina < SWORD_STAMINA) return
-    webbs.stamina -= SWORD_STAMINA
+    if (webbs.stamina <= 0) return
+    webbs.stamina = Math.max(0, webbs.stamina - SWORD_STAMINA)
     this.cooldowns[slot] = SWORD_COOLDOWN
 
     const arc = scene.add.graphics().setDepth(10)
@@ -185,8 +185,8 @@ export class WeaponUseSystem {
   // ── Axe — slow wide cleave ────────────────────────────────────────────────
 
   private fireAxe(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
-    if (webbs.stamina < AXE_STAMINA) return
-    webbs.stamina -= AXE_STAMINA
+    if (webbs.stamina <= 0) return
+    webbs.stamina = Math.max(0, webbs.stamina - AXE_STAMINA)
     this.cooldowns[slot] = AXE_COOLDOWN
 
     const arc = scene.add.graphics().setDepth(10)
@@ -214,8 +214,8 @@ export class WeaponUseSystem {
       scene.events.emit('bowOutOfAmmo')
       return
     }
-    if (webbs.stamina < BOW_STAMINA) return
-    webbs.stamina -= BOW_STAMINA
+    if (webbs.stamina <= 0) return
+    webbs.stamina = Math.max(0, webbs.stamina - BOW_STAMINA)
     this.cooldowns[slot] = BOW_COOLDOWN
 
     // Consume one thistle and persist back to the registry
@@ -237,8 +237,8 @@ export class WeaponUseSystem {
   // ── Boxing Gloves — quick straight jab, no arc sweep ─────────────────────
 
   private fireGloves(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
-    if (webbs.stamina < GLOVES_STAMINA) return
-    webbs.stamina -= GLOVES_STAMINA
+    if (webbs.stamina <= 0) return
+    webbs.stamina = Math.max(0, webbs.stamina - GLOVES_STAMINA)
     this.cooldowns[slot] = GLOVES_COOLDOWN
 
     // Stab graphic — long thin line tipped with a small triangle

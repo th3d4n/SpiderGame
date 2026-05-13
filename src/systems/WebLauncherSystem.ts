@@ -85,8 +85,8 @@ export class WebLauncherSystem {
     }
 
     if (this.cooldown > 0) return
-    if (webbs.stamina < STAMINA_COST) return
-    webbs.stamina -= STAMINA_COST
+    if (webbs.stamina <= 0) return
+    webbs.stamina = Math.max(0, webbs.stamina - STAMINA_COST)
 
     this.fire(scene, webbs, slot, aim)
     this.cooldown = COOLDOWN_MS

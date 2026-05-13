@@ -18,6 +18,11 @@ export const PLAYER_MAX_HP = 100
 const REGEN_DELAY_MS = 6000
 const REGEN_RATE     = 2         // HP per second — slow trickle, not a panacea
 
+// Stamina recovery + winded behaviour
+const STAMINA_REGEN  = 26        // per second — fast refill so combat flow stays brisk
+const STAMINA_RECOVER_AT = 0.5   // fraction of max stamina required to clear the winded state
+const WINDED_SPEED_MULT  = 0.55  // movement multiplier while winded
+
 export default class Webbs extends Phaser.GameObjects.Container {
   private sprite!: Phaser.GameObjects.Arc
   private legs: Phaser.GameObjects.Line[] = []
@@ -44,6 +49,9 @@ export default class Webbs extends Phaser.GameObjects.Container {
   public facingX: number = 1
   public facingY: number = 0
   public weaponSystem: WeaponSystem
+  // Winded once stamina hits 0 from weapon use — clears when regen climbs back
+  // above STAMINA_RECOVER_AT. While winded the spider moves at WINDED_SPEED_MULT.
+  public winded: boolean = false
   private timeSinceDamage = 99999
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
@@ -280,13 +288,14 @@ export default class Webbs extends Phaser.GameObjects.Container {
   }
 
   update(_time: number, delta: number) {
+    const speed = this.winded ? SPEED * WINDED_SPEED_MULT : SPEED
     let vx = 0
     let vy = 0
 
-    if (this.wasd.left.isDown || this.cursors.left.isDown) vx = -SPEED
-    if (this.wasd.right.isDown || this.cursors.right.isDown) vx = SPEED
-    if (this.wasd.up.isDown || this.cursors.up.isDown) vy = -SPEED
-    if (this.wasd.down.isDown || this.cursors.down.isDown) vy = SPEED
+    if (this.wasd.left.isDown || this.cursors.left.isDown) vx = -speed
+    if (this.wasd.right.isDown || this.cursors.right.isDown) vx = speed
+    if (this.wasd.up.isDown || this.cursors.up.isDown) vy = -speed
+    if (this.wasd.down.isDown || this.cursors.down.isDown) vy = speed
 
     if (vx !== 0 && vy !== 0) {
       vx *= 0.707
@@ -296,8 +305,13 @@ export default class Webbs extends Phaser.GameObjects.Container {
     this.pb.setVelocity(vx, vy)
     if (vx !== 0 || vy !== 0) { this.facingX = vx > 0 ? 1 : vx < 0 ? -1 : 0; this.facingY = vy > 0 ? 1 : vy < 0 ? -1 : 0 }
     const dt = delta / 1000
-    if (this.stamina < this.maxStamina) this.stamina = Math.min(this.maxStamina, this.stamina + 8 * dt)
+    if (this.stamina < this.maxStamina) this.stamina = Math.min(this.maxStamina, this.stamina + STAMINA_REGEN * dt)
     if (this.energy < this.maxEnergy) this.energy = Math.min(this.maxEnergy, this.energy + 5 * dt)
+
+    // Winded — engages when stamina hits 0 from a weapon, clears once we regen
+    // back over STAMINA_RECOVER_AT of max. Movement is slowed while winded.
+    if (this.stamina <= 0) this.winded = true
+    else if (this.winded && this.stamina >= this.maxStamina * STAMINA_RECOVER_AT) this.winded = false
 
     // HP regen after a damage-free grace period
     this.timeSinceDamage += delta

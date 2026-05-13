@@ -35,11 +35,10 @@ export default class HomeBaseScene extends Phaser.Scene {
   private eKey!:             Phaser.Input.Keyboard.Key
   private transitioning      = false
 
-  // Player stats — synced to registry each frame for HUD
+  // Player stats — synced to registry each frame for HUD (stamina/energy come
+  // from webbs directly, since weapons drain them on Webbs)
   private health    = PLAYER_MAX_HP
   private healthMax = PLAYER_MAX_HP
-  private stamina   = 100
-  private energy    = 100
   private contactCooldown = 0
   // Last weapon-key pressed — left-click reuses this slot with mouse-aim
   private activeSlot      = -1
@@ -718,10 +717,10 @@ export default class HomeBaseScene extends Phaser.Scene {
     this.registry.set('zoneName',      'HOME BASE')
     this.registry.set('health',        this.health)
     this.registry.set('healthMax',     this.healthMax)
-    this.registry.set('stamina',       this.stamina)
-    this.registry.set('staminaMax',    100)
-    this.registry.set('energy',        this.energy)
-    this.registry.set('energyMax',     100)
+    this.registry.set('stamina',       this.webbs.stamina)
+    this.registry.set('staminaMax',    this.webbs.maxStamina)
+    this.registry.set('energy',        this.webbs.energy)
+    this.registry.set('energyMax',     this.webbs.maxEnergy)
     this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
     this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
     this.registry.set('legTier',       this.webbs.weaponSystem.getLegTier())

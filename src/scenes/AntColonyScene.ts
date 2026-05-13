@@ -67,11 +67,9 @@ export default class AntColonyScene extends Phaser.Scene {
   private transitioning      = false
   private squeezeTween?:     Phaser.Tweens.Tween
 
-  // Player stats
+  // Player stats — stamina/energy are read directly off webbs each frame
   private health         = PLAYER_MAX_HP
   private healthMax      = PLAYER_MAX_HP
-  private stamina        = 100
-  private energy         = 100
   private contactCooldown = 0
   // Last weapon-key pressed — left-click reuses this slot with mouse-aim
   private activeSlot      = -1
@@ -857,10 +855,10 @@ export default class AntColonyScene extends Phaser.Scene {
     this.registry.set('zoneName',      'ANT COLONY')
     this.registry.set('health',        this.health)
     this.registry.set('healthMax',     this.healthMax)
-    this.registry.set('stamina',       this.stamina)
-    this.registry.set('staminaMax',    100)
-    this.registry.set('energy',        this.energy)
-    this.registry.set('energyMax',     100)
+    this.registry.set('stamina',       this.webbs.stamina)
+    this.registry.set('staminaMax',    this.webbs.maxStamina)
+    this.registry.set('energy',        this.webbs.energy)
+    this.registry.set('energyMax',     this.webbs.maxEnergy)
     this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
     this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
     this.registry.set('legTier',       this.webbs.weaponSystem.getLegTier())

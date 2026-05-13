@@ -3,37 +3,45 @@ import Phaser from 'phaser'
 // Energy module — a small green capsule that restores up to 25 HP on contact.
 // Walk over (or web-reel) to collect.
 //
-// The eerie outer glow is a separate top-level game object at depth 60 so it
-// renders ABOVE the fog of war (depth 51). The capsule body itself sits at the
-// default depth inside the container, so it's only visible when the player is
-// close enough to have cleared the fog at that spot. The result: in the shroud
-// you see a faint glow hint; nearby you see the actual orb.
+// Rendering split:
+//   - A small bright dot sits ABOVE the fog (depth 60) so the orb is visible
+//     through the shroud as a point of light — no spreading illumination.
+//   - A larger soft halo + capsule body sit INSIDE the container at default
+//     depth, hidden by the fog. They only appear (lighting up the surrounding
+//     dirt) once the player has cleared the fog at that spot.
 export const HP_MODULE_AMOUNT = 25
 
-const GLOW_DEPTH = 60
+const ABOVE_FOG_DEPTH = 60
 
 export default class HpModule extends Phaser.GameObjects.Container {
   private collected = false
-  private glow:     Phaser.GameObjects.Arc
-  private glowCore: Phaser.GameObjects.Arc
+  private dot:     Phaser.GameObjects.Arc   // small above-fog visibility dot
+  private dotCore: Phaser.GameObjects.Arc   // tight bright center
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y)
 
     const color = 0x66ff99
 
-    // Outer eerie glow — above fog, ADD blend so it brightens whatever is behind it.
-    this.glow = scene.add.arc(x, y, 34, 0, 360, false, color, 0.35)
+    // Above-fog dot — small enough that no surrounding pixels are tinted. Just
+    // a clear green point of light visible from inside the shroud.
+    this.dot = scene.add.arc(x, y, 7, 0, 360, false, color, 0.85)
       .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(GLOW_DEPTH)
-    this.glowCore = scene.add.arc(x, y, 14, 0, 360, false, color, 0.7)
+      .setDepth(ABOVE_FOG_DEPTH)
+    this.dotCore = scene.add.arc(x, y, 3, 0, 360, false, 0xeeffee, 1)
       .setBlendMode(Phaser.BlendModes.ADD)
-      .setDepth(GLOW_DEPTH)
+      .setDepth(ABOVE_FOG_DEPTH)
 
-    // Inside-container layers — drawn below fog so they're hidden until you're close
-    const innerHalo = scene.add.arc(0, 0, 18, 0, 360, false, color, 0.18)
-    this.add(innerHalo)
+    // Below-fog halo — broad soft glow that only appears once the area is
+    // uncovered. ADD blend so it lights up nearby dirt walls.
+    const broadHalo = scene.add.arc(0, 0, 38, 0, 360, false, color, 0.22)
+      .setBlendMode(Phaser.BlendModes.ADD)
+    this.add(broadHalo)
+    const midHalo = scene.add.arc(0, 0, 22, 0, 360, false, color, 0.38)
+      .setBlendMode(Phaser.BlendModes.ADD)
+    this.add(midHalo)
 
+    // Capsule body — the orb itself, fully visible when the fog is cleared.
     const capsule = scene.add.graphics()
     capsule.fillStyle(0x224422, 0.95)
     capsule.fillRect(-7, -4, 14, 8)
@@ -60,9 +68,9 @@ export default class HpModule extends Phaser.GameObjects.Container {
     const pb = this.body as Phaser.Physics.Arcade.StaticBody
     pb.setCircle(14, -14, -14)
 
-    // Idle bob — animate the container AND the glow halo together
+    // Idle bob — the container moves; the dots are top-level so they bob too
     scene.tweens.add({
-      targets:  [this, this.glow, this.glowCore],
+      targets:  [this, this.dot, this.dotCore],
       y:        y - 4,
       duration: 1100,
       yoyo:     true,
@@ -70,31 +78,29 @@ export default class HpModule extends Phaser.GameObjects.Container {
       ease:     'Sine.easeInOut',
     })
 
-    // Pulsing outer glow
+    // Subtle pulse on the visible dot so it reads as "glowing"
     scene.tweens.add({
-      targets:  this.glow,
-      alpha:    { from: 0.22, to: 0.5 },
-      scaleX:   { from: 0.85, to: 1.15 },
-      scaleY:   { from: 0.85, to: 1.15 },
-      duration: 1400,
-      yoyo:     true,
-      repeat:   -1,
-      ease:     'Sine.easeInOut',
-    })
-    // Pulsing inner halo (counter-phase so the core stays bright when outer dims)
-    scene.tweens.add({
-      targets:  this.glowCore,
-      alpha:    { from: 0.55, to: 0.9 },
-      duration: 900,
+      targets:  this.dot,
+      alpha:    { from: 0.7, to: 1 },
+      duration: 1300,
       yoyo:     true,
       repeat:   -1,
       ease:     'Sine.easeInOut',
     })
 
+    // Below-fog halo breathes as well (only visible once uncovered)
     scene.tweens.add({
-      targets:  innerHalo,
-      alpha:    { from: 0.12, to: 0.42 },
-      duration: 900,
+      targets:  broadHalo,
+      alpha:    { from: 0.15, to: 0.32 },
+      duration: 1600,
+      yoyo:     true,
+      repeat:   -1,
+      ease:     'Sine.easeInOut',
+    })
+    scene.tweens.add({
+      targets:  midHalo,
+      alpha:    { from: 0.28, to: 0.48 },
+      duration: 1000,
       yoyo:     true,
       repeat:   -1,
       ease:     'Sine.easeInOut',
@@ -108,18 +114,18 @@ export default class HpModule extends Phaser.GameObjects.Container {
     this.scene.events.emit('hpModulePicked', { amount: HP_MODULE_AMOUNT, x: this.x, y: this.y })
 
     this.scene.tweens.killTweensOf(this)
-    this.scene.tweens.killTweensOf(this.glow)
-    this.scene.tweens.killTweensOf(this.glowCore)
+    this.scene.tweens.killTweensOf(this.dot)
+    this.scene.tweens.killTweensOf(this.dotCore)
     this.scene.tweens.add({
-      targets:    [this, this.glow, this.glowCore],
+      targets:    [this, this.dot, this.dotCore],
       scaleX:     2.2,
       scaleY:     2.2,
       alpha:      0,
       duration:   240,
       ease:       'Back.easeIn',
       onComplete: () => {
-        this.glow.destroy()
-        this.glowCore.destroy()
+        this.dot.destroy()
+        this.dotCore.destroy()
         this.destroy()
       },
     })
