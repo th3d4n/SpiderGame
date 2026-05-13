@@ -229,20 +229,13 @@ export default class HomeBaseScene extends Phaser.Scene {
   update(time: number, delta: number) {
     if (this.transitioning) return
 
-    // Relay crafting result from CraftingMenu overlay
-    const pendingEquip = this.registry.get('pendingEquip') as WeaponType | null ?? null
-    if (pendingEquip !== null) {
-      this.registry.set('pendingEquip', null)
-      const updated = this.registry.get('craftingInventory') as Record<string, number> | null
-      if (updated) {
-        for (const [mat, amt] of Object.entries(updated)) {
-          this.craftingSystem['inventory'].set(mat as MaterialType, amt)
-        }
+    // Sync the local CraftingSystem with the registry inventory after a craft
+    // (CraftingMenu already pushed the new weapon into weaponInventory directly).
+    const updatedCraftInv = this.registry.get('craftingInventory') as Record<string, number> | null
+    if (updatedCraftInv) {
+      for (const [mat, amt] of Object.entries(updatedCraftInv)) {
+        this.craftingSystem['inventory'].set(mat as MaterialType, amt)
       }
-      // Add crafted weapon to inventory — player assigns it to a slot via EquipScreen (I key)
-      const inv = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
-      inv.push(pendingEquip)
-      this.registry.set('weaponInventory', inv)
     }
 
     this.webbs.update(time, delta)

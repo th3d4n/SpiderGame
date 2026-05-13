@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { RECIPES, type Recipe, type MaterialType } from '../systems/CraftingSystem'
+import { WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
 import { drawWeaponIcon } from './WeaponIcon'
 
@@ -201,8 +202,13 @@ export default class CraftingMenu extends Phaser.Scene {
       const needed = recipe.materials[mat] ?? 0
       this.inventory[mat] = (this.inventory[mat] ?? 0) - needed
     }
-    // Signal GameScene to equip this weapon
-    this.registry.set('pendingEquip', recipe.produces)
+    // Push the crafted weapon directly into the shared inventory so multiple
+    // crafts in one menu session all land (previously a single-slot pendingEquip
+    // flag was being overwritten by each craft and could be missed if the
+    // player opened the EquipScreen before the parent scene ran its update).
+    const inv = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
+    inv.push(recipe.produces)
+    this.registry.set('weaponInventory', inv)
     this.registry.set('craftingInventory', { ...this.inventory })
 
     // Fire notification overlay popup

@@ -7,6 +7,12 @@ const LEG_LENGTH = 40
 const SPEED = 220
 const LEG_COLORS = [0xff4444, 0xff8844, 0xffff44, 0x44ff44, 0x44ffff, 0x4444ff, 0xff44ff, 0xffffff]
 
+// Body collision radii — normal vs squeeze-mode (used by AntColonyScene when
+// passing through narrow gaps). The smaller squeeze radius lets the spider
+// thread through tight 30-45 px passages.
+export const WEBBS_BODY_R_NORMAL  = 22
+export const WEBBS_BODY_R_SQUEEZE = 14
+
 // HP and regen
 export const PLAYER_MAX_HP = 100
 const REGEN_DELAY_MS = 6000
@@ -46,9 +52,19 @@ export default class Webbs extends Phaser.GameObjects.Container {
     scene.add.existing(this)
     scene.physics.add.existing(this)
     this.pb = this.body as Phaser.Physics.Arcade.Body
+    // Default container body is 64x64; shrink to a 22-radius circle so the
+    // spider's collision matches its central shell rather than its leg span.
+    // Tight passages are now passable; legs visually clip walls but the body
+    // doesn't catch on corners.
+    this.setBodyRadius(WEBBS_BODY_R_NORMAL)
     this.pb.setCollideWorldBounds(true)
     this.buildVisuals()
     this.setupInput()
+  }
+
+  /** Resize the arcade body to a circle of the given radius (offset so it's centered on the container). */
+  setBodyRadius(r: number): void {
+    this.pb.setCircle(r, -r, -r)
   }
 
   private buildVisuals() {

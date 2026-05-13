@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import Webbs, { PLAYER_MAX_HP } from '../entities/Webbs'
+import Webbs, { PLAYER_MAX_HP, WEBBS_BODY_R_NORMAL, WEBBS_BODY_R_SQUEEZE } from '../entities/Webbs'
 import Workbench from '../entities/Workbench'
 import Pickup from '../entities/Pickup'
 import HpModule from '../entities/HpModule'
@@ -244,10 +244,16 @@ export default class AntColonyScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.webbs, true, 0.1, 0.1)
     this.cameras.main.setZoom(1.0)
 
+    // Underground ambient dim — sits below the fog so even explored areas stay
+    // slightly dark (it's a cavern; lighting comes from the green HP orbs).
+    this.add.rectangle(0, 0, WORLD_W, WORLD_H, 0x000000, 0.45)
+      .setOrigin(0)
+      .setDepth(50)
+
     // Fog of war — fully opaque, carved by a per-frame visibility polygon so the
     // player cannot see through walls into unexplored areas. Carved areas persist
     // (cumulative reveal), so once you've seen a tile it stays visible.
-    this.fog = this.add.renderTexture(0, 0, WORLD_W, WORLD_H).setOrigin(0).setDepth(50)
+    this.fog = this.add.renderTexture(0, 0, WORLD_W, WORLD_H).setOrigin(0).setDepth(51)
     this.fog.fill(0x000000, 1)
     this.fogEraserGfx = this.make.graphics({}, false)
 
@@ -261,18 +267,13 @@ export default class AntColonyScene extends Phaser.Scene {
   update(time: number, delta: number) {
     if (this.transitioning) return
 
-    const pendingEquip = this.registry.get('pendingEquip') as WeaponType | null ?? null
-    if (pendingEquip !== null) {
-      this.registry.set('pendingEquip', null)
-      const updated = this.registry.get('craftingInventory') as Record<string, number> | null
-      if (updated) {
-        for (const [mat, amt] of Object.entries(updated)) {
-          this.craftingSystem['inventory'].set(mat as MaterialType, amt)
-        }
+    // Sync the local CraftingSystem with the registry inventory after a craft
+    // (CraftingMenu already pushed the new weapon into weaponInventory directly).
+    const updatedCraftInv = this.registry.get('craftingInventory') as Record<string, number> | null
+    if (updatedCraftInv) {
+      for (const [mat, amt] of Object.entries(updatedCraftInv)) {
+        this.craftingSystem['inventory'].set(mat as MaterialType, amt)
       }
-      const inv = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
-      inv.push(pendingEquip)
-      this.registry.set('weaponInventory', inv)
     }
 
     this.webbs.update(time, delta)
@@ -419,15 +420,78 @@ export default class AntColonyScene extends Phaser.Scene {
     this.wallGroup = this.physics.add.staticGroup()
     const g = this.add.graphics().setDepth(2)
     for (const w of this.wallRects) {
+      // Base AABB fill — solid dirt brown.
       g.fillStyle(0x1a1006, 1)
       g.fillRect(w.x, w.y, w.w, w.h)
-      g.lineStyle(2, 0x3a2418, 1)
-      g.strokeRect(w.x, w.y, w.w, w.h)
+
+      // Irregular cavern outline drawn INSIDE the AABB so collision still
+      // matches the physics rectangle. Vertices walk the perimeter with small
+      // inward jitter, producing a hand-dug feel.
+      const rng = new Phaser.Math.RandomDataGenerator([`cave-${w.x}-${w.y}-${w.w}-${w.h}`])
+      const points = this.buildCavernOutline(w, rng)
+      g.fillStyle(0x2a1a0a, 1)
+      g.fillPoints(points, true)
+      g.lineStyle(2, 0x3a2418, 0.9)
+      g.strokePoints(points, true, true)
+
+      // Scatter "dirt clods" — irregular dark spots inside the wall for texture.
+      const clodCount = Math.max(3, Math.floor((w.w * w.h) / 4500))
+      for (let i = 0; i < clodCount; i++) {
+        const cx = w.x + rng.between(4, Math.max(5, w.w - 4))
+        const cy = w.y + rng.between(4, Math.max(5, w.h - 4))
+        const cr = rng.between(2, 5)
+        g.fillStyle(0x120a04, 0.85)
+        g.fillCircle(cx, cy, cr)
+      }
+      // Light speckles to suggest packed sediment
+      const speckles = Math.max(4, Math.floor((w.w * w.h) / 3000))
+      for (let i = 0; i < speckles; i++) {
+        const sx = w.x + rng.between(2, Math.max(3, w.w - 2))
+        const sy = w.y + rng.between(2, Math.max(3, w.h - 2))
+        g.fillStyle(0x4a2e10, 0.5)
+        g.fillRect(sx, sy, 2, 2)
+      }
 
       const body = this.add.rectangle(w.x + w.w / 2, w.y + w.h / 2, w.w, w.h, 0x000000, 0)
       this.physics.add.existing(body, true)
       this.wallGroup.add(body)
     }
+  }
+
+  // Build a list of x,y pairs that walk the wall's perimeter with small random
+  // insets, never crossing outside the AABB. Used as both the fill polygon and
+  // the stroke path so the wall reads as a natural cavern surface.
+  private buildCavernOutline(w: Wall, rng: Phaser.Math.RandomDataGenerator): number[] {
+    const pts: number[] = []
+    const stepH = Math.max(2, Math.floor(w.w / 26))
+    const stepV = Math.max(2, Math.floor(w.h / 26))
+    const jitter = (max: number) => rng.between(0, max)
+
+    // Top edge: left -> right
+    for (let i = 0; i <= stepH; i++) {
+      const x = w.x + Math.round((i / stepH) * w.w)
+      const y = w.y + jitter(4)
+      pts.push(x, y)
+    }
+    // Right edge: top -> bottom
+    for (let i = 1; i <= stepV; i++) {
+      const x = w.x + w.w - jitter(4)
+      const y = w.y + Math.round((i / stepV) * w.h)
+      pts.push(x, y)
+    }
+    // Bottom edge: right -> left
+    for (let i = 1; i <= stepH; i++) {
+      const x = w.x + w.w - Math.round((i / stepH) * w.w)
+      const y = w.y + w.h - jitter(4)
+      pts.push(x, y)
+    }
+    // Left edge: bottom -> top (skip final point — it's the start)
+    for (let i = 1; i < stepV; i++) {
+      const x = w.x + jitter(4)
+      const y = w.y + w.h - Math.round((i / stepV) * w.h)
+      pts.push(x, y)
+    }
+    return pts
   }
 
   private drawGapMarkers(): void {
@@ -703,10 +767,13 @@ export default class AntColonyScene extends Phaser.Scene {
 
     if (inTightVerticalGap && this.webbs.scaleY > 0.72) {
       this.tweenScale(this.webbs.scaleX, 0.65)
+      this.webbs.setBodyRadius(WEBBS_BODY_R_SQUEEZE)
     } else if (inTightHorizontalGap && this.webbs.scaleX > 0.72) {
       this.tweenScale(0.65, this.webbs.scaleY)
+      this.webbs.setBodyRadius(WEBBS_BODY_R_SQUEEZE)
     } else if (!inTightVerticalGap && !inTightHorizontalGap && (this.webbs.scaleX < 0.98 || this.webbs.scaleY < 0.98)) {
       this.tweenScale(1, 1)
+      this.webbs.setBodyRadius(WEBBS_BODY_R_NORMAL)
     }
   }
 
