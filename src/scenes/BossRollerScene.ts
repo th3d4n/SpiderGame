@@ -23,9 +23,26 @@ const ROCK_INTERVAL     = 3000   // ms between volleys
 const SUCTION_INTERVAL  = 20000  // ms between suction events
 const SUCTION_WARN_DUR  = 2000
 const SUCTION_ACTIVE_DUR = 4000
-const SUCTION_FORCE     = 150
+// Unanchored suction is overpowering — WASD movement at 220 px/s can't fight it
+const SUCTION_FORCE     = 520
 const SUCTION_ANCHORED  = 20
-const PUNCH_RADIUS      = 80
+// If the suction drags the player within this radius of the nose, the boss has
+// "got them" and they die instantly. Tuned so being pressed against the cavern
+// barrier directly under the nose counts as absorbed.
+const SUCTION_ABSORB_R  = 150
+
+// Physical barrier between the spider and the nose — invisible wall body that
+// stops the spider from climbing into melee range. Visuals are drawn as cavern
+// rocks in drawTunnel().
+const NOSE_BARRIER_Y    = NOSE_Y + 110
+const NOSE_BARRIER_H    = 14
+const NOSE_BARRIER_W    = 360
+
+// Melee rock-reflection — any melee swing within reach knocks rocks back at
+// the nose, but with random spread so most still miss.
+const REFLECT_REACH     = 95
+const REFLECT_HALF_DEG  = 80                       // 160° sweep
+const REFLECT_SPREAD_DEG = 22                      // ±22° accuracy noise
 
 // Phase 2 roller spawn
 const ROLLER_SPAWN_X = 300
@@ -66,9 +83,7 @@ export default class BossRollerScene extends Phaser.Scene {
   private webAnchored        = false
   private anchorLine!:       Phaser.GameObjects.Graphics
   private anchorPoint        = new Phaser.Math.Vector2(0, 0)
-  private spaceKey!:         Phaser.Input.Keyboard.Key
   private qKey!:             Phaser.Input.Keyboard.Key
-  private punchCooldown      = 0
   private dustTexture        = false
 
   // Phase 2 state
@@ -108,7 +123,6 @@ export default class BossRollerScene extends Phaser.Scene {
     this.suctionActive   = false
     this.webAnchored     = false
     this.damageCooldown  = 0
-    this.punchCooldown   = 0
     this.dustTexture     = false
     this.retreatTriggered = false
   }
@@ -118,9 +132,18 @@ export default class BossRollerScene extends Phaser.Scene {
 
     this.drawTunnel()
 
-    // Phase 1 boss — nose is a real Enemy so it takes weapon damage
+    // Phase 1 boss — the nose itself is unreachable; rocks reflected back at
+    // it are the only damage path. The physical barrier below it is built in
+    // drawTunnel(); the nose is otherwise just a target for those rocks.
     this.nose = new BossNose(this, NOSE_X, NOSE_Y)
     this.nose.setDepth(5)
+
+    // Cavern barrier — invisible static body that stops the spider from
+    // climbing into the nose's hit radius. Sized wider than the visible rocks
+    // so melee swings can't graze the nose from the side either.
+    const barrier = this.add.rectangle(NOSE_X, NOSE_BARRIER_Y, NOSE_BARRIER_W, NOSE_BARRIER_H, 0x000000, 0)
+    this.physics.add.existing(barrier, true)
+    this.physics.add.collider(this.webbs, barrier)
 
     // Player — Webbs instance handles WASD movement internally
     this.webbs = new Webbs(this, PLAYER_SPAWN_X, PLAYER_SPAWN_Y)
@@ -145,19 +168,22 @@ export default class BossRollerScene extends Phaser.Scene {
     this.cameras.main.setZoom(1.0)
 
     // Input
-    this.spaceKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE)
-    this.qKey     = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q)
+    this.qKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q)
     // Suppress browser context menu so the right mouse button is free for later use
     this.input.mouse?.disableContextMenu()
 
-    // Weapon use — keys 1-8 fire equipped weapons against the nose / roller
+    // Weapon use — Phase 1 has no enemy list (the nose is recessed and only
+    // takes damage from rocks the player melee-reflects back at it). Phase 2
+    // sets the roller as the enemy when it spawns.
     this.weaponUseSystem = new WeaponUseSystem()
-    this.weaponUseSystem.setEnemies([this.nose as unknown as Enemy])
+    this.weaponUseSystem.setEnemies([])
     this.weaponUseSystem.setWorldBounds(W, H)
 
-    // Web launcher — Q attaches to nose/roller (small targets pull to player; nose pulls player to wall)
+    // Web launcher — Q attaches to walls. The nose is unreachable, so the web
+    // doesn't grab it either. The launcher's attached state doubles as the
+    // suction anchor for Phase 1.
     this.webLauncher = new WebLauncherSystem()
-    this.webLauncher.setEnemies([this.nose as unknown as Enemy])
+    this.webLauncher.setEnemies([])
     this.webLauncher.setWorldBounds(W, H)
     // Tunnel walls are the screen edges; anchor wherever the projectile lands
     this.webLauncher.setWallHitTest((x, y) => x < 60 || x > W - 60 || y < 90 || y > H - 60)
@@ -268,6 +294,29 @@ export default class BossRollerScene extends Phaser.Scene {
       const ry = 30 + Math.sin(angle) * 28
       hole.fillTriangle(rx - 9, ry - 6, rx + 9, ry - 6, rx, ry + 14)
     }
+
+    // Recessed protective ridge — boulders across the chamber under the nose,
+    // making it visually obvious that melee can't reach. Matches the invisible
+    // physics barrier placed at NOSE_BARRIER_Y in create().
+    const ridge = this.add.graphics().setDepth(4)
+    ridge.fillStyle(0x4a2e08, 1)
+    ridge.lineStyle(2, 0x1a0e02, 0.9)
+    // Connecting earthwork
+    ridge.fillRect(NOSE_X - 180, NOSE_BARRIER_Y - 4, 360, 14)
+    ridge.strokeRect(NOSE_X - 180, NOSE_BARRIER_Y - 4, 360, 14)
+    // Five rocky chunks across the ridge
+    for (let i = -2; i <= 2; i++) {
+      const cx = NOSE_X + i * 56
+      const r  = 18 + Math.abs(i) * 2
+      ridge.fillCircle(cx, NOSE_BARRIER_Y + 2, r)
+      ridge.strokeCircle(cx, NOSE_BARRIER_Y + 2, r)
+    }
+    // Spikes pointing down to sell the "you can't get past this" feel
+    ridge.fillStyle(0x2a1804, 1)
+    for (let i = 0; i < 7; i++) {
+      const dx = NOSE_X - 168 + i * 56
+      ridge.fillTriangle(dx, NOSE_BARRIER_Y + 18, dx + 18, NOSE_BARRIER_Y + 18, dx + 9, NOSE_BARRIER_Y + 36)
+    }
   }
 
   // ── UI ────────────────────────────────────────────────────────────────────
@@ -373,6 +422,15 @@ export default class BossRollerScene extends Phaser.Scene {
     } else {
       this.weaponUseSystem.activateWeapon(this.activeSlot, this.webbs, this, aim)
     }
+    if (BossRollerScene.isMelee(weapon)) {
+      this.tryReflectWithMelee(aim.dx, aim.dy)
+    }
+  }
+
+  private static isMelee(weapon: WeaponType): boolean {
+    return weapon === WeaponType.Sword
+        || weapon === WeaponType.Axe
+        || weapon === WeaponType.BoxingGloves
   }
 
   // ── Player damage ─────────────────────────────────────────────────────────
@@ -395,6 +453,8 @@ export default class BossRollerScene extends Phaser.Scene {
     this.cameras.main.fade(800, 50, 0, 0)
     this.time.delayedCall(800, () => {
       this.clearRocks()
+      // Reset HP in the registry so the next scene doesn't immediately re-kill
+      this.registry.set('health', PLAYER_MAX_HP)
       this.scene.start('GameScene')
     })
   }
@@ -461,49 +521,46 @@ export default class BossRollerScene extends Phaser.Scene {
     }
   }
 
-  private tryPunch(): void {
-    if (this.punchCooldown > 0) return
-    this.punchCooldown = 350
+  // Called whenever the player fires a melee weapon during Phase 1. Rocks
+  // within the swing arc get knocked back toward the nose with random spread
+  // so most still miss — the fight is about surviving until one lands.
+  private tryReflectWithMelee(aimDx: number, aimDy: number): void {
+    if (this.bossPhase !== 1) return
+    const facingAngle = Math.atan2(aimDy, aimDx)
+    const halfSweep   = Phaser.Math.DegToRad(REFLECT_HALF_DEG)
+    const spread      = Phaser.Math.DegToRad(REFLECT_SPREAD_DEG)
+    let anyHit = false
 
-    let hit = false
     for (const rock of this.rockList) {
       if (rock.reflected) continue
-      const dist = Phaser.Math.Distance.Between(
-        this.webbs.x, this.webbs.y,
-        rock.arc.x,   rock.arc.y,
-      )
-      if (dist <= PUNCH_RADIUS) {
-        // Redirect toward nose
-        const angle = Phaser.Math.Angle.Between(rock.arc.x, rock.arc.y, NOSE_X, NOSE_Y)
-        const speed = Phaser.Math.FloatBetween(360, 480)
-        rock.body.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed)
-        rock.body.setAcceleration(0, 0)
-        rock.reflected = true
-        rock.arc.setFillStyle(0xffaa44)  // tint to show reflected
-        hit = true
-      }
+      const dist = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, rock.arc.x, rock.arc.y)
+      if (dist > REFLECT_REACH) continue
+      const toRock = Math.atan2(rock.arc.y - this.webbs.y, rock.arc.x - this.webbs.x)
+      const diff   = Math.abs(Phaser.Math.Angle.Wrap(toRock - facingAngle))
+      if (diff > halfSweep) continue
+
+      const baseAngle = Phaser.Math.Angle.Between(rock.arc.x, rock.arc.y, NOSE_X, NOSE_Y)
+      const angle = baseAngle + Phaser.Math.FloatBetween(-spread, spread)
+      const speed = Phaser.Math.FloatBetween(420, 540)
+      rock.body.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed)
+      rock.body.setAcceleration(0, 0)
+      rock.reflected = true
+      rock.arc.setFillStyle(0xffaa44)
+
+      // Reflection sparkle so the player sees they connected
+      const ring = this.add.arc(rock.arc.x, rock.arc.y, 9, 0, 360, false, 0xffdd44, 0.7).setDepth(12)
+      this.tweens.add({
+        targets:    ring,
+        alpha:      0,
+        scaleX:     2.6,
+        scaleY:     2.6,
+        duration:   240,
+        onComplete: () => ring.destroy(),
+      })
+      anyHit = true
     }
 
-    // Punch visual flash
-    if (hit) {
-      this.cameras.main.shake(60, 0.003)
-    }
-    // Show glove flash even on miss
-    this.showPunchFlash()
-  }
-
-  private showPunchFlash(): void {
-    const g = this.add.graphics().setDepth(12)
-    g.fillStyle(0xffdd44, 0.7)
-    g.fillCircle(this.webbs.x, this.webbs.y, 40)
-    this.tweens.add({
-      targets:    g,
-      alpha:      0,
-      scaleX:     2,
-      scaleY:     2,
-      duration:   220,
-      onComplete: () => g.destroy(),
-    })
+    if (anyHit) this.cameras.main.shake(60, 0.003)
   }
 
   private rockHitNose(rx: number, ry: number): void {
@@ -585,6 +642,17 @@ export default class BossRollerScene extends Phaser.Scene {
       this.webbs.pb.velocity.x + Math.cos(angle) * force,
       this.webbs.pb.velocity.y + Math.sin(angle) * force,
     )
+
+    // Lethal absorb — if an unanchored spider reaches the nose, the boss gets
+    // them and they die outright. Anchoring with the web is the only way to
+    // survive a suction event.
+    if (!this.webAnchored) {
+      const dist = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, NOSE_X, NOSE_Y)
+      if (dist < SUCTION_ABSORB_R) {
+        this.damageCooldown = 0
+        this.takeDamage(PLAYER_MAX_HP * 2)
+      }
+    }
   }
 
   private clearRocks(): void {
@@ -784,7 +852,6 @@ export default class BossRollerScene extends Phaser.Scene {
 
   update(time: number, delta: number): void {
     if (this.damageCooldown > 0) this.damageCooldown -= delta
-    if (this.punchCooldown  > 0) this.punchCooldown  -= delta
 
     // Player movement
     this.webbs.update(time, delta)
@@ -802,6 +869,9 @@ export default class BossRollerScene extends Phaser.Scene {
           this.webLauncher.onQPressed(this, this.webbs, aim)
         } else {
           this.weaponUseSystem.activateWeapon(i, this.webbs, this, aim)
+        }
+        if (BossRollerScene.isMelee(weapon)) {
+          this.tryReflectWithMelee(aim.dx, aim.dy)
         }
       }
     }
@@ -866,7 +936,7 @@ export default class BossRollerScene extends Phaser.Scene {
         this.suctionActive     = true
         this.suctionActiveTimer = SUCTION_ACTIVE_DUR
         this.hideWarning()
-        this.showWarning('ANCHOR A WALL  [Q]')
+        this.showWarning('ANCHOR  [Q]  OR  DIE')
       }
     }
 
@@ -880,11 +950,6 @@ export default class BossRollerScene extends Phaser.Scene {
     }
 
     this.updateRocks(delta)
-
-    // Punch input
-    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
-      this.tryPunch()
-    }
 
     // Player rock contact damage
     for (const rock of this.rockList) {
