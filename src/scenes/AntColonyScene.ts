@@ -40,10 +40,10 @@ const FOG_REVEAL_R = 300
 // Number of raycasts per visibility polygon — higher = smoother edges, more cost
 const FOG_RAY_COUNT = 48
 const FOG_RAY_STEP  = 14    // px per ray sample
-// Movement threshold below which we skip re-erasing the fog this frame.
-// Re-drawing a polygon into the 7500x5000 RenderTexture every tick is the
-// dominant per-frame cost; with persistent reveal there's nothing new to
-// uncover until the player has moved a noticeable amount.
+// Fog texture is rendered at 1/FOG_SCALE resolution and setScale(FOG_SCALE)
+// to cover the full world. Drops texture size from 37.5MP → 375K pixels (100×).
+const FOG_SCALE = 10
+// Movement threshold (world px²) below which we skip re-erasing the fog.
 const FOG_MOVE_THRESHOLD_SQ = 4 * 4
 
 // Off-screen culling — enemy AI and chest update calls skip when this far
@@ -338,7 +338,8 @@ export default class AntColonyScene extends Phaser.Scene {
     // Fog of war — fully opaque, carved by a per-frame visibility polygon so the
     // player cannot see through walls into unexplored areas. Carved areas persist
     // (cumulative reveal), so once you've seen a tile it stays visible.
-    this.fog = this.add.renderTexture(0, 0, WORLD_W, WORLD_H).setOrigin(0).setDepth(51)
+    this.fog = this.add.renderTexture(0, 0, WORLD_W / FOG_SCALE, WORLD_H / FOG_SCALE)
+      .setOrigin(0).setDepth(51).setScale(FOG_SCALE)
     this.fog.fill(0x000000, 1)
     this.fogEraserGfx = this.make.graphics({}, false)
 
@@ -349,16 +350,8 @@ export default class AntColonyScene extends Phaser.Scene {
     ZoneTransitionSystem.announceZone(this, 'ZONE 1 — ANT COLONY')
   }
 
-  // Temporary perf probe — logs worst update section every ~2 s to console.
-  private _perfSamples: Record<string, number> = {}
-  private _perfFrames = 0
-
   update(time: number, delta: number) {
     if (this.transitioning) return
-
-    const _t = (label: string, start: number) => {
-      this._perfSamples[label] = (this._perfSamples[label] ?? 0) + (performance.now() - start)
-    }
 
     // Sync the local CraftingSystem with the registry inventory after a craft
     // (CraftingMenu already pushed the new weapon into weaponInventory directly).
@@ -369,9 +362,15 @@ export default class AntColonyScene extends Phaser.Scene {
       }
     }
 
-    let _s = performance.now(); this.webbs.update(time, delta); _t('webbs', _s)
-    _s = performance.now(); this.weaponUseSystem.update(delta); this.webLauncher.update(this, this.webbs, delta); _t('weapons', _s)
-    _s = performance.now(); this.consumableSystem.tick(delta); this.webbs.maxProtectionActive = this.consumableSystem.isMaxProtActive(); this.weaponUseSystem.staminaDrainMult = this.consumableSystem.getStaminaDrainMult(); this.handleConsumableKeys(); _t('consumables', _s)
+    this.webbs.update(time, delta)
+    this.weaponUseSystem.update(delta)
+    this.webLauncher.update(this, this.webbs, delta)
+
+    // Consumable tick + effect application
+    this.consumableSystem.tick(delta)
+    this.webbs.maxProtectionActive = this.consumableSystem.isMaxProtActive()
+    this.weaponUseSystem.staminaDrainMult = this.consumableSystem.getStaminaDrainMult()
+    this.handleConsumableKeys()
 
     for (let i = 0; i < this.weaponKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
@@ -390,11 +389,11 @@ export default class AntColonyScene extends Phaser.Scene {
       this.webLauncher.onQPressed(this, this.webbs, this.aimToPointer())
     }
 
-    _s = performance.now(); this.collectPickupsInRange(); _t('pickups', _s)
+    // Pickup proximity sweep — body + legs roll over pickups
+    this.collectPickupsInRange()
 
     // Enemy ticking + respawn timers — only tick enemies near the player so
     // 20+ off-screen AI/raycast loops don't churn every frame.
-    _s = performance.now()
     const px = this.webbs.x
     const py = this.webbs.y
     for (const sp of this.spawnPoints) {
@@ -409,7 +408,6 @@ export default class AntColonyScene extends Phaser.Scene {
         if (sp.respawnTimer <= 0) this.respawnSpawnPoint(sp)
       }
     }
-    _t('enemies', _s)
 
     const eJustDown = Phaser.Input.Keyboard.JustDown(this.eKey)
 
@@ -423,20 +421,16 @@ export default class AntColonyScene extends Phaser.Scene {
     if (this.contactCooldown > 0) this.contactCooldown -= delta
     else                          this.checkEnemyContact()
 
-    _s = performance.now(); this.checkDeadEndTriggers(); this.updateChests(eJustDown); _t('chests', _s)
+    this.checkDeadEndTriggers()
+    this.updateChests(eJustDown)
 
     this.health = this.webbs.hp
 
-    _s = performance.now(); this.updateSqueezeEffect(); _t('squeeze', _s)
-    _s = performance.now(); this.updateFog(); _t('fog', _s)
+    // Squeeze-through detection — visual flourish when the player is in a tight gap
+    this.updateSqueezeEffect()
 
-    // Log accumulated times every 120 frames (~2 s at 60 fps)
-    if (++this._perfFrames >= 120) {
-      const sorted = Object.entries(this._perfSamples).sort((a, b) => b[1] - a[1])
-      console.log('[AntColony perf 2s totals ms]', Object.fromEntries(sorted.map(([k, v]) => [k, v.toFixed(1)])))
-      this._perfSamples = {}
-      this._perfFrames = 0
-    }
+    // Fog of war — raycast visibility polygon
+    this.updateFog()
 
     // Proximity portal triggers
     const distHome = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, HOME_PORTAL_X, HOME_PORTAL_Y)
@@ -916,20 +910,19 @@ export default class AntColonyScene extends Phaser.Scene {
 
   // Build a star-shaped visibility polygon around the player and erase it from
   // the fog texture. Walls cut the rays short so unseen areas stay black.
+  // Raycasting runs in world space; the resulting polygon is converted to
+  // fog-texture space (÷ FOG_SCALE) before being erased into the small texture.
   private updateFog(): void {
-    const px = this.webbs.x
-    const py = this.webbs.y
-    // The reveal is cumulative — once erased, fog pixels stay clear forever.
-    // So if the player hasn't moved meaningfully we have no new pixels to clear
-    // and can skip the (expensive) RenderTexture.erase() call this frame.
-    const ddx = px - this.lastFogX
-    const ddy = py - this.lastFogY
+    const wx = this.webbs.x
+    const wy = this.webbs.y
+    // Skip if the player hasn't moved — cumulative reveal means nothing new to clear.
+    const ddx = wx - this.lastFogX
+    const ddy = wy - this.lastFogY
     if (ddx * ddx + ddy * ddy < FOG_MOVE_THRESHOLD_SQ) return
-    this.lastFogX = px
-    this.lastFogY = py
-    // Pre-filter to only walls in reveal range — avoids checking the whole maze
-    // per sample (cuts per-frame rect tests from ~150 k down to a few hundred).
-    const visWalls = this.nearbyWalls(px, py, FOG_REVEAL_R + FOG_RAY_STEP)
+    this.lastFogX = wx
+    this.lastFogY = wy
+
+    const visWalls = this.nearbyWalls(wx, wy, FOG_REVEAL_R + FOG_RAY_STEP)
 
     this.fogEraserGfx.clear()
     this.fogEraserGfx.fillStyle(0xffffff, 1)
@@ -939,9 +932,12 @@ export default class AntColonyScene extends Phaser.Scene {
       const angle = (i / FOG_RAY_COUNT) * Math.PI * 2
       const dx = Math.cos(angle)
       const dy = Math.sin(angle)
-      const hit = this.castVisibilityRay(px, py, dx, dy, FOG_REVEAL_R, visWalls)
-      if (i === 0) this.fogEraserGfx.moveTo(hit.x, hit.y)
-      else         this.fogEraserGfx.lineTo(hit.x, hit.y)
+      // Raycast in world space; convert hit to fog-texture space for the erase polygon.
+      const hit = this.castVisibilityRay(wx, wy, dx, dy, FOG_REVEAL_R, visWalls)
+      const tx = hit.x / FOG_SCALE
+      const ty = hit.y / FOG_SCALE
+      if (i === 0) this.fogEraserGfx.moveTo(tx, ty)
+      else         this.fogEraserGfx.lineTo(tx, ty)
     }
     this.fogEraserGfx.closePath()
     this.fogEraserGfx.fillPath()
