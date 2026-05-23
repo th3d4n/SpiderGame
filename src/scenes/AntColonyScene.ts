@@ -40,6 +40,15 @@ const FOG_REVEAL_R = 300
 // Number of raycasts per visibility polygon — higher = smoother edges, more cost
 const FOG_RAY_COUNT = 48
 const FOG_RAY_STEP  = 14    // px per ray sample
+// Movement threshold below which we skip re-erasing the fog this frame.
+// Re-drawing a polygon into the 7500x5000 RenderTexture every tick is the
+// dominant per-frame cost; with persistent reveal there's nothing new to
+// uncover until the player has moved a noticeable amount.
+const FOG_MOVE_THRESHOLD_SQ = 4 * 4
+
+// Off-screen culling — enemy AI and chest update calls skip when this far
+// from the player (viewport is 1280x720, so ~900px covers screen + margin).
+const ACTIVE_RADIUS_SQ = 900 * 900
 
 // Respawn timer for fallen enemies (ms) — long enough that combats feel won
 const RESPAWN_MS = 22000
@@ -82,6 +91,8 @@ export default class AntColonyScene extends Phaser.Scene {
   private chestGroup!:       Phaser.Physics.Arcade.StaticGroup
   private fog!:              Phaser.GameObjects.RenderTexture
   private fogEraserGfx!:     Phaser.GameObjects.Graphics
+  private lastFogX           = -99999
+  private lastFogY           = -99999
   // Positions of all the green algae "lanterns" scattered around the colony.
   // Each beacon gets a bright above-fog dot so it stays visible through the
   // shroud; the larger uncovered glow lives below the fog.
@@ -380,10 +391,18 @@ export default class AntColonyScene extends Phaser.Scene {
     // Pickup proximity sweep — body + legs roll over pickups
     this.collectPickupsInRange()
 
-    // Enemy ticking + respawn timers
+    // Enemy ticking + respawn timers — only tick enemies near the player so
+    // 20+ off-screen AI/raycast loops don't churn every frame.
+    const px = this.webbs.x
+    const py = this.webbs.y
     for (const sp of this.spawnPoints) {
-      if (sp.alive && sp.ref) sp.ref.update(time, delta)
-      else {
+      if (sp.alive && sp.ref) {
+        const ex = sp.ref.x, ey = sp.ref.y
+        const dxe = ex - px, dye = ey - py
+        if (dxe * dxe + dye * dye <= ACTIVE_RADIUS_SQ) {
+          sp.ref.update(time, delta)
+        }
+      } else {
         sp.respawnTimer -= delta
         if (sp.respawnTimer <= 0) this.respawnSpawnPoint(sp)
       }
@@ -893,6 +912,14 @@ export default class AntColonyScene extends Phaser.Scene {
   private updateFog(): void {
     const px = this.webbs.x
     const py = this.webbs.y
+    // The reveal is cumulative — once erased, fog pixels stay clear forever.
+    // So if the player hasn't moved meaningfully we have no new pixels to clear
+    // and can skip the (expensive) RenderTexture.erase() call this frame.
+    const ddx = px - this.lastFogX
+    const ddy = py - this.lastFogY
+    if (ddx * ddx + ddy * ddy < FOG_MOVE_THRESHOLD_SQ) return
+    this.lastFogX = px
+    this.lastFogY = py
     // Pre-filter to only walls in reveal range — avoids checking the whole maze
     // per sample (cuts per-frame rect tests from ~150 k down to a few hundred).
     const visWalls = this.nearbyWalls(px, py, FOG_REVEAL_R + FOG_RAY_STEP)
@@ -1022,8 +1049,12 @@ export default class AntColonyScene extends Phaser.Scene {
   }
 
   private updateChests(eJustDown: boolean): void {
+    const px = this.webbs.x
+    const py = this.webbs.y
     for (const chest of this.chests) {
-      const result = chest.update(this.webbs.x, this.webbs.y, eJustDown)
+      const dx = chest.x - px, dy = chest.y - py
+      if (dx * dx + dy * dy > ACTIVE_RADIUS_SQ) continue
+      const result = chest.update(px, py, eJustDown)
       if (!result) continue
 
       if (result.opened) {
