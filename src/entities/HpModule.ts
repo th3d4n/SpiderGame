@@ -32,13 +32,11 @@ export default class HpModule extends Phaser.GameObjects.Container {
       .setBlendMode(Phaser.BlendModes.ADD)
       .setDepth(ABOVE_FOG_DEPTH)
 
-    // Below-fog halo — broad soft glow that only appears once the area is
-    // uncovered. ADD blend so it lights up nearby dirt walls.
-    const broadHalo = scene.add.arc(0, 0, 38, 0, 360, false, color, 0.22)
-      .setBlendMode(Phaser.BlendModes.ADD)
+    // Below-fog halo — broad soft glow visible once the area is uncovered.
+    // Normal blend (no ADD) so all 9 HP modules batch in one WebGL draw call.
+    const broadHalo = scene.add.arc(0, 0, 38, 0, 360, false, color, 0.32)
     this.add(broadHalo)
-    const midHalo = scene.add.arc(0, 0, 22, 0, 360, false, color, 0.38)
-      .setBlendMode(Phaser.BlendModes.ADD)
+    const midHalo = scene.add.arc(0, 0, 22, 0, 360, false, color, 0.52)
     this.add(midHalo)
 
     // Capsule body — the orb itself, fully visible when the fog is cleared.

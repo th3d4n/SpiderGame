@@ -752,6 +752,15 @@ export default class HomeBaseScene extends Phaser.Scene {
       this.giftContainer.setVisible(false)
       this.giftPrompt.setVisible(false)
 
+      // Equip the Web Thrower into slot 0 and add it to the known inventory so
+      // it's available immediately and persists across zone transitions.
+      this.webbs.weaponSystem.equip(0, WeaponType.WebLauncher)
+      const inv = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
+      if (!inv.includes(WeaponType.WebLauncher)) {
+        inv.push(WeaponType.WebLauncher)
+        this.registry.set('weaponInventory', inv)
+      }
+
       const celebData: CelebData = {
         itemName:       'Web Thrower',
         description:    '',

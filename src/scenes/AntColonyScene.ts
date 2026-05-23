@@ -392,16 +392,22 @@ export default class AntColonyScene extends Phaser.Scene {
     // Pickup proximity sweep — body + legs roll over pickups
     this.collectPickupsInRange()
 
-    // Enemy ticking + respawn timers — only tick enemies near the player so
-    // 20+ off-screen AI/raycast loops don't churn every frame.
+    // Enemy ticking + respawn timers — only tick enemies near the player.
+    // Also disable the Arcade physics body for off-screen enemies so they
+    // don't participate in the per-frame broadphase (23 bodies × 50 walls
+    // is expensive even when AI is skipped).
     const px = this.webbs.x
     const py = this.webbs.y
     for (const sp of this.spawnPoints) {
       if (sp.alive && sp.ref) {
         const ex = sp.ref.x, ey = sp.ref.y
         const dxe = ex - px, dye = ey - py
-        if (dxe * dxe + dye * dye <= ACTIVE_RADIUS_SQ) {
+        const inRange = dxe * dxe + dye * dye <= ACTIVE_RADIUS_SQ
+        if (inRange) {
+          if (!sp.ref.pb.enable) sp.ref.pb.setEnable(true)
           sp.ref.update(time, delta)
+        } else {
+          if (sp.ref.pb.enable) sp.ref.pb.setEnable(false)
         }
       } else {
         sp.respawnTimer -= delta
