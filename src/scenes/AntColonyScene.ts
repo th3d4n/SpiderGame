@@ -355,6 +355,9 @@ export default class AntColonyScene extends Phaser.Scene {
 
   // Temporary diagnostic — counts growing things every 2s so we can spot the leak.
   private _diagFrames = 0
+  private _diagDeltaSum = 0
+  private _diagDeltaMax = 0
+  private _diagSlowFrames = 0
 
   update(time: number, delta: number) {
     if (this.transitioning) return
@@ -368,23 +371,28 @@ export default class AntColonyScene extends Phaser.Scene {
       }
     }
 
+    this._diagDeltaSum += delta
+    if (delta > this._diagDeltaMax) this._diagDeltaMax = delta
+    if (delta > 30) this._diagSlowFrames++
+
     if (++this._diagFrames >= 120) {
-      this._diagFrames = 0
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mem = (performance as any).memory
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const clock = this.time as any
       const timerCount = (clock._active?.length ?? 0) + (clock._pendingInsertion?.length ?? 0)
-      console.log('[Colony diag]', {
-        tweens:        this.tweens.getTweens().length,
-        displayList:   this.children.list.length,
-        dynamicBodies: this.physics.world.bodies.size,
-        staticBodies:  this.physics.world.staticBodies.size,
-        pickups:       this.pickupGroup.getChildren().length,
-        timers:        timerCount,
-        heapMB:        mem ? (mem.usedJSHeapSize / 1048576).toFixed(1) : 'n/a',
-        delta:         delta.toFixed(1),
-      })
+      const avgDelta   = this._diagDeltaSum / this._diagFrames
+      console.log(
+        `[diag] avgDelta=${avgDelta.toFixed(1)} maxDelta=${this._diagDeltaMax.toFixed(0)} slow=${this._diagSlowFrames}/${this._diagFrames}` +
+        ` heap=${mem ? (mem.usedJSHeapSize / 1048576).toFixed(0) + 'MB' : 'n/a'}` +
+        ` tweens=${this.tweens.getTweens().length} dl=${this.children.list.length}` +
+        ` dyn=${this.physics.world.bodies.size} stat=${this.physics.world.staticBodies.size}` +
+        ` pickups=${this.pickupGroup.getChildren().length} timers=${timerCount}`
+      )
+      this._diagFrames = 0
+      this._diagDeltaSum = 0
+      this._diagDeltaMax = 0
+      this._diagSlowFrames = 0
     }
 
     this.webbs.update(time, delta)
