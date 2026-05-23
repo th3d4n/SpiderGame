@@ -36,10 +36,10 @@ const CONTACT_COOLDOWN = 750
 const CONTACT_RADIUS   = 28 + 16
 
 // Fog of war reveal radius
-const FOG_REVEAL_R = 320
+const FOG_REVEAL_R = 300
 // Number of raycasts per visibility polygon — higher = smoother edges, more cost
-const FOG_RAY_COUNT = 72
-const FOG_RAY_STEP  = 8     // px per ray sample
+const FOG_RAY_COUNT = 48
+const FOG_RAY_STEP  = 14    // px per ray sample
 
 // Respawn timer for fallen enemies (ms) — long enough that combats feel won
 const RESPAWN_MS = 22000
@@ -732,11 +732,7 @@ export default class AntColonyScene extends Phaser.Scene {
         g.fillStyle(0x1a0a0a, 0.4)
         g.fillRect(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
       } else if (room.type === 'mimic') {
-        // Chest room — faint gold shimmer
-        g.fillStyle(0x332200, 0.5)
-        g.fillRect(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
-        g.fillStyle(0xffcc44, 0.15)
-        g.fillRect(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
+        // No floor tint — chest room looks identical to a plain passage
       }
     }
   }
@@ -860,8 +856,17 @@ export default class AntColonyScene extends Phaser.Scene {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  private pointInWall(x: number, y: number): boolean {
-    for (const w of this.wallRects) {
+  // Returns only walls that overlap a circle of the given radius around (cx, cy).
+  // Used to pre-filter before per-sample checks so we only iterate nearby geometry.
+  private nearbyWalls(cx: number, cy: number, radius: number): Wall[] {
+    return this.wallRects.filter(w =>
+      w.x - radius < cx && w.x + w.w + radius > cx &&
+      w.y - radius < cy && w.y + w.h + radius > cy
+    )
+  }
+
+  private pointInWall(x: number, y: number, walls?: Wall[]): boolean {
+    for (const w of walls ?? this.wallRects) {
       if (x >= w.x && x <= w.x + w.w && y >= w.y && y <= w.y + w.h) return true
     }
     return false
@@ -869,13 +874,16 @@ export default class AntColonyScene extends Phaser.Scene {
 
   // Cast a ray from (px, py) in direction (dx, dy) and return the first point
   // that hits a wall, or the max-range endpoint if no wall is in the way.
-  private castVisibilityRay(px: number, py: number, dx: number, dy: number, maxDist: number): { x: number, y: number } {
+  private castVisibilityRay(
+    px: number, py: number,
+    dx: number, dy: number,
+    maxDist: number,
+    walls: Wall[],
+  ): { x: number, y: number } {
     for (let d = FOG_RAY_STEP; d <= maxDist; d += FOG_RAY_STEP) {
       const x = px + dx * d
       const y = py + dy * d
-      if (this.pointInWall(x, y)) {
-        return { x, y }
-      }
+      if (this.pointInWall(x, y, walls)) return { x, y }
     }
     return { x: px + dx * maxDist, y: py + dy * maxDist }
   }
@@ -885,6 +893,9 @@ export default class AntColonyScene extends Phaser.Scene {
   private updateFog(): void {
     const px = this.webbs.x
     const py = this.webbs.y
+    // Pre-filter to only walls in reveal range — avoids checking the whole maze
+    // per sample (cuts per-frame rect tests from ~150 k down to a few hundred).
+    const visWalls = this.nearbyWalls(px, py, FOG_REVEAL_R + FOG_RAY_STEP)
 
     this.fogEraserGfx.clear()
     this.fogEraserGfx.fillStyle(0xffffff, 1)
@@ -894,7 +905,7 @@ export default class AntColonyScene extends Phaser.Scene {
       const angle = (i / FOG_RAY_COUNT) * Math.PI * 2
       const dx = Math.cos(angle)
       const dy = Math.sin(angle)
-      const hit = this.castVisibilityRay(px, py, dx, dy, FOG_REVEAL_R)
+      const hit = this.castVisibilityRay(px, py, dx, dy, FOG_REVEAL_R, visWalls)
       if (i === 0) this.fogEraserGfx.moveTo(hit.x, hit.y)
       else         this.fogEraserGfx.lineTo(hit.x, hit.y)
     }
@@ -1022,10 +1033,12 @@ export default class AntColonyScene extends Phaser.Scene {
           if (loot.material) {
             this.craftingSystem.addMaterial(loot.material, loot.qty)
             craftingDirty = true
+            this.events.emit('itemPickedUp', { materialType: loot.material, quantity: loot.qty })
           }
           if (loot.consumable) {
             this.consumableSystem.addConsumable(loot.consumable, loot.qty)
             consumableDirty = true
+            this.events.emit('chestLooted', { label: loot.consumable.replace(/([A-Z])/g, ' $1').trim(), qty: loot.qty })
             if (loot.consumable === 'MaxPotion') {
               this.triggerPickupCelebration({
                 itemName:    'Max Potion',
@@ -1099,11 +1112,13 @@ export default class AntColonyScene extends Phaser.Scene {
   // on opposing sides), apply a subtle compression scale to sell the squeeze.
 
   private updateSqueezeEffect(): void {
+    // Pre-filter walls to squeeze detection range to avoid full-list scans
+    const sqWalls = this.nearbyWalls(this.webbs.x, this.webbs.y, 220)
     // Sample wall distances in the 4 cardinal directions
-    const up    = this.distanceToWall(this.webbs.x, this.webbs.y,  0, -1)
-    const down  = this.distanceToWall(this.webbs.x, this.webbs.y,  0,  1)
-    const left  = this.distanceToWall(this.webbs.x, this.webbs.y, -1,  0)
-    const right = this.distanceToWall(this.webbs.x, this.webbs.y,  1,  0)
+    const up    = this.distanceToWall(this.webbs.x, this.webbs.y,  0, -1, sqWalls)
+    const down  = this.distanceToWall(this.webbs.x, this.webbs.y,  0,  1, sqWalls)
+    const left  = this.distanceToWall(this.webbs.x, this.webbs.y, -1,  0, sqWalls)
+    const right = this.distanceToWall(this.webbs.x, this.webbs.y,  1,  0, sqWalls)
 
     const verticalGap   = up + down       // distance from wall-above to wall-below
     const horizontalGap = left + right
@@ -1133,11 +1148,11 @@ export default class AntColonyScene extends Phaser.Scene {
 
   // Cast a ray in (dx,dy) from (x,y) and return distance to nearest wall edge,
   // capped at 200px so far-open spaces don't keep returning huge values.
-  private distanceToWall(x: number, y: number, dx: number, dy: number): number {
-    const STEP = 4
+  private distanceToWall(x: number, y: number, dx: number, dy: number, walls?: Wall[]): number {
+    const STEP = 8
     const MAX  = 200
     for (let d = STEP; d <= MAX; d += STEP) {
-      if (this.pointInWall(x + dx * d, y + dy * d)) return d
+      if (this.pointInWall(x + dx * d, y + dy * d, walls)) return d
     }
     return MAX
   }

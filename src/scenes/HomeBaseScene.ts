@@ -310,8 +310,8 @@ export default class HomeBaseScene extends Phaser.Scene {
       }
     }
 
-    // Q → web launcher (only after the gift box sequence is complete)
-    if (Phaser.Input.Keyboard.JustDown(this.qKey) && this.registry.get('webThrowerFound')) {
+    // Q → web launcher
+    if (Phaser.Input.Keyboard.JustDown(this.qKey)) {
       this.webLauncher.onQPressed(this, this.webbs, this.aimToPointer())
     }
 

@@ -7,14 +7,28 @@ const MAT_COLORS: Partial<Record<MaterialType, number>> = {
   [MaterialType.CrystalDust]: 0x888899,
   [MaterialType.VenomGland]:  0x44aa44,
   [MaterialType.Thistle]:     0xcc99ff,
+  [MaterialType.WebFluid]:    0x66aadd,
+  [MaterialType.BoneFragment]:0xccbbaa,
+  [MaterialType.Stone]:       0x888888,
+  [MaterialType.Wood]:        0x7a4f2a,
+  [MaterialType.BugPartsAnt]: 0x6b8c3a,
+  [MaterialType.DriedFungus]: 0xb87a30,
+  [MaterialType.CrystalShard]:0x88ccff,
 }
 
 const MAT_LABELS: Partial<Record<MaterialType, string>> = {
   [MaterialType.SilkThread]:  'Silk Thread',
   [MaterialType.ChitinShard]: 'Chitin',
-  [MaterialType.CrystalDust]: 'Crystal',
-  [MaterialType.VenomGland]:  'Venom',
+  [MaterialType.CrystalDust]: 'Crystal Dust',
+  [MaterialType.VenomGland]:  'Venom Gland',
   [MaterialType.Thistle]:     'Thistle',
+  [MaterialType.WebFluid]:    'Web Fluid',
+  [MaterialType.BoneFragment]:'Bone Fragment',
+  [MaterialType.Stone]:       'Stone',
+  [MaterialType.Wood]:        'Wood',
+  [MaterialType.BugPartsAnt]: 'Ant Parts',
+  [MaterialType.DriedFungus]: 'Dried Fungus',
+  [MaterialType.CrystalShard]:'Crystal Shard',
 }
 
 interface PickupEvent {
@@ -27,9 +41,15 @@ interface CraftedEvent {
   color:       number
 }
 
+interface ChestLootedEvent {
+  label: string
+  qty:   number
+}
+
 type CardEvent =
   | { kind: 'pickup', materialType: MaterialType, quantity: number }
   | { kind: 'craft',  displayName: string, color: number }
+  | { kind: 'chest',  label: string, qty: number }
 
 const CARD_W   = 240
 const CARD_H   = 50
@@ -55,15 +75,17 @@ export default class PickupNotification extends Phaser.Scene {
         s.scene.key !== 'EquipScreen' &&
         s.scene.key !== 'HUDScene'
       ) {
-        s.events.on('itemPickedUp', this.onPickedUp, this)
-        s.events.on('itemCrafted',  this.onCrafted,  this)
+        s.events.on('itemPickedUp', this.onPickedUp,   this)
+        s.events.on('itemCrafted',  this.onCrafted,    this)
+        s.events.on('chestLooted',  this.onChestLooted, this)
       }
     })
 
     this.events.once('shutdown', () => {
       this.scene.manager.scenes.forEach(s => {
-        s.events.off('itemPickedUp', this.onPickedUp, this)
-        s.events.off('itemCrafted',  this.onCrafted,  this)
+        s.events.off('itemPickedUp', this.onPickedUp,   this)
+        s.events.off('itemCrafted',  this.onCrafted,    this)
+        s.events.off('chestLooted',  this.onChestLooted, this)
       })
     })
   }
@@ -75,6 +97,11 @@ export default class PickupNotification extends Phaser.Scene {
 
   private onCrafted(data: CraftedEvent): void {
     this.queue.push({ kind: 'craft', displayName: data.displayName, color: data.color })
+    if (!this.showing) this.showNext()
+  }
+
+  private onChestLooted(data: ChestLootedEvent): void {
+    this.queue.push({ kind: 'chest', label: data.label, qty: data.qty })
     if (!this.showing) this.showNext()
   }
 
@@ -91,8 +118,10 @@ export default class PickupNotification extends Phaser.Scene {
         `+${ev.quantity}`,
         MAT_COLORS[ev.materialType] ?? 0xffffff,
       )
-    } else {
+    } else if (ev.kind === 'craft') {
       this.showCard(`Crafted: ${ev.displayName}`, 'Added to inventory', ev.color)
+    } else {
+      this.showCard(`Found: ${ev.label}`, `+${ev.qty}`, 0xffcc44)
     }
   }
 

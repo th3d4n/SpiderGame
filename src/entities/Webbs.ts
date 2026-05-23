@@ -19,9 +19,9 @@ const REGEN_DELAY_MS = 6000
 const REGEN_RATE     = 2         // HP per second — slow trickle, not a panacea
 
 // Stamina recovery + winded behaviour
-const STAMINA_REGEN  = 26        // per second — fast refill so combat flow stays brisk
-const STAMINA_RECOVER_AT = 0.5   // fraction of max stamina required to clear the winded state
-const WINDED_SPEED_MULT  = 0.55  // movement multiplier while winded
+const STAMINA_REGEN  = 40        // per second — fast refill so combat flow stays brisk
+const STAMINA_RECOVER_AT = 0.2   // fraction of max stamina required to clear the winded state
+const WINDED_SPEED_MULT  = 0.65  // movement multiplier while winded
 
 export default class Webbs extends Phaser.GameObjects.Container {
   private sprite!: Phaser.GameObjects.Arc
