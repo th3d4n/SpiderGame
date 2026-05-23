@@ -316,6 +316,7 @@ export default class AntColonyScene extends Phaser.Scene {
       if (!this.scene.isActive('EquipScreen')) {
         this.registry.set('equipCallerScene', 'AntColonyScene')
         this.scene.launch('EquipScreen')
+        this.scene.pause()
       }
     })
 
@@ -353,12 +354,6 @@ export default class AntColonyScene extends Phaser.Scene {
     ZoneTransitionSystem.announceZone(this, 'ZONE 1 — ANT COLONY')
   }
 
-  // Temporary diagnostic — counts growing things every 2s so we can spot the leak.
-  private _diagFrames = 0
-  private _diagDeltaSum = 0
-  private _diagDeltaMax = 0
-  private _diagSlowFrames = 0
-
   update(time: number, delta: number) {
     if (this.transitioning) return
 
@@ -369,30 +364,6 @@ export default class AntColonyScene extends Phaser.Scene {
       for (const [mat, amt] of Object.entries(updatedCraftInv)) {
         this.craftingSystem['inventory'].set(mat as MaterialType, amt)
       }
-    }
-
-    this._diagDeltaSum += delta
-    if (delta > this._diagDeltaMax) this._diagDeltaMax = delta
-    if (delta > 30) this._diagSlowFrames++
-
-    if (++this._diagFrames >= 120) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mem = (performance as any).memory
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const clock = this.time as any
-      const timerCount = (clock._active?.length ?? 0) + (clock._pendingInsertion?.length ?? 0)
-      const avgDelta   = this._diagDeltaSum / this._diagFrames
-      console.log(
-        `[diag] avgDelta=${avgDelta.toFixed(1)} maxDelta=${this._diagDeltaMax.toFixed(0)} slow=${this._diagSlowFrames}/${this._diagFrames}` +
-        ` heap=${mem ? (mem.usedJSHeapSize / 1048576).toFixed(0) + 'MB' : 'n/a'}` +
-        ` tweens=${this.tweens.getTweens().length} dl=${this.children.list.length}` +
-        ` dyn=${this.physics.world.bodies.size} stat=${this.physics.world.staticBodies.size}` +
-        ` pickups=${this.pickupGroup.getChildren().length} timers=${timerCount}`
-      )
-      this._diagFrames = 0
-      this._diagDeltaSum = 0
-      this._diagDeltaMax = 0
-      this._diagSlowFrames = 0
     }
 
     this.webbs.update(time, delta)
@@ -455,6 +426,8 @@ export default class AntColonyScene extends Phaser.Scene {
       this.registry.set('legTier',           this.webbs.weaponSystem.getLegTier())
       this.registry.set('callerScene', 'AntColonyScene')
       this.scene.launch('CraftingMenu')
+      this.scene.pause()
+      return
     }
 
     if (this.contactCooldown > 0) this.contactCooldown -= delta
@@ -646,7 +619,10 @@ export default class AntColonyScene extends Phaser.Scene {
       g.strokePoints(points, true, true)
 
       // Scatter "dirt clods" — irregular dark spots inside the wall for texture.
-      const clodCount = Math.max(3, Math.floor((w.w * w.h) / 4500))
+      // Capped at 6 per wall: Phaser re-tessellates Graphics every frame in WebGL,
+      // and a 2000×470 wall would otherwise have ~200 fillCircles = 6,000 triangles
+      // re-uploaded per frame. The cap keeps total scene triangles in check.
+      const clodCount = Math.min(6, Math.max(3, Math.floor((w.w * w.h) / 4500)))
       for (let i = 0; i < clodCount; i++) {
         const cx = w.x + rng.between(4, Math.max(5, w.w - 4))
         const cy = w.y + rng.between(4, Math.max(5, w.h - 4))
@@ -654,8 +630,8 @@ export default class AntColonyScene extends Phaser.Scene {
         g.fillStyle(0x120a04, 0.85)
         g.fillCircle(cx, cy, cr)
       }
-      // Light speckles to suggest packed sediment
-      const speckles = Math.max(4, Math.floor((w.w * w.h) / 3000))
+      // Light speckles to suggest packed sediment — also capped.
+      const speckles = Math.min(8, Math.max(4, Math.floor((w.w * w.h) / 3000)))
       for (let i = 0; i < speckles; i++) {
         const sx = w.x + rng.between(2, Math.max(3, w.w - 2))
         const sy = w.y + rng.between(2, Math.max(3, w.h - 2))
@@ -674,8 +650,9 @@ export default class AntColonyScene extends Phaser.Scene {
   // the stroke path so the wall reads as a natural cavern surface.
   private buildCavernOutline(w: Wall, rng: Phaser.Math.RandomDataGenerator): number[] {
     const pts: number[] = []
-    const stepH = Math.max(2, Math.floor(w.w / 26))
-    const stepV = Math.max(2, Math.floor(w.h / 26))
+    // Coarser steps (52 vs 26) keep large walls from dragging in huge polygons.
+    const stepH = Math.max(2, Math.floor(w.w / 52))
+    const stepV = Math.max(2, Math.floor(w.h / 52))
     const jitter = (max: number) => rng.between(0, max)
 
     // Top edge: left -> right
