@@ -41,7 +41,8 @@ const FOG_REVEAL_R = 300
 const FOG_RAY_COUNT = 48
 const FOG_RAY_STEP  = 14    // px per ray sample
 // Fog texture is rendered at 1/FOG_SCALE resolution and setScale(FOG_SCALE)
-// to cover the full world. Drops texture size from 37.5MP → 375K pixels (100×).
+// to cover the full world. Scale=10 drops 37.5MP → 375K pixels (100×).
+// LINEAR filter below smooths the upscale so the blocky edges aren't sharp.
 const FOG_SCALE = 10
 // Movement threshold (world px²) below which we skip re-erasing the fog.
 const FOG_MOVE_THRESHOLD_SQ = 4 * 4
@@ -327,7 +328,7 @@ export default class AntColonyScene extends Phaser.Scene {
     // Camera
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H)
     this.cameras.main.startFollow(this.webbs, true, 0.1, 0.1)
-    this.cameras.main.setZoom(1.0)
+    this.cameras.main.setZoom(1.15)
 
     // Underground ambient dim — sits below the fog so even explored areas stay
     // slightly dark (it's a cavern; lighting comes from the green HP orbs).
@@ -340,6 +341,8 @@ export default class AntColonyScene extends Phaser.Scene {
     // (cumulative reveal), so once you've seen a tile it stays visible.
     this.fog = this.add.renderTexture(0, 0, WORLD_W / FOG_SCALE, WORLD_H / FOG_SCALE)
       .setOrigin(0).setDepth(51).setScale(FOG_SCALE)
+    // Linear filter so the 4× scale-up blurs rather than pixelates.
+    this.fog.texture.source[0].setFilter(Phaser.Textures.FilterMode.LINEAR)
     this.fog.fill(0x000000, 1)
     this.fogEraserGfx = this.make.graphics({}, false)
 
@@ -349,6 +352,9 @@ export default class AntColonyScene extends Phaser.Scene {
     this.syncRegistry()
     ZoneTransitionSystem.announceZone(this, 'ZONE 1 — ANT COLONY')
   }
+
+  // Temporary diagnostic — counts growing things every 2s so we can spot the leak.
+  private _diagFrames = 0
 
   update(time: number, delta: number) {
     if (this.transitioning) return
@@ -360,6 +366,25 @@ export default class AntColonyScene extends Phaser.Scene {
       for (const [mat, amt] of Object.entries(updatedCraftInv)) {
         this.craftingSystem['inventory'].set(mat as MaterialType, amt)
       }
+    }
+
+    if (++this._diagFrames >= 120) {
+      this._diagFrames = 0
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mem = (performance as any).memory
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const clock = this.time as any
+      const timerCount = (clock._active?.length ?? 0) + (clock._pendingInsertion?.length ?? 0)
+      console.log('[Colony diag]', {
+        tweens:        this.tweens.getTweens().length,
+        displayList:   this.children.list.length,
+        dynamicBodies: this.physics.world.bodies.size,
+        staticBodies:  this.physics.world.staticBodies.size,
+        pickups:       this.pickupGroup.getChildren().length,
+        timers:        timerCount,
+        heapMB:        mem ? (mem.usedJSHeapSize / 1048576).toFixed(1) : 'n/a',
+        delta:         delta.toFixed(1),
+      })
     }
 
     this.webbs.update(time, delta)
@@ -1119,6 +1144,19 @@ export default class AntColonyScene extends Phaser.Scene {
     this.time.delayedCall(700, () => this.scene.start('HomeBaseScene'))
   }
 
+  // Schedule a fade-out and destroy for a loot pickup that hasn't been collected.
+  // Prevents uncollected drops from accumulating infinite bob tweens + StaticBodies
+  // across many enemy respawn cycles.
+  private scheduleLootDespawn(p: Pickup): void {
+    this.time.delayedCall(40000, () => {
+      if (!p.active) return
+      this.tweens.add({
+        targets: p, alpha: 0, duration: 600,
+        onComplete: () => { if (p.active) p.destroy() },
+      })
+    })
+  }
+
   private spawnLootAt(data: { x: number, y: number, loot: Array<{ material: MaterialType, quantity: number }>, stuckThistles?: number }): void {
     // Material loot
     if (data.loot && data.loot.length > 0) {
@@ -1126,6 +1164,7 @@ export default class AntColonyScene extends Phaser.Scene {
         const offX = (i - (data.loot.length - 1) / 2) * 22
         const p = new Pickup(this, data.x + offX, data.y, drop.material, drop.quantity, this.craftingSystem)
         this.pickupGroup.add(p, true)
+        this.scheduleLootDespawn(p)
       })
     }
     // Each thistle embedded in the corpse has a 70-90% chance to be recoverable.
@@ -1145,6 +1184,7 @@ export default class AntColonyScene extends Phaser.Scene {
   private spawnThistleAt(data: { x: number, y: number }): void {
     const p = new Pickup(this, data.x, data.y, 'Thistle', 1, this.craftingSystem)
     this.pickupGroup.add(p, true)
+    this.scheduleLootDespawn(p)
   }
 
   // ── Squeeze-through animation ─────────────────────────────────────────────

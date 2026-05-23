@@ -14,9 +14,11 @@ export const HP_MODULE_AMOUNT = 25
 const ABOVE_FOG_DEPTH = 60
 
 export default class HpModule extends Phaser.GameObjects.Container {
-  private collected = false
-  private dot:     Phaser.GameObjects.Arc   // small above-fog visibility dot
-  private dotCore: Phaser.GameObjects.Arc   // tight bright center
+  private collected  = false
+  private dot:       Phaser.GameObjects.Arc
+  private dotCore:   Phaser.GameObjects.Arc
+  private broadHalo: Phaser.GameObjects.Arc
+  private midHalo:   Phaser.GameObjects.Arc
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y)
@@ -34,10 +36,10 @@ export default class HpModule extends Phaser.GameObjects.Container {
 
     // Below-fog halo — broad soft glow visible once the area is uncovered.
     // Normal blend (no ADD) so all 9 HP modules batch in one WebGL draw call.
-    const broadHalo = scene.add.arc(0, 0, 38, 0, 360, false, color, 0.32)
-    this.add(broadHalo)
-    const midHalo = scene.add.arc(0, 0, 22, 0, 360, false, color, 0.52)
-    this.add(midHalo)
+    this.broadHalo = scene.add.arc(0, 0, 38, 0, 360, false, color, 0.32)
+    this.add(this.broadHalo)
+    this.midHalo = scene.add.arc(0, 0, 22, 0, 360, false, color, 0.52)
+    this.add(this.midHalo)
 
     // Capsule body — the orb itself, fully visible when the fog is cleared.
     const capsule = scene.add.graphics()
@@ -88,7 +90,7 @@ export default class HpModule extends Phaser.GameObjects.Container {
 
     // Below-fog halo breathes as well (only visible once uncovered)
     scene.tweens.add({
-      targets:  broadHalo,
+      targets:  this.broadHalo,
       alpha:    { from: 0.15, to: 0.32 },
       duration: 1600,
       yoyo:     true,
@@ -96,7 +98,7 @@ export default class HpModule extends Phaser.GameObjects.Container {
       ease:     'Sine.easeInOut',
     })
     scene.tweens.add({
-      targets:  midHalo,
+      targets:  this.midHalo,
       alpha:    { from: 0.28, to: 0.48 },
       duration: 1000,
       yoyo:     true,
@@ -114,6 +116,8 @@ export default class HpModule extends Phaser.GameObjects.Container {
     this.scene.tweens.killTweensOf(this)
     this.scene.tweens.killTweensOf(this.dot)
     this.scene.tweens.killTweensOf(this.dotCore)
+    this.scene.tweens.killTweensOf(this.broadHalo)
+    this.scene.tweens.killTweensOf(this.midHalo)
     this.scene.tweens.add({
       targets:    [this, this.dot, this.dotCore],
       scaleX:     2.2,
