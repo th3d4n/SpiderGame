@@ -7,6 +7,11 @@ const MAT_COLORS: Partial<Record<MaterialType, number>> = {
   [MaterialType.CrystalDust]: 0x888899,
   [MaterialType.VenomGland]:  0x44aa44,
   [MaterialType.Thistle]:     0xcc99ff,
+  [MaterialType.Stone]:       0x888888,
+  [MaterialType.Wood]:        0x7a4f2a,
+  [MaterialType.BugPartsAnt]: 0x6b8c3a,
+  [MaterialType.DriedFungus]:  0xb87a30,
+  [MaterialType.CrystalShard]: 0x88ccff,
 }
 
 const MAT_LABELS: Partial<Record<MaterialType, string>> = {
@@ -15,6 +20,11 @@ const MAT_LABELS: Partial<Record<MaterialType, string>> = {
   [MaterialType.CrystalDust]: 'Crystal',
   [MaterialType.VenomGland]:  'Venom',
   [MaterialType.Thistle]:     'Thistle',
+  [MaterialType.Stone]:       'Stone',
+  [MaterialType.Wood]:        'Wood',
+  [MaterialType.BugPartsAnt]: 'Ant Parts',
+  [MaterialType.DriedFungus]:  'Dry Fungus',
+  [MaterialType.CrystalShard]: 'Crystal Shard',
 }
 
 export default class Pickup extends Phaser.GameObjects.Container {

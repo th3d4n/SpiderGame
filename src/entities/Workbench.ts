@@ -61,15 +61,18 @@ export default class Workbench extends Phaser.GameObjects.Container {
     })
   }
 
-  update(target: { x: number; y: number }, eKey: Phaser.Input.Keyboard.Key): boolean {
+  update(
+    target: { x: number; y: number },
+    eKey: Phaser.Input.Keyboard.Key,
+    eJustDown?: boolean,
+  ): boolean {
     const dist = Phaser.Math.Distance.Between(this.x, this.y, target.x, target.y)
     const inRange = dist <= INTERACT_RADIUS
 
     this.promptText.setVisible(inRange)
 
-    if (inRange && Phaser.Input.Keyboard.JustDown(eKey)) {
-      return true
-    }
+    const pressed = eJustDown !== undefined ? eJustDown : Phaser.Input.Keyboard.JustDown(eKey)
+    if (inRange && pressed) return true
     return false
   }
 }

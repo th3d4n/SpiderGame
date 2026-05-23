@@ -52,6 +52,8 @@ export default class Webbs extends Phaser.GameObjects.Container {
   // Winded once stamina hits 0 from weapon use — clears when regen climbs back
   // above STAMINA_RECOVER_AT. While winded the spider moves at WINDED_SPEED_MULT.
   public winded: boolean = false
+  // Set true while Max Potion protection is active — blocks HP loss and knockback.
+  public maxProtectionActive: boolean = false
   private timeSinceDamage = 99999
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
@@ -225,7 +227,7 @@ export default class Webbs extends Phaser.GameObjects.Container {
   }
 
   damage(amount: number): void {
-    if (amount <= 0) return
+    if (amount <= 0 || this.maxProtectionActive) return
     this.hp = Math.max(0, this.hp - amount)
     this.timeSinceDamage = 0
     this.playDamageFlash()

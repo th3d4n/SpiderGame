@@ -9,10 +9,31 @@ import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
 import { WebLauncherSystem } from '../systems/WebLauncherSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
+import type { CelebData } from './PickupCelebration'
+import type { TextDisplayData } from './TextDisplayScene'
 
 const WORLD_W   = 2560
 const WORLD_H   = 720
 const FLOOR_Y   = WORLD_H - 60   // visual floor top edge
+
+const BIRTHDAY_CARD_X  = 2200
+const BIRTHDAY_GIFT_X  = 2380
+const INTERACT_RANGE   = 100
+
+const CARD_PAGES: string[] = [
+  'Webbs,\n\nWe are so excited for your birthday.',
+  'You have accomplished so much, and you have never\nlet the difficulty of what you don\'t have\nstop you from accomplishing what you\nput your heart into.',
+  'We are so proud of you.',
+  'We made you this.\n\nIt\'s a Web Thrower.\nIt\'s experimental — but you are the perfect\nperson to test it out for the Den.',
+  'Happy Birthday.\n\nWe love you.',
+]
+
+const WEB_THROWER_TUTORIAL: string[] = [
+  'Web Thrower acquired.\n\nYour family built this for you.\nIt fires a web line at whatever you aim at.',
+  'Aim with your cursor.\nFire with [ Q ].\n\nThe web travels fast.\nIt sticks to almost anything.',
+  'If you hit a smaller enemy, the web wraps\naround them and yanks them toward you.\n\nThey\'ll be stunned for a moment —\nenough time to follow up with a leg attack.',
+  'The Web Thrower never runs out of web.\n\nIt is always with you.\nIt never takes up a leg slot.\n\nUse it often.',
+]
 
 // Left-exit trigger
 const LEFT_TRIGGER = 100
@@ -43,6 +64,16 @@ export default class HomeBaseScene extends Phaser.Scene {
   // Last weapon-key pressed — left-click reuses this slot with mouse-aim
   private activeSlot      = -1
 
+  // Birthday sequence state
+  private cardContainer!:            Phaser.GameObjects.Container
+  private giftContainer!:            Phaser.GameObjects.Container
+  private cardPrompt!:               Phaser.GameObjects.Text
+  private giftPrompt!:               Phaser.GameObjects.Text
+  private birthdayCardRead           = false
+  private giftBoxOpened              = false
+  private birthdaySequenceLaunching  = false
+  private cardTextLaunching          = false
+
   constructor() {
     super({ key: 'HomeBaseScene' })
   }
@@ -50,7 +81,11 @@ export default class HomeBaseScene extends Phaser.Scene {
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   create() {
-    this.transitioning = false
+    this.transitioning            = false
+    this.birthdaySequenceLaunching = false
+    this.cardTextLaunching         = false
+    this.birthdayCardRead          = this.registry.get('birthdayCardRead')  as boolean ?? false
+    this.giftBoxOpened             = this.registry.get('webThrowerFound')   as boolean ?? false
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H)
 
     // Restore health from registry if returning from another zone
@@ -64,8 +99,22 @@ export default class HomeBaseScene extends Phaser.Scene {
     this.drawHalfBuiltInventions()
     this.drawFoodStores()
     this.drawPersonalItems()
+    this.drawBirthdayArea()
     this.drawExits()
     this.spawnDustParticles()
+
+    // Interaction prompt texts — toggled visible in update() by proximity
+    this.cardPrompt = this.add.text(BIRTHDAY_CARD_X, FLOOR_Y - 58, '[ E ] Read Card', {
+      fontFamily: 'monospace',
+      fontSize:   '11px',
+      color:      '#ffaacc',
+    }).setOrigin(0.5).setDepth(10).setVisible(false)
+
+    this.giftPrompt = this.add.text(BIRTHDAY_GIFT_X, FLOOR_Y - 58, '[ E ] Open Gift', {
+      fontFamily: 'monospace',
+      fontSize:   '11px',
+      color:      '#aaaaff',
+    }).setOrigin(0.5).setDepth(10).setVisible(false)
 
     // Workbench at center-right of scene
     this.workbench = new Workbench(this, 1820, FLOOR_Y - 40)
@@ -134,9 +183,8 @@ export default class HomeBaseScene extends Phaser.Scene {
         }
       }
     } else {
-      // First-load loadout — Webbs only has his web launcher to start.
-      // Everything else must be found in the world or crafted.
-      this.webbs.weaponSystem.equip(0, WeaponType.WebLauncher)
+      // First-load: no weapons equipped. Web Thrower is found in the birthday gift box;
+      // all other weapons must be crafted or discovered in the world.
     }
     this.webbs.refreshLegColors()
 
@@ -144,8 +192,12 @@ export default class HomeBaseScene extends Phaser.Scene {
     this.registry.set('weaponSystemRef', this.webbs.weaponSystem)
     this.registry.set('weaponInventory', (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? [])
 
-    // Refresh leg colors when EquipScreen closes and this scene resumes
-    this.events.on('resume', () => { this.webbs.refreshLegColors() })
+    // Refresh leg colors when an overlay closes and this scene resumes; reset launch guards
+    this.events.on('resume', () => {
+      this.webbs.refreshLegColors()
+      this.cardTextLaunching        = false
+      this.birthdaySequenceLaunching = false
+    })
 
     // Pickup collection is handled by a manual proximity sweep in update() so
     // that the entire spider — body and legs — registers contact, not just the
@@ -237,6 +289,8 @@ export default class HomeBaseScene extends Phaser.Scene {
       }
     }
 
+    const eJustDown = Phaser.Input.Keyboard.JustDown(this.eKey)
+
     this.webbs.update(time, delta)
     this.weaponUseSystem.update(delta)
     this.webLauncher.update(this, this.webbs, delta)
@@ -256,16 +310,19 @@ export default class HomeBaseScene extends Phaser.Scene {
       }
     }
 
-    // Q → web launcher (works in every scene that has one)
-    if (Phaser.Input.Keyboard.JustDown(this.qKey)) {
+    // Q → web launcher (only after the gift box sequence is complete)
+    if (Phaser.Input.Keyboard.JustDown(this.qKey) && this.registry.get('webThrowerFound')) {
       this.webLauncher.onQPressed(this, this.webbs, this.aimToPointer())
     }
 
     // Run proximity-based pickup collection every frame
     this.collectPickupsInRange()
 
+    // Birthday card / gift box interactions
+    this.updateBirthdayInteractions(eJustDown)
+
     // Workbench interaction — guard prevents re-launch on the frame CraftingMenu resumes
-    if (!this.scene.isActive('CraftingMenu') && this.workbench.update(this.webbs, this.eKey)) {
+    if (!this.scene.isActive('CraftingMenu') && this.workbench.update(this.webbs, this.eKey, eJustDown)) {
       this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
       this.registry.set('legTier',           this.webbs.weaponSystem.getLegTier())
       this.registry.set('callerScene', 'HomeBaseScene')
@@ -515,6 +572,200 @@ export default class HomeBaseScene extends Phaser.Scene {
     }
   }
 
+  // ── Birthday area — trashed decorations + card + gift box ────────────────
+
+  private drawBirthdayArea(): void {
+    const g = this.add.graphics().setDepth(3)
+
+    // ── Fallen banner ────────────────────────────────────────────────────────
+    // Hangs at an angle from x=1960 to x=2300, roughly mid-height
+    g.fillStyle(0x3a1f4a, 0.85)
+    const bx1 = 1960, by1 = 240, bx2 = 2300
+    g.fillRect(bx1, by1, bx2 - bx1, 28)
+    g.lineStyle(1, 0x6a3f8a, 0.7)
+    g.strokeRect(bx1, by1, bx2 - bx1, 28)
+    // Hanging strings from ceiling
+    g.lineStyle(1, 0x8855aa, 0.5)
+    g.lineBetween(bx1 + 20,  0, bx1 + 20,  by1)
+    g.lineBetween(bx1 + 140, 0, bx1 + 140, by1)
+    g.lineBetween(bx2 - 20,  0, bx2 - 20,  by1 + 10)
+    // Banner text — faded
+    this.add.text((bx1 + bx2) / 2, by1 + 14, 'HAPPY BIRTHDAY WEBBS', {
+      fontFamily: 'monospace',
+      fontSize:   '10px',
+      color:      '#9955cc',
+    }).setOrigin(0.5).setDepth(3).setAlpha(0.65)
+
+    // ── Torn triangle flags strung between two points ─────────────────────
+    g.lineStyle(1, 0x553366, 0.5)
+    g.lineBetween(2000, 180, 2440, 220)
+    const flagColors = [0xcc3366, 0x3366cc, 0xcc9900, 0x339966]
+    for (let i = 0; i < 8; i++) {
+      const t   = (i + 0.5) / 8
+      const fx  = 2000 + t * 440
+      const fy  = 180  + t * 40
+      const col = flagColors[i % 4]
+      g.fillStyle(col, 0.55)
+      g.fillTriangle(fx - 8, fy, fx + 8, fy, fx, fy + 18)
+    }
+
+    // ── Streamers on the floor ────────────────────────────────────────────
+    const streamers: Array<[number, number, string]> = [
+      [2020, FLOOR_Y - 4,  '#cc3366'],
+      [2080, FLOOR_Y - 2,  '#3366cc'],
+      [2140, FLOOR_Y - 5,  '#cc9900'],
+      [2260, FLOOR_Y - 3,  '#339966'],
+      [2330, FLOOR_Y - 4,  '#cc3366'],
+      [2420, FLOOR_Y - 2,  '#9933cc'],
+    ]
+    for (const [sx, sy, col] of streamers) {
+      const sc = parseInt(col.replace('#', ''), 16)
+      g.lineStyle(2, sc, 0.6)
+      g.lineBetween(sx, sy, sx + 30, sy - 8)
+      g.lineBetween(sx + 30, sy - 8, sx + 50, sy - 2)
+      g.lineBetween(sx + 50, sy - 2, sx + 70, sy - 10)
+    }
+
+    // ── Knocked-over candles ──────────────────────────────────────────────
+    const candlePositions = [2015, 2100, 2180, 2290, 2360]
+    for (let i = 0; i < candlePositions.length; i++) {
+      const cx = candlePositions[i]
+      const knocked = i % 2 === 0  // alternate upright vs knocked
+      if (knocked) {
+        // Lying on floor — horizontal
+        g.fillStyle(0xeeeecc, 0.85)
+        g.fillRect(cx, FLOOR_Y - 10, 18, 8)
+        g.lineStyle(1, 0xccccaa, 0.6)
+        g.strokeRect(cx, FLOOR_Y - 10, 18, 8)
+      } else {
+        // Still upright
+        g.fillStyle(0xeeeecc, 0.85)
+        g.fillRect(cx - 4, FLOOR_Y - 24, 8, 20)
+        g.lineStyle(1, 0xccccaa, 0.6)
+        g.strokeRect(cx - 4, FLOOR_Y - 24, 8, 20)
+        // Wick
+        g.lineStyle(1, 0x886644, 0.8)
+        g.lineBetween(cx, FLOOR_Y - 24, cx, FLOOR_Y - 28)
+        // Tiny flame glow
+        g.fillStyle(0xff8800, 0.5)
+        g.fillCircle(cx, FLOOR_Y - 30, 4)
+      }
+    }
+
+    // ── Birthday card entity ─────────────────────────────────────────────
+    const cardGlow = this.add.arc(BIRTHDAY_CARD_X, FLOOR_Y - 28, 22, 0, 360, false, 0xff88aa, 0.1)
+      .setDepth(4)
+    this.tweens.add({ targets: cardGlow, alpha: { from: 0.06, to: 0.22 }, duration: 900, yoyo: true, repeat: -1 })
+
+    const cg = this.add.graphics().setDepth(4)
+    // Envelope body
+    cg.fillStyle(0x4a2535, 0.92)
+    cg.fillRect(BIRTHDAY_CARD_X - 16, FLOOR_Y - 42, 32, 24)
+    cg.lineStyle(1.5, 0xff88aa, 0.8)
+    cg.strokeRect(BIRTHDAY_CARD_X - 16, FLOOR_Y - 42, 32, 24)
+    // Envelope flap (inverted V)
+    cg.lineStyle(1, 0xff88aa, 0.6)
+    cg.lineBetween(BIRTHDAY_CARD_X - 16, FLOOR_Y - 42, BIRTHDAY_CARD_X, FLOOR_Y - 32)
+    cg.lineBetween(BIRTHDAY_CARD_X, FLOOR_Y - 32, BIRTHDAY_CARD_X + 16, FLOOR_Y - 42)
+    // Heart stamp
+    cg.fillStyle(0xff4488, 0.7)
+    cg.fillCircle(BIRTHDAY_CARD_X - 4, FLOOR_Y - 26, 3)
+    cg.fillCircle(BIRTHDAY_CARD_X + 4, FLOOR_Y - 26, 3)
+    cg.fillTriangle(BIRTHDAY_CARD_X - 7, FLOOR_Y - 25, BIRTHDAY_CARD_X + 7, FLOOR_Y - 25, BIRTHDAY_CARD_X, FLOOR_Y - 18)
+
+    this.cardContainer = this.add.container(0, 0, [cardGlow, cg]).setDepth(4)
+    this.cardContainer.setVisible(!this.birthdayCardRead || true)  // card always visible for re-reading
+
+    // ── Gift box entity ───────────────────────────────────────────────────
+    const giftGlow = this.add.arc(BIRTHDAY_GIFT_X, FLOOR_Y - 30, 26, 0, 360, false, 0xaaaaff, 0.1)
+      .setDepth(4)
+    this.tweens.add({ targets: giftGlow, alpha: { from: 0.06, to: 0.28 }, duration: 750, yoyo: true, repeat: -1 })
+
+    const gg = this.add.graphics().setDepth(4)
+    // Box base
+    gg.fillStyle(0x2a1a4a, 0.95)
+    gg.fillRect(BIRTHDAY_GIFT_X - 18, FLOOR_Y - 46, 36, 32)
+    gg.lineStyle(1.5, 0xaaaaff, 0.85)
+    gg.strokeRect(BIRTHDAY_GIFT_X - 18, FLOOR_Y - 46, 36, 32)
+    // Lid (slightly wider)
+    gg.fillStyle(0x3a2560, 0.95)
+    gg.fillRect(BIRTHDAY_GIFT_X - 20, FLOOR_Y - 50, 40, 8)
+    gg.lineStyle(1.5, 0xaaaaff, 0.85)
+    gg.strokeRect(BIRTHDAY_GIFT_X - 20, FLOOR_Y - 50, 40, 8)
+    // Ribbon — vertical stripe
+    gg.lineStyle(2, 0xeeeeff, 0.7)
+    gg.lineBetween(BIRTHDAY_GIFT_X, FLOOR_Y - 50, BIRTHDAY_GIFT_X, FLOOR_Y - 14)
+    // Ribbon — horizontal stripe
+    gg.lineBetween(BIRTHDAY_GIFT_X - 20, FLOOR_Y - 34, BIRTHDAY_GIFT_X + 20, FLOOR_Y - 34)
+    // Bow loops (two arcs approximated with triangles)
+    gg.fillStyle(0xeeeeff, 0.7)
+    gg.fillTriangle(BIRTHDAY_GIFT_X - 10, FLOOR_Y - 54, BIRTHDAY_GIFT_X, FLOOR_Y - 48, BIRTHDAY_GIFT_X - 6, FLOOR_Y - 60)
+    gg.fillTriangle(BIRTHDAY_GIFT_X + 10, FLOOR_Y - 54, BIRTHDAY_GIFT_X, FLOOR_Y - 48, BIRTHDAY_GIFT_X + 6, FLOOR_Y - 60)
+
+    this.giftContainer = this.add.container(0, 0, [giftGlow, gg]).setDepth(4)
+    this.giftContainer.setVisible(!this.giftBoxOpened)
+  }
+
+  private updateBirthdayInteractions(eJustDown: boolean): void {
+    const dx = this.webbs.x
+    const dy = this.webbs.y
+
+    // ── Birthday card ─────────────────────────────────────────────────────
+    const nearCard = Phaser.Math.Distance.Between(dx, dy, BIRTHDAY_CARD_X, FLOOR_Y - 28) < INTERACT_RANGE
+    this.cardPrompt.setVisible(nearCard && !this.cardTextLaunching)
+
+    if (nearCard && eJustDown && !this.cardTextLaunching) {
+      this.cardTextLaunching = true
+      this.registry.set('birthdayCardRead', true)
+      this.birthdayCardRead = true
+      const textData: TextDisplayData = {
+        pages:       CARD_PAGES,
+        title:       '— BIRTHDAY CARD —',
+        color:       0xff88aa,
+        callerScene: 'HomeBaseScene',
+      }
+      this.registry.set('textDisplayData', textData)
+      this.scene.launch('TextDisplayScene')
+      return
+    }
+
+    // ── Gift box ──────────────────────────────────────────────────────────
+    if (this.giftBoxOpened) {
+      this.giftPrompt.setVisible(false)
+      return
+    }
+
+    const nearGift = Phaser.Math.Distance.Between(dx, dy, BIRTHDAY_GIFT_X, FLOOR_Y - 30) < INTERACT_RANGE
+
+    if (nearGift && !this.birthdayCardRead) {
+      this.giftPrompt.setVisible(true).setText('Read the card first').setColor('#554444')
+      return
+    }
+
+    this.giftPrompt.setVisible(nearGift && !this.birthdaySequenceLaunching)
+      .setText('[ E ] Open Gift').setColor('#aaaaff')
+
+    if (nearGift && eJustDown && this.birthdayCardRead && !this.birthdaySequenceLaunching) {
+      this.giftBoxOpened = true
+      this.birthdaySequenceLaunching = true
+      this.registry.set('webThrowerFound', true)
+      this.giftContainer.setVisible(false)
+      this.giftPrompt.setVisible(false)
+
+      const celebData: CelebData = {
+        itemName:       'Web Thrower',
+        description:    '',
+        color:          0xeeeeff,
+        weaponType:     WeaponType.WebLauncher,
+        callerScene:    'HomeBaseScene',
+        tutorialPages:  WEB_THROWER_TUTORIAL,
+        tutorialTitle:  '— WEB THROWER —',
+      }
+      this.registry.set('celebData', celebData)
+      this.scene.launch('PickupCelebration')
+    }
+  }
+
   private drawPersonalItems(): void {
     const g = this.add.graphics().setDepth(3)
 
@@ -559,10 +810,10 @@ export default class HomeBaseScene extends Phaser.Scene {
 
     // ── Four blocked exits ────────────────────────────────────────────────
     const blockedExits = [
-      { x: WORLD_W - 30,       y: WORLD_H / 2,       label: '???' },  // right wall
-      { x: 200,                y: 60,                 label: '???' },  // top-left ceiling
-      { x: WORLD_W / 2 + 300,  y: 40,                 label: '???' },  // top-center-right
-      { x: WORLD_W - 200,      y: 60,                 label: '???' },  // top-right ceiling
+      { x: WORLD_W - 30,       y: WORLD_H / 2,  label: 'Passage Blocked' },  // right wall
+      { x: 200,                y: 60,            label: 'Passage Blocked' },  // top-left ceiling
+      { x: WORLD_W / 2 + 300,  y: 40,            label: 'Passage Blocked' },  // top-center-right
+      { x: WORLD_W - 200,      y: 60,            label: 'Passage Blocked' },  // top-right ceiling
     ]
     for (const exit of blockedExits) {
       this.drawBlockedExit(exit.x, exit.y, exit.label)

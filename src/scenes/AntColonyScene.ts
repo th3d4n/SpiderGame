@@ -11,24 +11,32 @@ import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
 import { WebLauncherSystem } from '../systems/WebLauncherSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
+import Chest from '../entities/Chest'
+import { ConsumableSystem } from '../systems/ConsumableSystem'
+import type { CelebData } from './PickupCelebration'
 
-// Bigger than before — sprawling tunnel network with rooms and dead ends.
-const WORLD_W = 6000
-const WORLD_H = 3000
+// Five-level maze — significantly larger with vertical priority.
+const WORLD_W = 7500
+const WORLD_H = 5000
 
-// HOME BASE portal sits at the right edge (next to spawn).
-// BOSS tunnel sits at the far top-left — the furthest reachable corner.
-const HOME_PORTAL_X  = WORLD_W - 110
-const HOME_PORTAL_Y  = 1500          // middle of the main corridor
+// HOME BASE portal sits at the right edge, in the center (C3) corridor.
+// BOSS tunnel sits in the leftmost 30% — Y randomised each run.
+const HOME_PORTAL_X  = WORLD_W - 110   // 7390
+const HOME_PORTAL_Y  = 2040            // centre of C3 corridor
 const BOSS_PORTAL_X  = 180
-const BOSS_PORTAL_Y  = 300
+
+// Five corridor levels (open horizontal bands, each 280 px tall):
+//   C1 y=300..580   C2 y=1050..1330   C3 y=1900..2180 (entry)
+//   C4 y=2750..3030  C5 y=3700..3980
+// Boss portal Y is one of these corridor centres — randomised per run.
+const BOSS_Y_SLOTS = [440, 1190, 2040, 2890, 3840]
 
 // Contact damage cooldown
 const CONTACT_COOLDOWN = 750
 const CONTACT_RADIUS   = 28 + 16
 
 // Fog of war reveal radius
-const FOG_REVEAL_R = 240
+const FOG_REVEAL_R = 320
 // Number of raycasts per visibility polygon — higher = smoother edges, more cost
 const FOG_RAY_COUNT = 72
 const FOG_RAY_STEP  = 8     // px per ray sample
@@ -36,8 +44,8 @@ const FOG_RAY_STEP  = 8     // px per ray sample
 // Respawn timer for fallen enemies (ms) — long enough that combats feel won
 const RESPAWN_MS = 22000
 
-// Squeeze-through animation — kicks in inside narrow corridors
-const SQUEEZE_TRIGGER_GAP = 110
+// Squeeze-through animation — 280-px corridors need a wider threshold
+const SQUEEZE_TRIGGER_GAP = 300
 
 // Pickup detection — generous radius so any leg or the body rolls over it
 const PICKUP_REACH = 50
@@ -47,6 +55,11 @@ const WEB_PICKUP_HIT = 24
 type EnemyKind = 'centipede' | 'beetle'
 interface Wall { x: number; y: number; w: number; h: number }
 interface SpawnPoint { kind: EnemyKind; x: number; y: number; respawnTimer: number; alive: boolean; ref?: CentipedeAmbusher | BeetleTank }
+interface DeadEndRoom {
+  x: number; y: number; w: number; h: number
+  type: 'spike' | 'ambush' | 'mimic'
+  triggered: boolean
+}
 
 export default class AntColonyScene extends Phaser.Scene {
   private webbs!:            Webbs
@@ -56,19 +69,28 @@ export default class AntColonyScene extends Phaser.Scene {
   private hpModuleGroup!:    Phaser.Physics.Arcade.StaticGroup
   private weaponUseSystem!:  WeaponUseSystem
   private webLauncher!:      WebLauncherSystem
+  private consumableSystem!: ConsumableSystem
   private qKey!:             Phaser.Input.Keyboard.Key
+  private cKey!:             Phaser.Input.Keyboard.Key  // HP Potion
+  private vKey!:             Phaser.Input.Keyboard.Key  // Stamina Tonic
+  private xKey!:             Phaser.Input.Keyboard.Key  // Max Potion
   private weaponKeys:        Phaser.Input.Keyboard.Key[] = []
   private eKey!:             Phaser.Input.Keyboard.Key
   private spawnPoints:       SpawnPoint[] = []
   private wallRects:         Wall[] = []
   private wallGroup!:        Phaser.Physics.Arcade.StaticGroup
+  private chestGroup!:       Phaser.Physics.Arcade.StaticGroup
   private fog!:              Phaser.GameObjects.RenderTexture
   private fogEraserGfx!:     Phaser.GameObjects.Graphics
   // Positions of all the green algae "lanterns" scattered around the colony.
   // Each beacon gets a bright above-fog dot so it stays visible through the
   // shroud; the larger uncovered glow lives below the fog.
   private lanternBeacons:    Array<{ x: number, y: number, size: number }> = []
+  private deadEndRooms:      DeadEndRoom[] = []
+  private chests:            Chest[] = []
+  private bossPortalY        = 2040
   private transitioning      = false
+  private celebLaunching     = false
   private squeezeTween?:     Phaser.Tweens.Tween
 
   // Player stats — stamina/energy are read directly off webbs each frame
@@ -83,11 +105,33 @@ export default class AntColonyScene extends Phaser.Scene {
   }
 
   create() {
-    this.transitioning  = false
-    this.spawnPoints    = []
+    this.transitioning   = false
+    this.celebLaunching  = false
+    this.spawnPoints     = []
     this.contactCooldown = 0
     this.lanternBeacons = []
+    this.deadEndRooms   = []
+    this.chests         = []
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H)
+
+    // Randomise boss portal Y — never the same corridor level as last run.
+    const lastSlot = this.registry.get('lastBossSlot') as number ?? -1
+    const available = BOSS_Y_SLOTS.filter((_, i) => i !== lastSlot)
+    const picked = available[Phaser.Math.Between(0, available.length - 1)]
+    this.bossPortalY = picked
+    this.registry.set('lastBossSlot', BOSS_Y_SLOTS.indexOf(picked))
+
+    // Assign dead-end types: shuffle spike/ambush/reward across all rooms.
+    const rawRooms = this.buildDeadEndRooms()
+    const types: DeadEndRoom['type'][] = []
+    for (let i = 0; i < rawRooms.length; i++) {
+      if (i < 2 || i >= rawRooms.length - 2) types.push('mimic')
+      else types.push(i % 2 === 0 ? 'spike' : 'ambush')
+    }
+    Phaser.Utils.Array.Shuffle(types)
+    for (let i = 0; i < rawRooms.length; i++) {
+      this.deadEndRooms.push({ ...rawRooms[i], type: types[i], triggered: false })
+    }
 
     const savedHp = this.registry.get('health') as number | undefined
     if (savedHp !== undefined) this.health = savedHp
@@ -100,64 +144,82 @@ export default class AntColonyScene extends Phaser.Scene {
     // Above-fog visibility dots for every algae lantern in the level — relies on
     // beacon positions collected by drawBackground() and drawGapMarkers() above.
     this.drawLanternBeacons()
+    this.drawDeadEndRooms()
 
-    // Workbench tucked just inside the entry chamber
-    this.workbench = new Workbench(this, WORLD_W - 350, 1500)
+    // Workbench tucked just inside the entry chamber (C3 right side)
+    this.workbench = new Workbench(this, WORLD_W - 350, HOME_PORTAL_Y)
 
     // Crafting system — share player's inventory via registry across zones
     this.craftingSystem = new CraftingSystem()
     const savedInv = this.registry.get('craftingInventory') as Record<string, number> | null
     if (savedInv) this.craftingSystem.restoreFromSnapshot(savedInv)
 
-    // Pickup group
+    // Consumable system
+    this.consumableSystem = new ConsumableSystem()
+    const savedCons = this.registry.get('consumableInventory') as Record<string, number> | null
+    if (savedCons) this.consumableSystem.restoreFromSnapshot(savedCons)
+
+    // Pickup / chest groups
     this.pickupGroup = this.physics.add.staticGroup()
     this.hpModuleGroup = this.physics.add.staticGroup()
+    this.chestGroup = this.physics.add.staticGroup()
+    this.spawnChests()
 
-    // Scatter a few thistles around the maze as bow ammo to discover
+    // Scatter thistles across all five corridor levels
     const thistleSeeds = [
-      { x: 5400, y: 1480 }, { x: 4600, y: 1500 }, { x: 3700, y: 800  },
-      { x: 3000, y: 2450 }, { x: 2200, y: 700  }, { x: 1400, y: 1500 },
-      { x: 800,  y: 900  }, { x: 350,  y: 500  },
+      { x: 6800, y: 2040 }, { x: 5600, y: 2040 }, // C3 (entry corridor)
+      { x: 4800, y: 440  }, { x: 2800, y: 440  }, // C1
+      { x: 3500, y: 1190 }, { x: 6200, y: 1190 }, // C2
+      { x: 1800, y: 2890 }, { x: 4200, y: 2890 }, // C4
+      { x: 2500, y: 3840 }, { x: 5200, y: 3840 }, // C5
     ]
     for (const t of thistleSeeds) {
       const p = new Pickup(this, t.x, t.y, 'Thistle', 1, this.craftingSystem)
       this.pickupGroup.add(p, true)
     }
 
-    // Surprise bonus material caches tucked into side chambers and dead-ends
+    // Material caches scattered throughout the five-level maze
     const surpriseSeeds: Array<{ x: number, y: number, mat: MaterialType, qty: number }> = [
-      { x: 1080, y: 260,  mat: 'CrystalDust',  qty: 2 },   // top-left upper chamber
-      { x: 2670, y: 220,  mat: 'ChitinShard',  qty: 3 },   // mid-upper chamber
-      { x: 4030, y: 720,  mat: 'VenomGland',   qty: 2 },   // upper-right pocket
-      { x: 4680, y: 280,  mat: 'BoneFragment', qty: 2 },   // right ceiling alcove
-      { x: 870,  y: 2780, mat: 'SilkThread',   qty: 4 },   // lower-left dead end
-      { x: 2360, y: 2620, mat: 'WebFluid',     qty: 3 },   // mid-lower chamber
-      { x: 3680, y: 2820, mat: 'CrystalDust',  qty: 1 },   // lower-right
-      { x: 4680, y: 2680, mat: 'ChitinShard',  qty: 2 },   // far-right lower pocket
+      { x: 700,  y: 440,  mat: 'CrystalDust',  qty: 2 },
+      { x: 3800, y: 440,  mat: 'ChitinShard',  qty: 3 },
+      { x: 6400, y: 440,  mat: 'VenomGland',   qty: 2 },
+      { x: 1200, y: 1190, mat: 'SilkThread',   qty: 4 },
+      { x: 4000, y: 1190, mat: 'WebFluid',     qty: 3 },
+      { x: 6600, y: 1190, mat: 'BoneFragment', qty: 2 },
+      { x: 3400, y: 2040, mat: 'ChitinShard',  qty: 2 },
+      { x: 6000, y: 2040, mat: 'CrystalDust',  qty: 1 },
+      { x: 700,  y: 2890, mat: 'VenomGland',   qty: 2 },
+      { x: 4600, y: 2890, mat: 'SilkThread',   qty: 3 },
+      { x: 1500, y: 3840, mat: 'WebFluid',     qty: 2 },
+      { x: 4400, y: 3840, mat: 'CrystalDust',  qty: 1 },
     ]
     for (const s of surpriseSeeds) {
       const p = new Pickup(this, s.x, s.y, s.mat, s.qty, this.craftingSystem)
       this.pickupGroup.add(p, true)
     }
 
-    // Energy modules — instant +25 HP heals, nested off the main path
+    // HP modules spread across all corridor levels
     const hpSeeds = [
-      { x: 1180, y: 540 },   // upper-left chamber
-      { x: 3260, y: 380 },   // upper-mid chamber
-      { x: 4830, y: 880 },   // right-upper alcove
-      { x: 1480, y: 2700 },  // lower-left chamber
-      { x: 3960, y: 2480 },  // lower-right chamber
-      { x: 520,  y: 420 },   // boss antechamber reward
+      { x: 1500, y: 440  },   // C1
+      { x: 5600, y: 440  },
+      { x: 2700, y: 1190 },   // C2
+      { x: 5900, y: 1190 },
+      { x: 4700, y: 2040 },   // C3
+      { x: 1000, y: 2890 },   // C4
+      { x: 6200, y: 2890 },
+      { x: 2200, y: 3840 },   // C5
+      { x: 5800, y: 3840 },
     ]
     for (const h of hpSeeds) {
       const m = new HpModule(this, h.x, h.y)
       this.hpModuleGroup.add(m, true)
     }
 
-    // Spawn Webbs right next to the home portal
+    // Spawn Webbs right next to the home portal (C3 right side)
     this.webbs = new Webbs(this, HOME_PORTAL_X - 90, HOME_PORTAL_Y)
     this.webbs.resetHp(this.health)
     this.physics.add.collider(this.webbs, this.wallGroup)
+    this.physics.add.collider(this.webbs, this.chestGroup)
 
     // Restore loadout
     const savedLegTier = this.registry.get('legTier') as number | undefined
@@ -174,7 +236,10 @@ export default class AntColonyScene extends Phaser.Scene {
 
     this.registry.set('weaponSystemRef', this.webbs.weaponSystem)
     this.registry.set('weaponInventory', (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? [])
-    this.events.on('resume', () => { this.webbs.refreshLegColors() })
+    this.events.on('resume', () => {
+      this.celebLaunching = false
+      this.webbs.refreshLegColors()
+    })
 
     // Pickup collection runs through a manual proximity sweep in update() so the
     // entire spider — body and legs — picks things up, not just the tiny body box.
@@ -232,6 +297,9 @@ export default class AntColonyScene extends Phaser.Scene {
 
     // Input
     this.eKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E)
+    this.cKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.C)
+    this.vKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.V)
+    this.xKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.X)
     this.input.keyboard!.on('keydown-I', () => {
       if (!this.scene.isActive('EquipScreen')) {
         this.registry.set('equipCallerScene', 'AntColonyScene')
@@ -286,6 +354,12 @@ export default class AntColonyScene extends Phaser.Scene {
     this.weaponUseSystem.update(delta)
     this.webLauncher.update(this, this.webbs, delta)
 
+    // Consumable tick + effect application
+    this.consumableSystem.tick(delta)
+    this.webbs.maxProtectionActive = this.consumableSystem.isMaxProtActive()
+    this.weaponUseSystem.staminaDrainMult = this.consumableSystem.getStaminaDrainMult()
+    this.handleConsumableKeys()
+
     for (let i = 0; i < this.weaponKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
         const weapon = this.webbs.weaponSystem.getSlot(i)
@@ -315,7 +389,9 @@ export default class AntColonyScene extends Phaser.Scene {
       }
     }
 
-    if (!this.scene.isActive('CraftingMenu') && this.workbench.update(this.webbs, this.eKey)) {
+    const eJustDown = Phaser.Input.Keyboard.JustDown(this.eKey)
+
+    if (!this.scene.isActive('CraftingMenu') && this.workbench.update(this.webbs, this.eKey, eJustDown)) {
       this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
       this.registry.set('legTier',           this.webbs.weaponSystem.getLegTier())
       this.registry.set('callerScene', 'AntColonyScene')
@@ -324,6 +400,9 @@ export default class AntColonyScene extends Phaser.Scene {
 
     if (this.contactCooldown > 0) this.contactCooldown -= delta
     else                          this.checkEnemyContact()
+
+    this.checkDeadEndTriggers()
+    this.updateChests(eJustDown)
 
     this.health = this.webbs.hp
 
@@ -335,7 +414,7 @@ export default class AntColonyScene extends Phaser.Scene {
 
     // Proximity portal triggers
     const distHome = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, HOME_PORTAL_X, HOME_PORTAL_Y)
-    const distBoss = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, BOSS_PORTAL_X, BOSS_PORTAL_Y)
+    const distBoss = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, BOSS_PORTAL_X, this.bossPortalY)
     if (distHome < 65) {
       this.transitioning = true
       ZoneTransitionSystem.transition(this, 'HomeBaseScene', 'right', this.health)
@@ -354,72 +433,139 @@ export default class AntColonyScene extends Phaser.Scene {
   // branch off above and below for exploration. The boss portal is in the top-left
   // chamber, requiring an upward detour from the main path.
 
+  // ── Maze geometry ─────────────────────────────────────────────────────────
+  // Five horizontal corridor levels connected by vertical passages through
+  // wall blocks. Dead-end stub rooms branch off each wall block; their type
+  // (spike / ambush / reward) is randomised in create().
+  //
+  //  C1  y=300..580     C2  y=1050..1330   C3  y=1900..2180  (entry)
+  //  C4  y=2750..3030   C5  y=3700..3980
+  //
+  // Wall blocks between levels have 3 main passages each + 2 dead-end stubs.
+
   private buildMazeWalls(): Wall[] {
     const walls: Wall[] = []
-    const T = 50  // outer wall thickness
+    const T = 50
 
-    // Outer perimeter
-    walls.push({ x: 0, y: 0, w: WORLD_W, h: T })
+    // Helper: fill a horizontal band from x=T to x=WORLD_W-T, leaving gaps open.
+    const band = (y: number, h: number, gaps: { x: number; w: number }[]) => {
+      const sorted = [...gaps].sort((a, b) => a.x - b.x)
+      let cur = T
+      for (const g of sorted) {
+        if (g.x > cur) walls.push({ x: cur, y, w: g.x - cur, h })
+        cur = g.x + g.w
+      }
+      if (cur < WORLD_W - T) walls.push({ x: cur, y, w: WORLD_W - T - cur, h })
+    }
+
+    // ── Outer perimeter ──────────────────────────────────────────────────────
+    walls.push({ x: 0, y: 0,           w: WORLD_W, h: T })
     walls.push({ x: 0, y: WORLD_H - T, w: WORLD_W, h: T })
-    walls.push({ x: 0, y: 0, w: T, h: WORLD_H })
+    walls.push({ x: 0, y: 0,           w: T, h: WORLD_H })
     walls.push({ x: WORLD_W - T, y: 0, w: T, h: WORLD_H })
 
-    // Main corridor at y=1300..1700 stretches across the whole map.
-    // Side chambers are formed by horizontal ceiling/floor walls plus vertical dividers.
+    // ── B_TOP  y=50..300 (above C1) ─────────────────────────────────────────
+    // Two dead-end reward pockets accessible from C1 ceiling going up.
+    // DE_T1 x=3200..3480  DE_T2 x=6000..6280
+    band(T, 250, [{ x: 3200, w: 280 }, { x: 6000, w: 280 }])
+    walls.push({ x: 3200, y: T,    w: 280, h: 150 })   // cap: only bottom 100 px open
+    walls.push({ x: 6000, y: T,    w: 280, h: 150 })
 
-    // CEILING of corridor (separates corridor from upper chambers)
-    // Has gaps at column centers so player can drop UP into upper chambers.
-    // The x=300 gap is the only route into the upper-left boss antechamber.
-    const ceilingGapsX = [300, 800, 2200, 3700, 4900]
-    let prevX = T
-    for (const gx of ceilingGapsX) {
-      walls.push({ x: prevX, y: 1250, w: gx - 180 - prevX, h: 50 })
-      prevX = gx + 180   // 360-wide gap each
-    }
-    walls.push({ x: prevX, y: 1250, w: WORLD_W - T - prevX, h: 50 })
+    // ── B12  y=580..1050 (between C1 and C2)  h=470 ─────────────────────────
+    // Main passages: x=550, 3150, 6100 (each 280 wide)
+    // Dead ends from C1 down: DE1 x=1600  DE2 x=4200
+    // Dead ends from C2 up:   DE3 x=2400  DE4 x=5800
+    band(580, 470, [
+      { x: 550,  w: 280 }, { x: 3150, w: 280 }, { x: 6100, w: 280 },
+      { x: 1600, w: 280 }, { x: 4200, w: 280 },   // DE1 DE2 — full-height gap, capped below
+      { x: 2400, w: 280 }, { x: 5800, w: 280 },   // DE3 DE4 — full-height gap, capped above
+    ])
+    walls.push({ x: 1600, y: 860,  w: 280, h: 190 })  // DE1 bottom cap (y=860..1050)
+    walls.push({ x: 4200, y: 860,  w: 280, h: 190 })  // DE2 bottom cap
+    walls.push({ x: 2400, y: 580,  w: 280, h: 200 })  // DE3 top cap (y=580..780)
+    walls.push({ x: 5800, y: 580,  w: 280, h: 200 })  // DE4 top cap
 
-    // FLOOR of corridor (separates corridor from lower chambers)
-    const floorGapsX = [1400, 3000, 4400]
-    prevX = T
-    for (const gx of floorGapsX) {
-      walls.push({ x: prevX, y: 1700, w: gx - 180 - prevX, h: 50 })
-      prevX = gx + 180
-    }
-    walls.push({ x: prevX, y: 1700, w: WORLD_W - T - prevX, h: 50 })
+    // ── B23  y=1330..1900 (between C2 and C3)  h=570 ────────────────────────
+    // Passages: x=1350, 4450, 6950   Dead ends: DE5 x=2800 (from C2)  DE6 x=5700 (from C3)
+    band(1330, 570, [
+      { x: 1350, w: 280 }, { x: 4450, w: 280 }, { x: 6950, w: 280 },
+      { x: 2800, w: 280 }, { x: 5700, w: 280 },
+    ])
+    walls.push({ x: 2800, y: 1610, w: 280, h: 290 })  // DE5 bottom cap (y=1610..1900)
+    walls.push({ x: 5700, y: 1330, w: 280, h: 290 })  // DE6 top cap (y=1330..1620)
 
-    // Vertical dividers crossing the corridor — each leaves a wide passage at corridor height
-    // (and shaped so the player can always squeeze through at y≈1500)
-    const verticalDividers = [500, 1400, 2200, 3000, 3700, 4400, 5200]
-    for (const dx of verticalDividers) {
-      // Above corridor (slim wall above ceiling-gap line)
-      walls.push({ x: dx, y: T,    w: 50, h: 1250 - T })
-      // Below corridor
-      walls.push({ x: dx, y: 1750, w: 50, h: WORLD_H - T - 1750 })
-    }
+    // ── B34  y=2180..2750 (between C3 and C4)  h=570 ────────────────────────
+    // Passages: x=750, 3750, 6350   Dead ends: DE7 x=1700 (from C3)  DE8 x=5000 (from C4)
+    band(2180, 570, [
+      { x: 750,  w: 280 }, { x: 3750, w: 280 }, { x: 6350, w: 280 },
+      { x: 1700, w: 280 }, { x: 5000, w: 280 },
+    ])
+    walls.push({ x: 1700, y: 2460, w: 280, h: 290 })  // DE7 bottom cap (y=2460..2750)
+    walls.push({ x: 5000, y: 2180, w: 280, h: 290 })  // DE8 top cap (y=2180..2470)
 
-    // Upper chamber subdivisions — secondary walls creating mini-rooms above the corridor
-    walls.push({ x: 1100, y: 50,  w: 50, h: 600 })
-    walls.push({ x: 1700, y: 400, w: 50, h: 500 })
-    walls.push({ x: 2700, y: 50,  w: 50, h: 700 })
-    walls.push({ x: 4000, y: 300, w: 50, h: 600 })
-    walls.push({ x: 4700, y: 50,  w: 50, h: 500 })
+    // ── B45  y=3030..3700 (between C4 and C5)  h=670 ────────────────────────
+    // Passages: x=1950, 4950   Dead ends: DE9 x=2700 (from C4)  DE10 x=3700 (from C5)
+    band(3030, 670, [
+      { x: 1950, w: 280 }, { x: 4950, w: 280 },
+      { x: 2700, w: 280 }, { x: 3700, w: 280 },
+    ])
+    walls.push({ x: 2700, y: 3310, w: 280, h: 390 })  // DE9 bottom cap (y=3310..3700)
+    walls.push({ x: 3700, y: 3030, w: 280, h: 390 })  // DE10 top cap (y=3030..3420)
 
-    // Lower chamber subdivisions
-    walls.push({ x: 900,  y: 2100, w: 50, h: 800 })
-    walls.push({ x: 2400, y: 1900, w: 50, h: 700 })
-    walls.push({ x: 3700, y: 2300, w: 50, h: 600 })
-    walls.push({ x: 4700, y: 2100, w: 50, h: 700 })
+    // ── B_BOT  y=3980..4950 (below C5) ──────────────────────────────────────
+    // Two reward pockets from C5 going down: DE_B1 x=800  DE_B2 x=5500
+    band(3980, WORLD_H - T - 3980, [{ x: 800, w: 280 }, { x: 5500, w: 280 }])
+    walls.push({ x: 800,  y: 4280, w: 280, h: WORLD_H - T - 4280 })  // DE_B1 cap
+    walls.push({ x: 5500, y: 4280, w: 280, h: WORLD_H - T - 4280 })  // DE_B2 cap
 
-    // Boss antechamber wall — protects the boss portal so player threads up a passage
-    walls.push({ x: 250, y: 600, w: 700, h: 50 })  // ceiling of antechamber
-
-    // Corridor obstacles — force vertical detours through chambers rather than a
-    // straight east-west walk. Player must zig-zag using ceiling/floor gaps.
-    walls.push({ x: 2980, y: 1280, w: 60, h: 420 })  // hard block @ x=3000 — must detour via chamber
-    walls.push({ x: 4400, y: 1280, w: 50, h: 260 })  // half-block top @ x=4400 — duck under
-    walls.push({ x: 1400, y: 1500, w: 50, h: 220 })  // half-block bottom @ x=1400 — step over
+    // ── Internal corridor barriers (force winding navigation) ────────────────
+    // Each is a partial wall covering half the corridor height, alternating
+    // top/bottom so the player must weave as they traverse each level.
+    // C1 (y=300..580, centre=440)
+    walls.push({ x: 2100, y: 440,  w: 50, h: 140 })   // bottom half blocked
+    walls.push({ x: 5300, y: 300,  w: 50, h: 140 })   // top half blocked
+    // C2 (y=1050..1330, centre=1190)
+    walls.push({ x: 1900, y: 1190, w: 50, h: 140 })
+    walls.push({ x: 5100, y: 1050, w: 50, h: 140 })
+    // C3 (y=1900..2180, centre=2040)
+    walls.push({ x: 2600, y: 2040, w: 50, h: 140 })
+    walls.push({ x: 4100, y: 1900, w: 50, h: 140 })
+    // C4 (y=2750..3030, centre=2890)
+    walls.push({ x: 1300, y: 2750, w: 50, h: 140 })
+    walls.push({ x: 5500, y: 2890, w: 50, h: 140 })
+    // C5 (y=3700..3980, centre=3840)
+    walls.push({ x: 3200, y: 3840, w: 50, h: 140 })
 
     return walls
+  }
+
+  // Dead-end room descriptors — populated once in create() so types can be
+  // randomised per run. The rooms correspond to the stub pockets carved into
+  // the wall blocks above.
+  private buildDeadEndRooms(): Array<Omit<DeadEndRoom, 'type' | 'triggered'>> {
+    return [
+      // DE_T1 / DE_T2 — above C1 (reward pockets near top of world)
+      { x: 3200, y: 150, w: 280, h: 150 },
+      { x: 6000, y: 150, w: 280, h: 150 },
+      // DE1 / DE2 — from C1 down into B12
+      { x: 1600, y: 580, w: 280, h: 280 },
+      { x: 4200, y: 580, w: 280, h: 280 },
+      // DE3 / DE4 — from C2 up into B12
+      { x: 2400, y: 780, w: 280, h: 270 },
+      { x: 5800, y: 780, w: 280, h: 270 },
+      // DE5 / DE6 — B23 stubs
+      { x: 2800, y: 1330, w: 280, h: 280 },
+      { x: 5700, y: 1620, w: 280, h: 280 },
+      // DE7 / DE8 — B34 stubs
+      { x: 1700, y: 2180, w: 280, h: 280 },
+      { x: 5000, y: 2470, w: 280, h: 280 },
+      // DE9 / DE10 — B45 stubs
+      { x: 2700, y: 3030, w: 280, h: 280 },
+      { x: 3700, y: 3420, w: 280, h: 280 },
+      // DE_B1 / DE_B2 — below C5 (reward pockets, deepest in maze)
+      { x: 800,  y: 3980, w: 280, h: 300 },
+      { x: 5500, y: 3980, w: 280, h: 300 },
+    ]
   }
 
   private drawWalls(): void {
@@ -501,10 +647,6 @@ export default class AntColonyScene extends Phaser.Scene {
   }
 
   private drawGapMarkers(): void {
-    // Bright glow at each passage — large "lantern" that lights the area when
-    // uncovered. The below-fog graphics live here at depth 3 so they show
-    // their full halo once the fog has been cleared. The matching above-fog
-    // visibility dot is drawn separately in drawLanternBeacons().
     const g = this.add.graphics().setDepth(3)
     const drawGap = (cx: number, cy: number) => {
       g.fillStyle(0x66ffaa, 0.18); g.fillCircle(cx, cy, 36)
@@ -513,14 +655,14 @@ export default class AntColonyScene extends Phaser.Scene {
       this.lanternBeacons.push({ x: cx, y: cy, size: 5 })
     }
 
-    // Corridor ceiling gaps
-    for (const gx of [300, 800, 2200, 3700, 4900]) drawGap(gx, 1275)
-    // Corridor floor gaps
-    for (const gx of [1400, 3000, 4400])      drawGap(gx, 1700)
-    // Vertical divider gaps (corridor-height openings)
-    for (const dx of [500, 1400, 2200, 3000, 3700, 4400, 5200]) drawGap(dx + 25, 1500)
-    // Boss antechamber gap
-    drawGap(950, 625)
+    // B12 passages (centre of each 280-wide gap, mid-height of B12 y=580..1050 → y=815)
+    for (const gx of [690, 3290, 6240]) drawGap(gx, 815)
+    // B23 passages (y=1330..1900 → y=1615)
+    for (const gx of [1490, 4590, 7090]) drawGap(gx, 1615)
+    // B34 passages (y=2180..2750 → y=2465)
+    for (const gx of [890, 3890, 6490]) drawGap(gx, 2465)
+    // B45 passages (y=3030..3700 → y=3365)
+    for (const gx of [2090, 5090]) drawGap(gx, 3365)
   }
 
   private drawBackground(): void {
@@ -571,6 +713,34 @@ export default class AntColonyScene extends Phaser.Scene {
     })
   }
 
+  private drawDeadEndRooms(): void {
+    const g = this.add.graphics().setDepth(2)
+    for (const room of this.deadEndRooms) {
+      if (room.type === 'spike') {
+        // Red floor tint + spike silhouettes
+        g.fillStyle(0x330808, 0.6)
+        g.fillRect(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
+        g.fillStyle(0x882222, 1)
+        const count = 5
+        for (let i = 0; i < count; i++) {
+          const sx = room.x + 20 + i * ((room.w - 40) / (count - 1))
+          const sy = room.y + room.h - 4
+          g.fillTriangle(sx - 8, sy, sx + 8, sy, sx, sy - 24)
+        }
+      } else if (room.type === 'ambush') {
+        // Subtle dark tint — no obvious tell
+        g.fillStyle(0x1a0a0a, 0.4)
+        g.fillRect(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
+      } else if (room.type === 'mimic') {
+        // Chest room — faint gold shimmer
+        g.fillStyle(0x332200, 0.5)
+        g.fillRect(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
+        g.fillStyle(0xffcc44, 0.15)
+        g.fillRect(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
+      }
+    }
+  }
+
   private drawPortals(): void {
     // HOME — right side, blue
     const home = this.add.graphics().setDepth(3)
@@ -583,14 +753,14 @@ export default class AntColonyScene extends Phaser.Scene {
       fontFamily: 'monospace', fontSize: '12px', color: '#99bbff',
     }).setOrigin(0.5).setDepth(4)
 
-    // BOSS — top-left corner, red
+    // BOSS — leftmost 30%, Y randomised per run
     const boss = this.add.graphics().setDepth(3)
-    boss.fillStyle(0x1a0a06, 1); boss.fillRect(BOSS_PORTAL_X - 40, BOSS_PORTAL_Y - 70, 80, 140)
-    boss.lineStyle(2, 0x663333, 0.7); boss.strokeRect(BOSS_PORTAL_X - 40, BOSS_PORTAL_Y - 70, 80, 140)
+    boss.fillStyle(0x1a0a06, 1); boss.fillRect(BOSS_PORTAL_X - 40, this.bossPortalY - 70, 80, 140)
+    boss.lineStyle(2, 0x663333, 0.7); boss.strokeRect(BOSS_PORTAL_X - 40, this.bossPortalY - 70, 80, 140)
     const bossGlow = this.add.graphics().setDepth(4)
-    bossGlow.lineStyle(2, 0xff4422, 0.6); bossGlow.strokeRect(BOSS_PORTAL_X - 40, BOSS_PORTAL_Y - 70, 80, 140)
+    bossGlow.lineStyle(2, 0xff4422, 0.6); bossGlow.strokeRect(BOSS_PORTAL_X - 40, this.bossPortalY - 70, 80, 140)
     this.tweens.add({ targets: bossGlow, alpha: { from: 0.3, to: 1 }, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' })
-    this.add.text(BOSS_PORTAL_X, BOSS_PORTAL_Y - 90, 'BOSS', {
+    this.add.text(BOSS_PORTAL_X, this.bossPortalY - 90, 'BOSS', {
       fontFamily: 'monospace', fontSize: '12px', color: '#cc3322',
     }).setOrigin(0.5).setDepth(4)
   }
@@ -599,30 +769,34 @@ export default class AntColonyScene extends Phaser.Scene {
 
   private defineSpawnPoints(): void {
     const points: Array<{ kind: EnemyKind, x: number, y: number }> = [
-      // Spawn-side corridor (intro)
-      { kind: 'centipede', x: 5400, y: 1500 },
-      { kind: 'centipede', x: 5000, y: 1500 },
-      // Corridor mid
-      { kind: 'beetle',    x: 4600, y: 1500 },
-      { kind: 'centipede', x: 4100, y: 1500 },
-      { kind: 'centipede', x: 3500, y: 1500 },
-      { kind: 'beetle',    x: 2800, y: 1500 },
-      { kind: 'centipede', x: 2400, y: 1500 },
-      { kind: 'centipede', x: 1900, y: 1500 },
-      { kind: 'centipede', x: 1100, y: 1500 },
-      // Upper chambers (ambush spots near gaps)
-      { kind: 'centipede', x: 800,  y: 900  },
-      { kind: 'beetle',    x: 2200, y: 700  },
-      { kind: 'centipede', x: 3700, y: 800  },
-      { kind: 'centipede', x: 4900, y: 600  },
-      // Lower chambers
-      { kind: 'beetle',    x: 1400, y: 2400 },
-      { kind: 'centipede', x: 3000, y: 2400 },
-      { kind: 'beetle',    x: 4400, y: 2500 },
-      // Boss approach
-      { kind: 'beetle',    x: 700,  y: 1500 },
-      { kind: 'centipede', x: 500,  y: 1000 },
-      { kind: 'centipede', x: 350,  y: 500  },
+      // C3 — entry corridor (right to left)
+      { kind: 'centipede', x: 6500, y: 2040 },
+      { kind: 'beetle',    x: 5800, y: 2040 },
+      { kind: 'centipede', x: 4900, y: 2040 },
+      { kind: 'beetle',    x: 3800, y: 2040 },
+      { kind: 'centipede', x: 2900, y: 2040 },
+      { kind: 'centipede', x: 1800, y: 2040 },
+      { kind: 'beetle',    x: 900,  y: 2040 },
+      // C1 — upper level
+      { kind: 'centipede', x: 1200, y: 440  },
+      { kind: 'centipede', x: 3000, y: 440  },
+      { kind: 'beetle',    x: 4700, y: 440  },
+      { kind: 'centipede', x: 6300, y: 440  },
+      // C2 — upper-mid
+      { kind: 'centipede', x: 700,  y: 1190 },
+      { kind: 'beetle',    x: 2700, y: 1190 },
+      { kind: 'centipede', x: 5300, y: 1190 },
+      { kind: 'centipede', x: 7100, y: 1190 },
+      // C4 — lower-mid
+      { kind: 'beetle',    x: 600,  y: 2890 },
+      { kind: 'centipede', x: 2200, y: 2890 },
+      { kind: 'centipede', x: 4100, y: 2890 },
+      { kind: 'beetle',    x: 6100, y: 2890 },
+      // C5 — deep level
+      { kind: 'centipede', x: 700,  y: 3840 },
+      { kind: 'centipede', x: 2800, y: 3840 },
+      { kind: 'beetle',    x: 4500, y: 3840 },
+      { kind: 'centipede', x: 6400, y: 3840 },
     ]
     for (const p of points) {
       this.spawnPoints.push({ kind: p.kind, x: p.x, y: p.y, respawnTimer: 0, alive: false })
@@ -637,6 +811,8 @@ export default class AntColonyScene extends Phaser.Scene {
     const ref = sp.kind === 'centipede'
       ? new CentipedeAmbusher(this, sp.x, sp.y, this.webbs)
       : new BeetleTank(this, sp.x, sp.y, this.webbs)
+    ref.pb.setCollideWorldBounds(true)
+    this.physics.add.collider(ref, this.wallGroup)
     sp.ref = ref
     sp.alive = true
     sp.respawnTimer = 0
@@ -737,11 +913,142 @@ export default class AntColonyScene extends Phaser.Scene {
         this.webbs.damage(enemy.damage)
         this.health = this.webbs.hp
         this.contactCooldown = CONTACT_COOLDOWN
-        const angle = Phaser.Math.Angle.Between(enemy.x, enemy.y, this.webbs.x, this.webbs.y)
-        const force = 240 + enemy.damage * 8
-        this.webbs.pb.setVelocity(Math.cos(angle) * force, Math.sin(angle) * force)
+        if (!this.webbs.maxProtectionActive) {
+          const angle = Phaser.Math.Angle.Between(enemy.x, enemy.y, this.webbs.x, this.webbs.y)
+          const force = 240 + enemy.damage * 8
+          this.webbs.pb.setVelocity(Math.cos(angle) * force, Math.sin(angle) * force)
+        }
         if (this.health <= 0) this.playerDied()
         break
+      }
+    }
+  }
+
+  private checkDeadEndTriggers(): void {
+    const px = this.webbs.x
+    const py = this.webbs.y
+    for (const room of this.deadEndRooms) {
+      if (room.triggered) continue
+      if (px < room.x || px > room.x + room.w) continue
+      if (py < room.y || py > room.y + room.h) continue
+      room.triggered = true
+      if (room.type === 'spike') this.triggerSpikeTrap(room)
+      else if (room.type === 'ambush') this.triggerDeadEndAmbush(room)
+      // 'mimic' rooms: chest entity handles its own interaction
+    }
+  }
+
+  private triggerSpikeTrap(room: DeadEndRoom): void {
+    // Flash the trap visuals red, deal damage, knock player out
+    const g = this.add.graphics().setDepth(30)
+    g.fillStyle(0xff2222, 0.45)
+    g.fillRect(room.x, room.y, room.w, room.h)
+    this.tweens.add({
+      targets: g, alpha: 0, duration: 500,
+      onComplete: () => g.destroy(),
+    })
+    const angle = Phaser.Math.Angle.Between(room.x + room.w / 2, room.y + room.h / 2, this.webbs.x, this.webbs.y)
+    this.webbs.damage(20)
+    this.webbs.pb.setVelocity(Math.cos(angle) * 400, Math.sin(angle) * 400)
+    this.health = this.webbs.hp
+    if (this.health <= 0) this.playerDied()
+  }
+
+  private triggerDeadEndAmbush(room: DeadEndRoom): void {
+    // Spawn 2 centipedes inside the room
+    const offsets = [{ x: room.w * 0.25, y: room.h * 0.5 }, { x: room.w * 0.75, y: room.h * 0.5 }]
+    for (const off of offsets) {
+      const sp: SpawnPoint = {
+        kind: 'centipede',
+        x: room.x + off.x,
+        y: room.y + off.y,
+        respawnTimer: 0,
+        alive: false,
+      }
+      this.spawnPoints.push(sp)
+      this.spawnEnemyForPoint(sp)
+    }
+    this.refreshEnemyTargets()
+  }
+
+  private handleConsumableKeys(): void {
+    if (Phaser.Input.Keyboard.JustDown(this.cKey)) {
+      const restored = this.consumableSystem.tryHpPotion()
+      if (restored !== null) {
+        this.webbs.hp = Math.min(this.webbs.hpMax, this.webbs.hp + restored)
+        this.health = this.webbs.hp
+        this.registry.set('consumableInventory', this.consumableSystem.getInventorySnapshot())
+      }
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.vKey)) {
+      const dur = this.consumableSystem.tryTonic()
+      if (dur !== null) {
+        this.registry.set('consumableInventory', this.consumableSystem.getInventorySnapshot())
+      }
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.xKey)) {
+      if (this.consumableSystem.tryMaxPotion()) {
+        this.webbs.hp      = this.webbs.hpMax
+        this.webbs.stamina = this.webbs.maxStamina
+        this.health        = this.webbs.hp
+        this.registry.set('consumableInventory', this.consumableSystem.getInventorySnapshot())
+      }
+    }
+  }
+
+  private spawnChests(): void {
+    for (const room of this.deadEndRooms) {
+      if (room.type !== 'mimic') continue
+      const cx = room.x + room.w / 2
+      const cy = room.y + room.h / 2
+      const isMimic = Math.random() < 0.25
+      const chest = new Chest(this, cx, cy, isMimic)
+      this.chestGroup.add(chest, true)
+      this.chests.push(chest)
+    }
+  }
+
+  private updateChests(eJustDown: boolean): void {
+    for (const chest of this.chests) {
+      const result = chest.update(this.webbs.x, this.webbs.y, eJustDown)
+      if (!result) continue
+
+      if (result.opened) {
+        let craftingDirty = false
+        let consumableDirty = false
+        for (const loot of result.opened) {
+          if (loot.material) {
+            this.craftingSystem.addMaterial(loot.material, loot.qty)
+            craftingDirty = true
+          }
+          if (loot.consumable) {
+            this.consumableSystem.addConsumable(loot.consumable, loot.qty)
+            consumableDirty = true
+            if (loot.consumable === 'MaxPotion') {
+              this.triggerPickupCelebration({
+                itemName:    'Max Potion',
+                description: 'Fills all HP and Stamina instantly.\nFor 10 seconds, blocks all damage and knockback.',
+                color:       0xff88ff,
+                callerScene: 'AntColonyScene',
+              })
+            }
+          }
+        }
+        if (craftingDirty)   this.registry.set('craftingInventory',   this.craftingSystem.getInventorySnapshot())
+        if (consumableDirty) this.registry.set('consumableInventory', this.consumableSystem.getInventorySnapshot())
+      }
+
+      if (result.mimicAttack) {
+        const { damage, angle } = result.mimicAttack
+        this.webbs.damage(damage)
+        if (!this.webbs.maxProtectionActive) {
+          this.webbs.pb.setVelocity(Math.cos(angle) * 380, Math.sin(angle) * 380)
+        }
+        this.health = this.webbs.hp
+        this.contactCooldown = 800
+        if (this.health <= 0) this.playerDied()
       }
     }
   }
@@ -749,6 +1056,10 @@ export default class AntColonyScene extends Phaser.Scene {
   private playerDied(): void {
     if (this.transitioning) return
     this.transitioning = true
+    // Restore hp on the entity immediately — the remaining update() lines
+    // this frame still read webbs.hp, so they must see full HP or the registry
+    // ends up written with 0 and the player respawns dead.
+    this.webbs.resetHp()
     this.health = this.healthMax
     this.registry.set('health', this.healthMax)
     this.cameras.main.fade(700, 0, 0, 0)
@@ -870,6 +1181,21 @@ export default class AntColonyScene extends Phaser.Scene {
   private collectMaterialPickup(p: Pickup): void {
     p.collect()
     this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
+    if (p.materialType === MaterialType.CrystalShard) {
+      this.triggerPickupCelebration({
+        itemName:    'Crystal Shard',
+        description: 'A rare crystalline formation from deep in the colony.\nRequired for crafting the most powerful consumables.',
+        color:       0x88ccff,
+        callerScene: 'AntColonyScene',
+      })
+    }
+  }
+
+  private triggerPickupCelebration(data: CelebData): void {
+    if (this.celebLaunching) return
+    this.celebLaunching = true
+    this.registry.set('celebData', data)
+    this.scene.launch('PickupCelebration')
   }
 
   private onHpModulePicked(data: { amount: number, x: number, y: number }): void {
@@ -889,15 +1215,16 @@ export default class AntColonyScene extends Phaser.Scene {
   }
 
   private syncRegistry(): void {
-    this.registry.set('zoneName',      'ANT COLONY')
-    this.registry.set('health',        this.health)
-    this.registry.set('healthMax',     this.healthMax)
-    this.registry.set('stamina',       this.webbs.stamina)
-    this.registry.set('staminaMax',    this.webbs.maxStamina)
-    this.registry.set('energy',        this.webbs.energy)
-    this.registry.set('energyMax',     this.webbs.maxEnergy)
-    this.registry.set('weaponSlots',   this.webbs.weaponSystem.getAllSlots())
-    this.registry.set('unlockedSlots', this.webbs.weaponSystem.getUnlockedSlotCount())
-    this.registry.set('legTier',       this.webbs.weaponSystem.getLegTier())
+    this.registry.set('zoneName',            'ANT COLONY')
+    this.registry.set('health',              this.health)
+    this.registry.set('healthMax',           this.healthMax)
+    this.registry.set('stamina',             this.webbs.stamina)
+    this.registry.set('staminaMax',          this.webbs.maxStamina)
+    this.registry.set('energy',              this.webbs.energy)
+    this.registry.set('energyMax',           this.webbs.maxEnergy)
+    this.registry.set('weaponSlots',         this.webbs.weaponSystem.getAllSlots())
+    this.registry.set('unlockedSlots',       this.webbs.weaponSystem.getUnlockedSlotCount())
+    this.registry.set('legTier',             this.webbs.weaponSystem.getLegTier())
+    this.registry.set('consumableInventory', this.consumableSystem.getInventorySnapshot())
   }
 }

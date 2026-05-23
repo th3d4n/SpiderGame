@@ -7,7 +7,13 @@ export const MaterialType = {
   WebFluid:     'WebFluid',
   CrystalDust:  'CrystalDust',
   BoneFragment: 'BoneFragment',
-  Thistle:      'Thistle',     // bow ammunition — fired by Web Bow, recoverable on miss/kill
+  Thistle:      'Thistle',     // bow ammunition
+  // Zone 1 chest / crafting materials
+  Stone:        'Stone',
+  Wood:         'Wood',
+  BugPartsAnt:  'BugPartsAnt',
+  DriedFungus:  'DriedFungus', // rare — glowing clusters on tunnel walls
+  CrystalShard: 'CrystalShard', // super rare — triggers Zelda pickup anim
 } as const
 export type MaterialType = (typeof MaterialType)[keyof typeof MaterialType]
 

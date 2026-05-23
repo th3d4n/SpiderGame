@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import { WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
 import { drawWeaponIcon } from './WeaponIcon'
+import { HUD_LEGEND_KEY } from '../config/Controls'
 
 const ACCENT     = 0x7777ff
 const ACCENT_STR = '#7777ff'
@@ -26,14 +27,16 @@ interface BarVisual {
 }
 
 export default class HUDScene extends Phaser.Scene {
-  private slotVisuals:  SlotVisual[] = []
-  private staminaBar!:  BarVisual
-  private energyBar!:   BarVisual
-  private healthBar!:   BarVisual
-  private healthText!:  Phaser.GameObjects.Text
-  private zoneText!:    Phaser.GameObjects.Text
-  private ammoText!:    Phaser.GameObjects.Text
-  private ammoPanel!:   Phaser.GameObjects.Rectangle
+  private slotVisuals:   SlotVisual[] = []
+  private staminaBar!:   BarVisual
+  private energyBar!:    BarVisual
+  private healthBar!:    BarVisual
+  private healthText!:   Phaser.GameObjects.Text
+  private zoneText!:     Phaser.GameObjects.Text
+  private ammoText!:     Phaser.GameObjects.Text
+  private ammoPanel!:    Phaser.GameObjects.Rectangle
+  private legendPanel!:  Phaser.GameObjects.Container
+  private hKey!:         Phaser.Input.Keyboard.Key
 
   constructor() {
     super({ key: 'HUDScene' })
@@ -46,6 +49,8 @@ export default class HUDScene extends Phaser.Scene {
     this.buildAmmoPanel(width)
     this.buildBarsPanel(width, height)
     this.buildWeaponRing(width, height)
+    this.buildControlsLegend(width, height)
+    this.hKey = this.input.keyboard!.addKey(HUD_LEGEND_KEY)
   }
 
   // ── Thistle ammo counter — only visible while a bow is equipped ──────────
@@ -180,6 +185,51 @@ export default class HUDScene extends Phaser.Scene {
     }
   }
 
+  // ── Controls legend — bottom-right, toggled with H ──────────────────────
+
+  private buildControlsLegend(width: number, height: number) {
+    const rows = [
+      ['WASD / ↑↓←→', 'Move'],
+      ['1 – 8',        'Select weapon'],
+      ['Click',        'Fire weapon'],
+      ['Q',            'Web Thrower'],
+      ['E',            'Interact'],
+      ['C',            'HP Potion'],
+      ['V',            'Stamina Tonic'],
+      ['X',            'Max Potion'],
+      ['I',            'Equipment'],
+      ['M',            'Advance text'],
+      ['Space',        'Skip cutscene'],
+      ['H',            'Hide this panel'],
+    ]
+    const panelW = 230, rowH = 16, padX = 10, padY = 8
+    const panelH = rows.length * rowH + padY * 2 + 18  // +18 for title row
+    const px = width - panelW - 10
+    const py = height - panelH - 10
+
+    const c = this.add.container(px, py)
+
+    const bg = this.add.rectangle(panelW / 2, panelH / 2, panelW, panelH, 0x0d0d1a, 0.92)
+    bg.setStrokeStyle(1, 0x334466)
+    c.add(bg)
+
+    c.add(this.add.text(padX, padY, 'CONTROLS', {
+      fontFamily: 'monospace', fontSize: '10px', color: '#7777ff',
+    }))
+
+    rows.forEach(([key, action], i) => {
+      const y = padY + 16 + i * rowH
+      c.add(this.add.text(padX, y, key, {
+        fontFamily: 'monospace', fontSize: '10px', color: '#aaaacc',
+      }))
+      c.add(this.add.text(panelW - padX, y, action, {
+        fontFamily: 'monospace', fontSize: '10px', color: '#556677',
+      }).setOrigin(1, 0))
+    })
+
+    this.legendPanel = c
+  }
+
   // ── Per-frame update ─────────────────────────────────────────────────────
 
   update() {
@@ -192,6 +242,10 @@ export default class HUDScene extends Phaser.Scene {
     const zoneName:      string       = this.registry.get('zoneName')      ?? 'ANT COLONY'
     const weaponSlots:   WeaponType[] = this.registry.get('weaponSlots')   ?? Array(SLOT_COUNT).fill(WeaponType.Empty)
     const unlockedCount: number       = this.registry.get('unlockedSlots') ?? 2
+
+    if (Phaser.Input.Keyboard.JustDown(this.hKey)) {
+      this.legendPanel.setVisible(!this.legendPanel.visible)
+    }
 
     this.zoneText.setText(zoneName)
     this.setBarWidth(this.staminaBar, stamina  / (staminaMax  || 1))

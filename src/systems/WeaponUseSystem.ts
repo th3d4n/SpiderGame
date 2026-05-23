@@ -65,6 +65,8 @@ export class WeaponUseSystem {
   private flameDmgTimer:    number = 0
   private worldW            = 4000
   private worldH            = 4000
+  // Set each frame from ConsumableSystem.getStaminaDrainMult()
+  staminaDrainMult          = 1
 
   setEnemies(enemies: Enemy[]): void {
     this.enemies = enemies
@@ -169,7 +171,7 @@ export class WeaponUseSystem {
 
   private fireSword(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
     if (webbs.stamina <= 0) return
-    webbs.stamina = Math.max(0, webbs.stamina - SWORD_STAMINA)
+    webbs.stamina = Math.max(0, webbs.stamina - SWORD_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = SWORD_COOLDOWN
 
     const arc = scene.add.graphics().setDepth(10)
@@ -194,7 +196,7 @@ export class WeaponUseSystem {
 
   private fireAxe(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
     if (webbs.stamina <= 0) return
-    webbs.stamina = Math.max(0, webbs.stamina - AXE_STAMINA)
+    webbs.stamina = Math.max(0, webbs.stamina - AXE_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = AXE_COOLDOWN
 
     const arc = scene.add.graphics().setDepth(10)
@@ -227,7 +229,7 @@ export class WeaponUseSystem {
       return
     }
     if (webbs.stamina <= 0) return
-    webbs.stamina = Math.max(0, webbs.stamina - BOW_STAMINA)
+    webbs.stamina = Math.max(0, webbs.stamina - BOW_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = BOW_COOLDOWN
 
     // Consume one thistle and persist back to the registry
@@ -250,7 +252,7 @@ export class WeaponUseSystem {
 
   private fireGloves(slot: number, webbs: Webbs, scene: Phaser.Scene): void {
     if (webbs.stamina <= 0) return
-    webbs.stamina = Math.max(0, webbs.stamina - GLOVES_STAMINA)
+    webbs.stamina = Math.max(0, webbs.stamina - GLOVES_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = GLOVES_COOLDOWN
 
     // Stab graphic — long thin line tipped with a small triangle

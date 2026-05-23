@@ -3,6 +3,7 @@ import { RECIPES, type Recipe, type MaterialType } from '../systems/CraftingSyst
 import { WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
 import { drawWeaponIcon } from './WeaponIcon'
+import type { CelebData } from '../scenes/PickupCelebration'
 
 const ACCENT     = 0x7777ff
 const ACCENT_STR = '#7777ff'
@@ -18,6 +19,11 @@ const MAT_ABBREV: Record<MaterialType, string> = {
   CrystalDust:  'CRS',
   BoneFragment: 'BNF',
   Thistle:      'THS',
+  Stone:        'STN',
+  Wood:         'WOD',
+  BugPartsAnt:  'ANT',
+  DriedFungus:  'FNG',
+  CrystalShard: 'CSH',
 }
 
 function formatCost(materials: Partial<Record<MaterialType, number>>): string {
@@ -220,6 +226,22 @@ export default class CraftingMenu extends Phaser.Scene {
     this.flashStatus(`Crafted: ${recipe.displayName}`, ACCENT_STR)
     this.refreshInventoryPanel()
     this.renderSelection()
+
+    // Zelda pickup animation on first craft of this weapon type
+    const discovered = (this.registry.get('discoveredWeapons') as WeaponType[] | null) ?? []
+    if (!discovered.includes(recipe.produces)) {
+      discovered.push(recipe.produces)
+      this.registry.set('discoveredWeapons', discovered)
+      const celebData: CelebData = {
+        itemName:    recipe.displayName,
+        description: '',  // looked up from weaponType in PickupCelebration
+        color:       WEAPON_COLORS[recipe.produces] ?? 0xaaaaff,
+        weaponType:  recipe.produces,
+        callerScene: 'CraftingMenu',
+      }
+      this.registry.set('celebData', celebData)
+      this.scene.launch('PickupCelebration')
+    }
   }
 
   private flashStatus(msg: string, color: string): void {
