@@ -349,8 +349,16 @@ export default class AntColonyScene extends Phaser.Scene {
     ZoneTransitionSystem.announceZone(this, 'ZONE 1 — ANT COLONY')
   }
 
+  // Temporary perf probe — logs worst update section every ~2 s to console.
+  private _perfSamples: Record<string, number> = {}
+  private _perfFrames = 0
+
   update(time: number, delta: number) {
     if (this.transitioning) return
+
+    const _t = (label: string, start: number) => {
+      this._perfSamples[label] = (this._perfSamples[label] ?? 0) + (performance.now() - start)
+    }
 
     // Sync the local CraftingSystem with the registry inventory after a craft
     // (CraftingMenu already pushed the new weapon into weaponInventory directly).
@@ -361,15 +369,9 @@ export default class AntColonyScene extends Phaser.Scene {
       }
     }
 
-    this.webbs.update(time, delta)
-    this.weaponUseSystem.update(delta)
-    this.webLauncher.update(this, this.webbs, delta)
-
-    // Consumable tick + effect application
-    this.consumableSystem.tick(delta)
-    this.webbs.maxProtectionActive = this.consumableSystem.isMaxProtActive()
-    this.weaponUseSystem.staminaDrainMult = this.consumableSystem.getStaminaDrainMult()
-    this.handleConsumableKeys()
+    let _s = performance.now(); this.webbs.update(time, delta); _t('webbs', _s)
+    _s = performance.now(); this.weaponUseSystem.update(delta); this.webLauncher.update(this, this.webbs, delta); _t('weapons', _s)
+    _s = performance.now(); this.consumableSystem.tick(delta); this.webbs.maxProtectionActive = this.consumableSystem.isMaxProtActive(); this.weaponUseSystem.staminaDrainMult = this.consumableSystem.getStaminaDrainMult(); this.handleConsumableKeys(); _t('consumables', _s)
 
     for (let i = 0; i < this.weaponKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.weaponKeys[i])) {
@@ -388,11 +390,11 @@ export default class AntColonyScene extends Phaser.Scene {
       this.webLauncher.onQPressed(this, this.webbs, this.aimToPointer())
     }
 
-    // Pickup proximity sweep — body + legs roll over pickups
-    this.collectPickupsInRange()
+    _s = performance.now(); this.collectPickupsInRange(); _t('pickups', _s)
 
     // Enemy ticking + respawn timers — only tick enemies near the player so
     // 20+ off-screen AI/raycast loops don't churn every frame.
+    _s = performance.now()
     const px = this.webbs.x
     const py = this.webbs.y
     for (const sp of this.spawnPoints) {
@@ -407,6 +409,7 @@ export default class AntColonyScene extends Phaser.Scene {
         if (sp.respawnTimer <= 0) this.respawnSpawnPoint(sp)
       }
     }
+    _t('enemies', _s)
 
     const eJustDown = Phaser.Input.Keyboard.JustDown(this.eKey)
 
@@ -420,16 +423,20 @@ export default class AntColonyScene extends Phaser.Scene {
     if (this.contactCooldown > 0) this.contactCooldown -= delta
     else                          this.checkEnemyContact()
 
-    this.checkDeadEndTriggers()
-    this.updateChests(eJustDown)
+    _s = performance.now(); this.checkDeadEndTriggers(); this.updateChests(eJustDown); _t('chests', _s)
 
     this.health = this.webbs.hp
 
-    // Squeeze-through detection — visual flourish when the player is in a tight gap
-    this.updateSqueezeEffect()
+    _s = performance.now(); this.updateSqueezeEffect(); _t('squeeze', _s)
+    _s = performance.now(); this.updateFog(); _t('fog', _s)
 
-    // Fog of war — raycast visibility polygon
-    this.updateFog()
+    // Log accumulated times every 120 frames (~2 s at 60 fps)
+    if (++this._perfFrames >= 120) {
+      const sorted = Object.entries(this._perfSamples).sort((a, b) => b[1] - a[1])
+      console.log('[AntColony perf 2s totals ms]', Object.fromEntries(sorted.map(([k, v]) => [k, v.toFixed(1)])))
+      this._perfSamples = {}
+      this._perfFrames = 0
+    }
 
     // Proximity portal triggers
     const distHome = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, HOME_PORTAL_X, HOME_PORTAL_Y)
