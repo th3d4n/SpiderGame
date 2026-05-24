@@ -24,10 +24,10 @@ export default class Chest extends Phaser.GameObjects.Container {
     super(scene, x, y)
     this.isMimic = isMimic
 
-    const bodyCol = isMimic ? 0x5a1c1c : 0x5a3a10
-    const lidCol  = isMimic ? 0x6e2626 : 0x6a4818
-    const rimCol  = isMimic ? 0x993333 : 0x997733
-    const latchCol = isMimic ? 0xff4444 : 0xffcc44
+    const bodyCol  = 0x5a3a10
+    const lidCol   = 0x6a4818
+    const rimCol   = 0x997733
+    const latchCol = 0xffcc44
 
     const bodyRect = scene.add.rectangle(0, 5, CHEST_W, 14, bodyCol)
     bodyRect.setStrokeStyle(1.5, rimCol)

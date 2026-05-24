@@ -128,6 +128,7 @@ export default class BossRollerScene extends Phaser.Scene {
   }
 
   create() {
+    this.cameras.main.fadeIn(500, 0, 0, 0)
     this.physics.world.setBounds(0, 80, W, H - 120)
 
     this.drawTunnel()

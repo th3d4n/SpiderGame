@@ -54,6 +54,8 @@ export default class Webbs extends Phaser.GameObjects.Container {
   public winded: boolean = false
   // Set true while Max Potion protection is active — blocks HP loss and knockback.
   public maxProtectionActive: boolean = false
+  // Stamina regen multiplier — set each frame by the active scene (1 = full, 0.5 = out-of-combat colony, 0.25 = in-combat colony)
+  public staminaRegenMult: number = 1
   private timeSinceDamage = 99999
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
@@ -334,7 +336,7 @@ export default class Webbs extends Phaser.GameObjects.Container {
     this.pb.setVelocity(vx, vy)
     if (vx !== 0 || vy !== 0) { this.facingX = vx > 0 ? 1 : vx < 0 ? -1 : 0; this.facingY = vy > 0 ? 1 : vy < 0 ? -1 : 0 }
     const dt = delta / 1000
-    if (this.stamina < this.maxStamina) this.stamina = Math.min(this.maxStamina, this.stamina + STAMINA_REGEN * dt)
+    if (this.stamina < this.maxStamina) this.stamina = Math.min(this.maxStamina, this.stamina + STAMINA_REGEN * this.staminaRegenMult * dt)
     if (this.energy < this.maxEnergy) this.energy = Math.min(this.maxEnergy, this.energy + 5 * dt)
 
     // Winded — engages when stamina hits 0 from a weapon, clears once we regen

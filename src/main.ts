@@ -12,6 +12,7 @@ import EquipScreen from './ui/EquipScreen'
 import PickupNotification from './ui/PickupNotification'
 import PickupCelebration from './scenes/PickupCelebration'
 import TextDisplayScene from './scenes/TextDisplayScene'
+import ZoneTransitionBeat from './scenes/ZoneTransitionBeat'
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -25,7 +26,7 @@ const config: Phaser.Types.Core.GameConfig = {
   },
   // HomeBaseScene is the entry point after the main menu.
   // GameScene is kept registered for direct dev access.
-  scene: [BootScene, PreloadScene, MainMenuScene, HomeBaseScene, AntColonyScene, GameScene, BossRollerScene, HUDScene, CraftingMenu, EquipScreen, PickupNotification, PickupCelebration, TextDisplayScene]
+  scene: [BootScene, PreloadScene, MainMenuScene, HomeBaseScene, AntColonyScene, GameScene, BossRollerScene, HUDScene, CraftingMenu, EquipScreen, PickupNotification, PickupCelebration, TextDisplayScene, ZoneTransitionBeat]
 }
 
 const game = new Phaser.Game(config)

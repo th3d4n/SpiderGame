@@ -13,7 +13,14 @@ import { WebLauncherSystem } from '../systems/WebLauncherSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
 import Chest from '../entities/Chest'
 import { ConsumableSystem } from '../systems/ConsumableSystem'
+import { saveSystem } from '../systems/SaveSystem'
 import type { CelebData } from './PickupCelebration'
+import type { TextDisplayData } from './TextDisplayScene'
+
+const COLONY_INTRO_PAGES: string[] = [
+  'The silk markers end here.\n\nPast this point, the ants have carved\ntheir own roads through the dirt.',
+  'Whatever drove the colony out\nstill lives at the far end of these tunnels.\n\nMove carefully. Trust your web.\n\nAnd watch the walls — they move.',
+]
 
 // Five-level maze — significantly larger with vertical priority.
 const WORLD_W = 7500
@@ -50,6 +57,9 @@ const FOG_MOVE_THRESHOLD_SQ = 4 * 4
 // Off-screen culling — enemy AI and chest update calls skip when this far
 // from the player (viewport is 1280x720, so ~900px covers screen + margin).
 const ACTIVE_RADIUS_SQ = 900 * 900
+
+// In-combat detection radius for stamina regen penalty (Section 11)
+const COMBAT_RANGE_SQ = 300 * 300
 
 // Respawn timer for fallen enemies (ms) — long enough that combats feel won
 const RESPAWN_MS = 22000
@@ -111,16 +121,21 @@ export default class AntColonyScene extends Phaser.Scene {
   private contactCooldown = 0
   // Last weapon-key pressed — left-click reuses this slot with mouse-aim
   private activeSlot      = -1
+  // Timestamp (scene time ms) of the last combat hit — drives in-combat regen penalty
+  private lastCombatTime  = -Infinity
 
   constructor() {
     super({ key: 'AntColonyScene' })
   }
 
   create() {
+    this.cameras.main.fadeIn(500, 0, 0, 0)
+
     this.transitioning   = false
     this.celebLaunching  = false
     this.spawnPoints     = []
     this.contactCooldown = 0
+    this.lastCombatTime  = -Infinity
     this.lanternBeacons = []
     this.deadEndRooms   = []
     this.chests         = []
@@ -352,6 +367,20 @@ export default class AntColonyScene extends Phaser.Scene {
 
     this.syncRegistry()
     ZoneTransitionSystem.announceZone(this, 'ZONE 1 — ANT COLONY')
+
+    // Colony intro cutscene — plays once on first visit, then never again.
+    if (!(this.registry.get('antColonyFirstVisit') as boolean | undefined)) {
+      this.registry.set('antColonyFirstVisit', true)
+      saveSystem.saveFromRegistry(this.registry)
+      const introData: TextDisplayData = {
+        pages:       COLONY_INTRO_PAGES,
+        title:       '— ZONE 1: ANT COLONY —',
+        color:       0x66aa44,
+        callerScene: 'AntColonyScene',
+      }
+      this.registry.set('textDisplayData', introData)
+      this.scene.launch('TextDisplayScene')
+    }
   }
 
   update(time: number, delta: number) {
@@ -365,6 +394,18 @@ export default class AntColonyScene extends Phaser.Scene {
         this.craftingSystem['inventory'].set(mat as MaterialType, amt)
       }
     }
+
+    // In-combat stamina regen penalty — uses last frame's lastHitFrame before
+    // weaponUseSystem.update() clears it this frame.
+    const wx = this.webbs.x, wy = this.webbs.y
+    const nearEnemy = this.spawnPoints.some(sp => {
+      if (!sp.alive || !sp.ref || sp.ref.isDead()) return false
+      const dx = sp.ref.x - wx, dy = sp.ref.y - wy
+      return dx * dx + dy * dy < COMBAT_RANGE_SQ
+    })
+    if (nearEnemy || this.weaponUseSystem.lastHitFrame) this.lastCombatTime = time
+    const inCombat = (time - this.lastCombatTime) < 3000
+    this.webbs.staminaRegenMult = inCombat ? 0.25 : 0.5
 
     this.webbs.update(time, delta)
     this.weaponUseSystem.update(delta)
@@ -449,9 +490,13 @@ export default class AntColonyScene extends Phaser.Scene {
     const distBoss = Phaser.Math.Distance.Between(this.webbs.x, this.webbs.y, BOSS_PORTAL_X, this.bossPortalY)
     if (distHome < 65) {
       this.transitioning = true
+      this.syncRegistry()
+      saveSystem.saveFromRegistry(this.registry)
       ZoneTransitionSystem.transition(this, 'HomeBaseScene', 'right', this.health)
     } else if (distBoss < 65) {
       this.transitioning = true
+      this.syncRegistry()
+      saveSystem.saveFromRegistry(this.registry)
       ZoneTransitionSystem.transition(this, 'BossRollerScene', 'left', this.health)
     }
 

@@ -9,6 +9,7 @@ import { WeaponType } from '../systems/WeaponSystem'
 import { WeaponUseSystem } from '../systems/WeaponUseSystem'
 import { WebLauncherSystem } from '../systems/WebLauncherSystem'
 import { ZoneTransitionSystem } from '../systems/ZoneTransitionSystem'
+import { saveSystem } from '../systems/SaveSystem'
 import type { CelebData } from './PickupCelebration'
 import type { TextDisplayData } from './TextDisplayScene'
 
@@ -32,7 +33,7 @@ const WEB_THROWER_TUTORIAL: string[] = [
   'Web Thrower acquired.\n\nYour family built this for you.\nIt fires a web line at whatever you aim at.',
   'Aim with your cursor.\nFire with [ Q ].\n\nThe web travels fast.\nIt sticks to almost anything.',
   'If you hit a smaller enemy, the web wraps\naround them and yanks them toward you.\n\nThey\'ll be stunned for a moment —\nenough time to follow up with a leg attack.',
-  'The Web Thrower never runs out of web.\n\nIt is always with you.\nIt never takes up a leg slot.\n\nUse it often.',
+  'The Web Thrower never runs out of web.\n\nIt is always with you.\nPress [ Q ] to fire from any position.\n\nUse it often.',
 ]
 
 // Left-exit trigger
@@ -81,6 +82,8 @@ export default class HomeBaseScene extends Phaser.Scene {
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   create() {
+    this.cameras.main.fadeIn(500, 0, 0, 0)
+
     this.transitioning            = false
     this.birthdaySequenceLaunching = false
     this.cardTextLaunching         = false
@@ -326,6 +329,7 @@ export default class HomeBaseScene extends Phaser.Scene {
       this.registry.set('craftingInventory', this.craftingSystem.getInventorySnapshot())
       this.registry.set('legTier',           this.webbs.weaponSystem.getLegTier())
       this.registry.set('callerScene', 'HomeBaseScene')
+      saveSystem.saveFromRegistry(this.registry)
       this.scene.launch('CraftingMenu')
     }
 
@@ -337,6 +341,8 @@ export default class HomeBaseScene extends Phaser.Scene {
     // Left-exit → Ant Colony
     if (this.webbs.x < LEFT_TRIGGER) {
       this.transitioning = true
+      this.syncRegistry()
+      saveSystem.saveFromRegistry(this.registry)
       ZoneTransitionSystem.transition(this, 'AntColonyScene', 'left', this.health)
     }
 
@@ -752,14 +758,9 @@ export default class HomeBaseScene extends Phaser.Scene {
       this.giftContainer.setVisible(false)
       this.giftPrompt.setVisible(false)
 
-      // Equip the Web Thrower into slot 0 and add it to the known inventory so
-      // it's available immediately and persists across zone transitions.
+      // Equip the Web Thrower into slot 0. It lives in the slot, not the
+      // inventory list, so the EquipScreen shows it once (in the ring) not twice.
       this.webbs.weaponSystem.equip(0, WeaponType.WebLauncher)
-      const inv = (this.registry.get('weaponInventory') as WeaponType[] | undefined) ?? []
-      if (!inv.includes(WeaponType.WebLauncher)) {
-        inv.push(WeaponType.WebLauncher)
-        this.registry.set('weaponInventory', inv)
-      }
 
       const celebData: CelebData = {
         itemName:       'Web Thrower',

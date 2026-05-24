@@ -31,7 +31,7 @@ const AXE_SHAKE_DUR     = 180
 const GLOVES_RADIUS     = 90
 const GLOVES_CONE_DEG   = 28
 const GLOVES_DAMAGE     = 14
-const GLOVES_STAMINA    = 5
+const GLOVES_STAMINA    = 15  // ×3 — high reach/speed need a meaningful stamina cost
 const GLOVES_COOLDOWN   = 220
 const GLOVES_KNOCKBACK  = 200
 const GLOVES_SHAKE_INT  = 0.006
@@ -67,6 +67,8 @@ export class WeaponUseSystem {
   private worldH            = 4000
   // Set each frame from ConsumableSystem.getStaminaDrainMult()
   staminaDrainMult          = 1
+  // True for one frame after any weapon lands a hit — read by AntColonyScene for combat tracking
+  lastHitFrame              = false
 
   setEnemies(enemies: Enemy[]): void {
     this.enemies = enemies
@@ -80,6 +82,7 @@ export class WeaponUseSystem {
   // ── Update ────────────────────────────────────────────────────────────────
 
   update(delta: number): void {
+    this.lastHitFrame = false
     for (let i = 0; i < 8; i++) {
       if (this.cooldowns[i] > 0) this.cooldowns[i] -= delta
     }
@@ -289,6 +292,7 @@ export class WeaponUseSystem {
         const hy = enemy.y - Math.sin(toEnemy) * enemy.bodyRadius
         this.spawnHitVfx(scene, 'gloves', hx, hy, webbs.facingX, webbs.facingY)
         hit = true
+        this.lastHitFrame = true
       }
     }
 
@@ -366,6 +370,7 @@ export class WeaponUseSystem {
           onHit(enemy, hx, hy)
         }
         anyHit = true
+        this.lastHitFrame = true
       }
     }
     return anyHit

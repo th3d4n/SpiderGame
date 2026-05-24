@@ -13,10 +13,17 @@ const OPPOSITE: Record<ExitDir, ExitDir> = {
 const KEY_ENTRY_FROM = 'zoneEntryFrom'
 const KEY_HEALTH     = 'health'
 
+const ZONE_BEATS: Record<string, { label: string; subtitle: string }> = {
+  HomeBaseScene:   { label: 'HOME BASE',            subtitle: 'The Den.'                            },
+  AntColonyScene:  { label: 'ZONE 1 — ANT COLONY', subtitle: 'The western passage.'                },
+  BossRollerScene: { label: 'THE BOSS CHAMBER',     subtitle: 'The thing at the end of the tunnel.' },
+}
+
 export class ZoneTransitionSystem {
 
   /**
-   * Fade out, store player state, then start the target scene.
+   * Fade out, store player state, then show a brief zone-label beat
+   * before starting the target scene.
    * exitDir: the direction Webbs is leaving through ('left' = walked off the left edge).
    */
   static transition(
@@ -25,12 +32,18 @@ export class ZoneTransitionSystem {
     exitDir:   ExitDir,
     health?:   number,
   ): void {
-    // Store which side of the new scene Webbs should enter from
     scene.registry.set(KEY_ENTRY_FROM, OPPOSITE[exitDir])
     if (health !== undefined) scene.registry.set(KEY_HEALTH, health)
 
+    const beat = ZONE_BEATS[targetKey] ?? { label: targetKey, subtitle: '' }
+    scene.registry.set('transitionBeatData', {
+      targetKey,
+      label:    beat.label,
+      subtitle: beat.subtitle,
+    })
+
     scene.cameras.main.fade(400, 0, 0, 0)
-    scene.time.delayedCall(400, () => scene.scene.start(targetKey))
+    scene.time.delayedCall(400, () => scene.scene.start('ZoneTransitionBeat'))
   }
 
   /**
