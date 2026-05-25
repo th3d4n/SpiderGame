@@ -290,6 +290,7 @@ export class AntColonyScene3D {
       minZ: AntColonyScene3D.BACK  + 0.3,
       maxZ: AntColonyScene3D.FRONT - 0.3,
     }
+    physicsWorld.circularBound = null   // ant colony uses box bounds, not circular
 
     this.buildGround()
     this.buildOuterWalls()

@@ -14,18 +14,22 @@ const WEAPON_DESCRIPTIONS: Partial<Record<WeaponType, string>> = {
   [WeaponType.WebLauncher]:   'The Web Thrower.\nFires sticky silk — pull yourself or items\ntoward the anchor point.',
 }
 
+// HARD MINIMUM duration in wall-clock milliseconds.
+// This MUST be at least 2500. Do not reduce this value.
+const MIN_DURATION_MS = 2800
+
 export class PickupCelebration3D {
-  private overlay:    HTMLElement
-  private panel:      HTMLDivElement
+  private overlay: HTMLElement
+  private panel:   HTMLDivElement
   private textDisplay: TextDisplay3D
   private tutorialPages: string[] = []
   private tutorialTitle?: string
   private tutorialAccent?: string
 
-  isOpen     = false
+  isOpen   = false
   onClose?: () => void
 
-  private openedAt = 0   // performance.now() timestamp when panel was shown
+  private openedAtMs = 0   // wall-clock timestamp when shown — not affected by delta clamping
 
   constructor(menuOverlay: HTMLElement, textDisplay: TextDisplay3D) {
     this.overlay     = menuOverlay
@@ -33,19 +37,22 @@ export class PickupCelebration3D {
     this.panel       = document.createElement('div')
     this.panel.style.display = 'none'
 
-    // Inject CSS animations once
     if (!document.getElementById('celeb-styles')) {
       const style = document.createElement('style')
       style.id = 'celeb-styles'
       style.textContent = [
         '@keyframes celeb-pop {',
-        '  0%   { transform: scale(0); }',
-        '  70%  { transform: scale(1.18); }',
-        '  100% { transform: scale(1); }',
+        '  0%   { transform: scale(0); opacity: 0; }',
+        '  60%  { transform: scale(1.25); opacity: 1; }',
+        '  100% { transform: scale(1); opacity: 1; }',
         '}',
         '@keyframes celeb-bob {',
-        '  0%,100% { transform: translateY(0); }',
-        '  50%     { transform: translateY(-7px); }',
+        '  0%,100% { transform: translateY(0) rotate(-5deg); }',
+        '  50%     { transform: translateY(-10px) rotate(5deg); }',
+        '}',
+        '@keyframes celeb-glow {',
+        '  0%,100% { box-shadow: 0 0 20px currentColor; }',
+        '  50%     { box-shadow: 0 0 60px currentColor; }',
         '}',
         '@keyframes celeb-blink {',
         '  0%,100% { opacity: 1; } 50% { opacity: 0.35; }',
@@ -66,7 +73,7 @@ export class PickupCelebration3D {
     this.tutorialPages  = tutorialPages ?? []
     this.tutorialTitle  = tutorialTitle
     this.tutorialAccent = tutorialAccent
-    this.openedAt       = performance.now()
+    this.openedAtMs     = performance.now()   // WALL CLOCK — not affected by delta
 
     const colorNum = WEAPON_COLORS[weaponType]
     const colorHex = `#${colorNum.toString(16).padStart(6, '0')}`
@@ -80,54 +87,45 @@ export class PickupCelebration3D {
       'font-family:monospace;',
     ].join('')
 
-    // Inner panel
     const box = document.createElement('div')
     box.style.cssText = [
       `border:1.5px solid ${colorHex};`,
-      'background:#0d0d1a; padding:28px 40px 22px;',
-      'display:flex; flex-direction:column; align-items:center; width:360px;',
+      'background:#0d0d1a; padding:36px 48px 28px;',
+      'display:flex; flex-direction:column; align-items:center; width:400px;',
+      `animation: celeb-glow 2s ease-in-out infinite;`,
+      `color: ${colorHex};`,   // for currentColor in box-shadow
     ].join('')
 
-    // Header
     const header = document.createElement('div')
-    header.style.cssText = 'color:#445566; font-size:10px; letter-spacing:2px; margin-bottom:18px;'
-    header.textContent = '— NEW DISCOVERY —'
+    header.style.cssText = 'color:#aabbcc; font-size:11px; letter-spacing:3px; margin-bottom:24px;'
+    header.textContent = '★  NEW DISCOVERY  ★'
 
-    // Glow rings
-    const glowWrap = document.createElement('div')
-    glowWrap.style.cssText = 'position:relative; width:92px; height:92px; display:flex; align-items:center; justify-content:center; margin-bottom:16px;'
-
-    const glow1 = document.createElement('div')
-    glow1.style.cssText = `position:absolute; inset:0; border-radius:50%; background:radial-gradient(circle, ${colorHex}22 0%, transparent 70%);`
-    const glow2 = document.createElement('div')
-    glow2.style.cssText = `position:absolute; inset:16px; border-radius:50%; background:radial-gradient(circle, ${colorHex}44 0%, transparent 70%);`
-
-    // Icon with pop + bob animation
+    // Big animated icon — pop in, then bob
     const iconWrap = document.createElement('div')
-    iconWrap.style.cssText = 'position:relative; z-index:1; animation: celeb-pop 320ms ease-out both, celeb-bob 1.1s ease-in-out 360ms infinite;'
-    iconWrap.innerHTML = weaponIconSvg(weaponType, colorHex, 48)
+    iconWrap.style.cssText = [
+      'position:relative; width:120px; height:120px;',
+      'display:flex; align-items:center; justify-content:center;',
+      'margin-bottom:24px;',
+      `background:radial-gradient(circle, ${colorHex}33 0%, transparent 70%);`,
+      'border-radius:50%;',
+      'animation: celeb-pop 600ms ease-out 0ms both, celeb-bob 1.8s ease-in-out 600ms infinite;',
+    ].join('')
+    iconWrap.innerHTML = weaponIconSvg(weaponType, colorHex, 80)
 
-    glowWrap.appendChild(glow1)
-    glowWrap.appendChild(glow2)
-    glowWrap.appendChild(iconWrap)
-
-    // Item name
     const itemName = document.createElement('div')
-    itemName.style.cssText = `color:${colorHex}; font-size:18px; letter-spacing:1px; margin-bottom:10px; text-align:center;`
+    itemName.style.cssText = `color:${colorHex}; font-size:22px; letter-spacing:2px; margin-bottom:14px; text-align:center; font-weight:bold;`
     itemName.textContent = name
 
-    // Description
     const descEl = document.createElement('div')
-    descEl.style.cssText = 'color:#778899; font-size:11px; line-height:1.7; text-align:center; margin-bottom:18px; white-space:pre-wrap;'
+    descEl.style.cssText = 'color:#aabbcc; font-size:12px; line-height:1.7; text-align:center; margin-bottom:24px; white-space:pre-wrap;'
     descEl.textContent = desc
 
-    // Hold beat — auto-advances after 2.5s, no skip
     const prompt = document.createElement('div')
-    prompt.style.cssText = 'color:#444466; font-size:10px; animation:celeb-blink 1.4s ease-in-out infinite;'
-    prompt.textContent = '— — —'
+    prompt.style.cssText = 'color:#556677; font-size:11px; animation:celeb-blink 1.4s ease-in-out infinite;'
+    prompt.textContent = '— Presenting your find —'
 
     box.appendChild(header)
-    box.appendChild(glowWrap)
+    box.appendChild(iconWrap)
     box.appendChild(itemName)
     box.appendChild(descEl)
     box.appendChild(prompt)
@@ -137,9 +135,13 @@ export class PickupCelebration3D {
     this.isOpen = true
   }
 
+  // NOTE: delta parameter is intentionally IGNORED. Wall-clock time is the
+  // only safe way to time the celebration — accumulated delta values can be
+  // clamped or stutter, causing premature dismissal.
   update(_input: InputManager, _delta: number): void {
     if (!this.isOpen) return
-    if ((performance.now() - this.openedAt) / 1000 >= 2.5) this.dismiss()
+    const elapsedMs = performance.now() - this.openedAtMs
+    if (elapsedMs >= MIN_DURATION_MS) this.dismiss()
   }
 
   close(): void {
@@ -159,7 +161,6 @@ export class PickupCelebration3D {
         title:       this.tutorialTitle,
         accentColor: this.tutorialAccent,
       }
-      // Chain onClose so celebZoom is reset when the card is dismissed
       const prevClose = this.textDisplay.onClose
       this.textDisplay.onClose = () => { prevClose?.(); this.onClose?.() }
       this.textDisplay.show(data)

@@ -247,7 +247,7 @@ export class WebLauncherSystem3D {
     const geo = new THREE.SphereGeometry(0.05, 6, 4)
     const mat = new THREE.MeshBasicMaterial({ color: 0xeeeeff })
     const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(webbs.collisionBody.x, 0.4, webbs.collisionBody.z)
+    mesh.position.set(webbs.collisionBody.x, 0.18, webbs.collisionBody.z)
     this.threeScene.add(mesh)
 
     // Silk strand line — 2-point BufferGeometry updated every frame
@@ -324,7 +324,7 @@ export class WebLauncherSystem3D {
     if (!this.state) return
     const pos = this.state.line.geometry.attributes.position as THREE.BufferAttribute
 
-    pos.setXYZ(0, webbs.collisionBody.x, 0.4, webbs.collisionBody.z)
+    pos.setXYZ(0, webbs.collisionBody.x, 0.18, webbs.collisionBody.z)
 
     if (this.state.projectile) {
       pos.setXYZ(1, this.state.projectile.mesh.position.x, 0.4, this.state.projectile.mesh.position.z)

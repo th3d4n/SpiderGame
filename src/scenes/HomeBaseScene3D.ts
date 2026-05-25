@@ -122,9 +122,15 @@ export class HomeBaseScene3D {
     const wallMat = new THREE.MeshToonMaterial({ color: 0x4a2e18, gradientMap: this.gradientMap })
     const capMat  = new THREE.MeshToonMaterial({ color: 0x5a3a20, gradientMap: this.gradientMap })
 
-    // 8 wall panels forming an octagonal chamber (radius ≈10.8)
+    // 8-panel octagon.  Panels 3 (135°–180°) and 4 (180°–225°) are SKIPPED to create
+    // a symmetric 90° doorway centered exactly on the west vertex (x=-10.8, z=0) where
+    // the exit portal to Ant Colony stands.
     const R = 10.8, N = 8
+    const EXIT_PANELS = new Set([3, 4])   // two panels flanking the 180° west vertex
+
     for (let i = 0; i < N; i++) {
+      if (EXIT_PANELS.has(i)) continue   // doorway opening — no panel here
+
       const a0 = (i / N) * Math.PI * 2
       const a1 = ((i + 1) / N) * Math.PI * 2
       const mx = Math.cos((a0 + a1) / 2) * R
@@ -143,10 +149,34 @@ export class HomeBaseScene3D {
       this.add(cap)
     }
 
-    // Stone rubble at base of walls
+    // Doorframe — visual frame for the west exit opening
+    const frameMat = new THREE.MeshToonMaterial({
+      color: 0x88aaff, gradientMap: this.gradientMap,
+      emissive: new THREE.Color(0x224488), emissiveIntensity: 0.6,
+    })
+    // Two vertical posts at the north and south edges of the doorway (z = ±4.5 ≈ chord/2)
+    const post1 = new THREE.Mesh(new THREE.BoxGeometry(0.2, WALL_H, 0.2), frameMat)
+    post1.position.set(-10.0, WALL_H / 2, -4.5)
+    this.add(post1)
+    const post2 = new THREE.Mesh(new THREE.BoxGeometry(0.2, WALL_H, 0.2), frameMat)
+    post2.position.set(-10.0, WALL_H / 2,  4.5)
+    this.add(post2)
+    // Lintel across the top
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 9.2), frameMat)
+    lintel.position.set(-10.0, WALL_H, 0)
+    this.add(lintel)
+    // Exit glow light
+    const exitLight = new THREE.PointLight(0x88aaff, 1.4, 6.0)
+    exitLight.position.set(-10.5, 0.8, 0)
+    this.add(exitLight)
+
+    // Stone rubble at base of walls (skip arc near the doorway: avoid 150°–210°)
     const stoneMat = new THREE.MeshToonMaterial({ color: 0x3d2514, gradientMap: this.gradientMap })
     for (let i = 0; i < 12; i++) {
       const angle = (i / 12) * Math.PI * 2 + 0.2
+      // Skip rubble in the 135°–225° doorway arc (panels 3 + 4)
+      const angleDeg = (angle * 180 / Math.PI) % 360
+      if (angleDeg >= 135 && angleDeg <= 225) continue
       const r = 9.4 + Math.random() * 0.6
       const h = 0.15 + Math.random() * 0.3
       const stone = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.18), stoneMat)

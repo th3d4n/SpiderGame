@@ -50,6 +50,10 @@ export class Webbs3D {
   legs: SpiderLegs
   moveDir = new THREE.Vector2(0, 0)   // last normalized movement direction for gait
 
+  // Celebration pose — set true while pickup celebration is showing
+  celebratingPose      = false
+  private celebPoseStartMs = 0
+
   private bodyMat:          THREE.MeshToonMaterial
   private gradientMap:      THREE.Texture
   private webLauncherMount: THREE.Group | null = null
@@ -164,13 +168,30 @@ export class Webbs3D {
 
   // ── Call after syncPosition() — advances gait and solves IK ──────────────
   updateLegs(delta: number): void {
-    this.legs.update(
-      delta,
-      this.group.position,
-      this.group.rotation.y,
-      this.moveDir,
-      this.weaponSystem
-    )
+    if (this.celebratingPose) {
+      this.legs.updateCelebrationPose(
+        this.group.position,
+        this.group.rotation.y,
+        performance.now() - this.celebPoseStartMs,
+      )
+    } else {
+      this.legs.update(
+        delta,
+        this.group.position,
+        this.group.rotation.y,
+        this.moveDir,
+        this.weaponSystem,
+      )
+    }
+  }
+
+  startCelebrationPose(): void {
+    this.celebratingPose   = true
+    this.celebPoseStartMs  = performance.now()
+  }
+
+  endCelebrationPose(): void {
+    this.celebratingPose = false
   }
 
   // ── Hit feedback — body flashes red, resets after 140 ms ─────────────────
@@ -182,35 +203,46 @@ export class Webbs3D {
     setTimeout(() => { this.bodyMat.color.setHex(0x554488) }, 140)
   }
 
-  // Build a web-launcher backpack mesh parented to this.group (body-local space).
-  // +Z is the body's back, +Y is up.  Mounted dorsal-rear on top of the body.
+  // Build a web-launcher mount parented to this.group (body-local space).
+  // Ventral mount — slung underneath the body between the legs.
+  // Body sits at y=0.4 with radius 0.3 so underside is around y=0.10–0.20.
   private buildWebLauncherMount(): THREE.Group {
     const gm = this.gradientMap
     const g  = new THREE.Group()
 
-    // Launcher housing — compact drum sitting on the spider's back
+    // Launcher housing — compact drum slung under the body
     const housing = new THREE.Mesh(
       new THREE.CylinderGeometry(0.09, 0.09, 0.13, 10),
       new THREE.MeshToonMaterial({ color: 0x777777, gradientMap: gm }),
     )
-    housing.position.set(0, 0.54, 0.13)
+    housing.rotation.x = Math.PI / 2   // lay horizontal
+    housing.position.set(0, 0.18, 0.08)   // ventral, slightly forward
 
-    // Nozzle — thin tube angled upward from the housing
+    // Nozzle — short barrel pointing forward (+Z in body space)
     const nozzle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.025, 0.025, 0.20, 6),
+      new THREE.CylinderGeometry(0.025, 0.035, 0.18, 6),
       new THREE.MeshToonMaterial({ color: 0x555555, gradientMap: gm }),
     )
-    nozzle.rotation.x = -Math.PI / 6  // tilt forward ~30°
-    nozzle.position.set(0, 0.65, 0.10)
+    nozzle.rotation.x = Math.PI / 2   // horizontal, pointing along Z
+    nozzle.position.set(0, 0.16, 0.22)   // in front of housing
 
-    // Silk reservoir — small glowing sphere on top of housing
+    // Silk reservoir — small glowing sphere on the side of the housing
     const reservoir = new THREE.Mesh(
       new THREE.SphereGeometry(0.045, 8, 6),
-      new THREE.MeshStandardMaterial({ color: 0xddeeff, emissive: 0x99bbff, emissiveIntensity: 0.6 }),
+      new THREE.MeshStandardMaterial({
+        color: 0xddeeff, emissive: 0x99bbff, emissiveIntensity: 0.8,
+      }),
     )
-    reservoir.position.set(0, 0.64, 0.13)
+    reservoir.position.set(0.08, 0.18, 0.05)
 
-    g.add(housing, nozzle, reservoir)
+    // Strap — thin band visually attaching the housing to Webbs' underside
+    const strap = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 0.02, 0.04),
+      new THREE.MeshToonMaterial({ color: 0x332211, gradientMap: gm }),
+    )
+    strap.position.set(0, 0.28, 0.08)
+
+    g.add(housing, nozzle, reservoir, strap)
     return g
   }
 

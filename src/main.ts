@@ -172,7 +172,7 @@ textDisplay.onClose  = () => {
   gamePaused = false
   if (pendingTransitionResume) { pendingTransitionResume(); pendingTransitionResume = null }
 }
-pickupCelebration.onClose = () => { gamePaused = false; celebZoom = false }
+pickupCelebration.onClose = () => { gamePaused = false; celebZoom = false; webbs.endCelebrationPose() }
 
 craftingMenu.onFirstDiscover = (wt) => {
   craftingMenu.close()
@@ -446,6 +446,7 @@ function gameLoop() {
             registry.set('tutorialToothpickSeen', true)
             pickupCelebration.show(WeaponType.BoxingGloves, TUTORIAL_TOOTHPICK.pages, TUTORIAL_TOOTHPICK.title, TUTORIAL_TOOTHPICK.accentColor)
             gamePaused = true; celebZoom = true
+            webbs.startCelebrationPose()
             particles.burst(webbs.group.position, 0xddccaa, 16, 4.0, 0.07)
           } else {
             pickupNotify.notify('Toothpick Stabber', 'weapon found', '#ddccaa')
@@ -463,6 +464,7 @@ function gameLoop() {
             registry.set('tutorialWebLauncherSeen', true)
             pickupCelebration.show(WeaponType.WebLauncher, TUTORIAL_WEB_LAUNCHER.pages, TUTORIAL_WEB_LAUNCHER.title, TUTORIAL_WEB_LAUNCHER.accentColor)
             gamePaused = true; celebZoom = true
+            webbs.startCelebrationPose()
             particles.burst(webbs.group.position, 0xddeeff, 20, 5.0, 0.07)
           } else {
             pickupNotify.notify('Web Launcher', 'already found', '#ddeeff')

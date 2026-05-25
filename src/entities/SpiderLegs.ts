@@ -324,6 +324,49 @@ export class SpiderLegs {
     }
   }
 
+  // Celebration pose — front two legs lift and reach forward while the rest stay planted.
+  // Call in place of update() when Webbs3D.celebratingPose is true.
+  updateCelebrationPose(bodyPos: THREE.Vector3, bodyRotY: number, elapsedMs: number): void {
+    this.updateWorldVecs(bodyPos, bodyRotY)
+
+    const tSec = elapsedMs / 1000
+    const bobY = 0.05 * Math.sin(tSec * Math.PI * 2)   // ±0.05 gentle pulse at 1 Hz
+
+    // Body forward direction in world XZ (spider faces -Z in local space, rotated by bodyRotY)
+    const fwdX = -Math.sin(bodyRotY)
+    const fwdZ = -Math.cos(bodyRotY)
+    // Right direction (perpendicular)
+    const rgtX =  fwdZ
+    const rgtZ = -fwdX
+
+    for (const leg of this.legs) {
+      if (leg.index === 6 || leg.index === 7) {
+        // Anatomical front legs (anchor z = -0.7 in body space) — lift and extend forward
+        const side = (leg.index === 6) ? -1 : 1   // 6 = left, 7 = right
+        leg.footPos.set(
+          bodyPos.x + fwdX * 0.55 + rgtX * side * 0.3,
+          0.5 + bobY,
+          bodyPos.z + fwdZ * 0.55 + rgtZ * side * 0.3,
+        )
+      } else {
+        // Remaining six legs — planted at their world-space anchor positions
+        leg.footPos.copy(leg.anchorWorld)
+        leg.footPos.y = 0
+      }
+      leg.isStepping = false
+    }
+
+    // Solve IK and update all leg meshes
+    for (const leg of this.legs) {
+      solveTwoBoneIK(leg.rootWorld, leg.footPos, UPPER_LEN, LOWER_LEN, leg.poleDir, this.kneePos)
+      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048)
+      positionCylinder(leg.lower, this.kneePos,  leg.footPos,  0.025)
+      leg.knee.position.copy(this.kneePos)
+      leg.tip.position.copy(leg.footPos)
+      leg.tip.position.y = Math.max(leg.footPos.y, 0.08)
+    }
+  }
+
   // Update leg tier → bionic lower segment color reflects tier on next update().
   setLegTier(tier: number): void {
     this.currentTier = Math.max(0, Math.min(3, tier))
