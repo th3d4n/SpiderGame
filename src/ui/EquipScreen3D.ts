@@ -1,18 +1,23 @@
 import { WeaponType } from '../systems/WeaponSystem'
-import { WEAPON_COLORS, WEAPON_DATA } from '../config/WeaponData'
+import { WEAPON_COLORS, WEAPON_DATA, WEAPON_STATS, dpsFor } from '../config/WeaponData'
 import { registry } from '../core/Registry'
 import type { InputManager } from '../core/InputManager'
 import type { Webbs3D } from '../entities/Webbs3D'
+import { weaponIconSvg } from './WeaponIcon3D'
 
 const SLOT_COUNT = 8
 
 export class EquipScreen3D {
-  private overlay:      HTMLElement
-  private panel:        HTMLDivElement
-  private slotEls:      HTMLDivElement[]  = []
+  private overlay:       HTMLElement
+  private panel:         HTMLDivElement
+  private slotEls:       HTMLDivElement[]  = []
   private invContainer!: HTMLDivElement
-  private selectedSlot  = 0
-  private webbs!:       Webbs3D
+  private detailEl!:     HTMLDivElement
+  private selectedSlot   = 0
+  private selectedInvIdx = 0
+  private focusedPanel:  'slots' | 'inv' = 'slots'
+  private uniqueWeapons: WeaponType[] = []
+  private webbs!:        Webbs3D
 
   isOpen  = false
   onClose?: () => void
@@ -24,8 +29,10 @@ export class EquipScreen3D {
   }
 
   show(webbs: Webbs3D): void {
-    this.webbs        = webbs
-    this.selectedSlot = 0
+    this.webbs          = webbs
+    this.selectedSlot   = 0
+    this.selectedInvIdx = 0
+    this.focusedPanel   = 'slots'
     this.panel.style.display = 'flex'
     this.overlay.style.display = 'block'
     this.isOpen = true
@@ -34,7 +41,49 @@ export class EquipScreen3D {
 
   update(input: InputManager): void {
     if (!this.isOpen) return
-    if (input.justDown('Escape') || input.justDown('KeyI')) this.close()
+    if (input.justDown('Escape') || input.justDown('KeyI')) { this.close(); return }
+
+    const SLOT_KEYS = ['Digit1','Digit2','Digit3','Digit4','Digit5','Digit6','Digit7','Digit8']
+    for (let i = 0; i < SLOT_COUNT; i++) {
+      if (input.justDown(SLOT_KEYS[i]) && this.webbs.weaponSystem.isSlotUnlocked(i)) {
+        this.selectedSlot = i
+        this.focusedPanel = 'slots'
+        this.refresh()
+        return
+      }
+    }
+
+    if (input.justDown('ArrowLeft'))  { this.focusedPanel = 'slots'; this.refresh(); return }
+    if (input.justDown('ArrowRight')) { this.focusedPanel = 'inv';   this.refresh(); return }
+
+    if (input.justDown('ArrowUp') || input.justDown('ArrowDown')) {
+      const dir = input.justDown('ArrowUp') ? -1 : 1
+      if (this.focusedPanel === 'slots') {
+        let next = this.selectedSlot
+        for (let tries = 0; tries < SLOT_COUNT; tries++) {
+          next = (next + dir + SLOT_COUNT) % SLOT_COUNT
+          if (this.webbs.weaponSystem.isSlotUnlocked(next)) break
+        }
+        this.selectedSlot = next
+      } else if (this.uniqueWeapons.length > 0) {
+        this.selectedInvIdx = (this.selectedInvIdx + dir + this.uniqueWeapons.length) % this.uniqueWeapons.length
+      }
+      this.refresh()
+      return
+    }
+
+    if (input.justDown('Enter') || input.justDown('NumpadEnter')) {
+      if (this.uniqueWeapons.length > 0 && this.webbs.weaponSystem.isSlotUnlocked(this.selectedSlot)) {
+        this.equipWeapon(this.uniqueWeapons[this.selectedInvIdx])
+      }
+      return
+    }
+
+    if (input.justDown('KeyX')) {
+      if (this.webbs.weaponSystem.isSlotUnlocked(this.selectedSlot)) {
+        this.unequipSlot(this.selectedSlot)
+      }
+    }
   }
 
   close(): void {
@@ -49,19 +98,19 @@ export class EquipScreen3D {
   private buildPanel(): HTMLDivElement {
     const panel = document.createElement('div')
     panel.style.cssText = [
-      'display:none; position:absolute; top:50%; left:50%;',
+      'display:none; flex-direction:column; position:absolute; top:50%; left:50%;',
       'transform:translate(-50%,-50%);',
       'width:560px; background:#0d0d1a; border:1.5px solid #7777ff;',
       'font-family:monospace; color:#ccccdd; user-select:none;',
     ].join('')
 
     const title = document.createElement('div')
-    title.style.cssText = 'padding:12px 20px; color:#7777ff; font-size:13px; letter-spacing:3px; border-bottom:1px solid rgba(119,119,255,0.3);'
+    title.style.cssText = 'padding:12px 20px; color:#7777ff; font-size:13px; letter-spacing:3px; border-bottom:1px solid rgba(119,119,255,0.3); flex-shrink:0;'
     title.textContent = 'EQUIP'
     panel.appendChild(title)
 
     const body = document.createElement('div')
-    body.style.cssText = 'display:flex;'
+    body.style.cssText = 'display:flex; flex:1;'
 
     // Left: slot list
     const left = document.createElement('div')
@@ -83,7 +132,7 @@ export class EquipScreen3D {
 
     const hint = document.createElement('div')
     hint.style.cssText = 'font-size:10px; color:#445566; padding:10px 8px 4px;'
-    hint.textContent = 'Click slot · Click weapon to equip · [×] unequip · I / Esc close'
+    hint.textContent = '1–8 slot  ↑↓ nav  ←→ panel  Enter equip  X unequip  I/Esc close'
     left.appendChild(hint)
 
     // Right: weapon pool
@@ -101,6 +150,15 @@ export class EquipScreen3D {
     body.appendChild(left)
     body.appendChild(right)
     panel.appendChild(body)
+
+    // Detail strip — stats for the currently selected slot's weapon
+    this.detailEl = document.createElement('div')
+    this.detailEl.style.cssText = [
+      'display:flex; align-items:flex-start; gap:14px; flex-shrink:0;',
+      'padding:12px 16px; border-top:1px solid #1e1e2e; min-height:72px;',
+    ].join('')
+    panel.appendChild(this.detailEl)
+
     return panel
   }
 
@@ -116,32 +174,36 @@ export class EquipScreen3D {
       const wt       = this.webbs.weaponSystem.getSlot(i)
       const unlocked = this.webbs.weaponSystem.isSlotUnlocked(i)
       row.innerHTML  = ''
-      row.style.background = i === this.selectedSlot ? 'rgba(119,119,255,0.15)' : 'transparent'
-      row.style.opacity    = unlocked ? '1' : '0.3'
+
+      const isSelected  = i === this.selectedSlot
+      const slotsFocused = this.focusedPanel === 'slots'
+      row.style.background = isSelected
+        ? (slotsFocused ? 'rgba(119,119,255,0.2)' : 'rgba(119,119,255,0.08)')
+        : 'transparent'
+      row.style.opacity = unlocked ? '1' : '0.3'
 
       const num = document.createElement('span')
       num.style.cssText = 'color:#445566; font-size:10px; width:14px; flex-shrink:0;'
       num.textContent = String(i + 1)
 
-      const dot = document.createElement('span')
-      dot.style.cssText = 'width:10px; height:10px; border-radius:50%; display:inline-block; flex-shrink:0;'
-      dot.style.background = wt !== WeaponType.Empty
-        ? `#${WEAPON_COLORS[wt].toString(16).padStart(6, '0')}`
-        : '#222233'
+      const iconEl = document.createElement('span')
+      iconEl.style.cssText = 'width:18px; height:18px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;'
+      if (wt !== WeaponType.Empty) {
+        const c = `#${WEAPON_COLORS[wt].toString(16).padStart(6, '0')}`
+        iconEl.innerHTML = weaponIconSvg(wt, c, 18)
+      }
 
       const name = document.createElement('span')
       name.style.cssText = `font-size:11px; flex:1; color:${wt === WeaponType.Empty ? '#334455' : '#aaaacc'};`
-      if (wt === WeaponType.Empty) {
-        name.textContent = unlocked ? '— empty —' : '— locked —'
-      } else {
-        name.textContent = WEAPON_DATA.get(wt)?.name ?? wt
-      }
+      name.textContent = wt === WeaponType.Empty
+        ? (unlocked ? '— empty —' : '— locked —')
+        : (WEAPON_DATA.get(wt)?.name ?? wt)
 
       row.appendChild(num)
-      row.appendChild(dot)
+      row.appendChild(iconEl)
       row.appendChild(name)
 
-      if (unlocked && i === this.selectedSlot && wt !== WeaponType.Empty) {
+      if (unlocked && isSelected && wt !== WeaponType.Empty) {
         const unequip = document.createElement('span')
         unequip.style.cssText = 'font-size:10px; color:#554455; cursor:pointer; flex-shrink:0;'
         unequip.textContent = '[×]'
@@ -150,46 +212,113 @@ export class EquipScreen3D {
       }
     }
 
-    // Weapon pool (deduplicated by type)
+    // Weapon pool (deduplicated)
     this.invContainer.innerHTML = ''
+    this.uniqueWeapons = [...new Set(weaponInv)]
 
     const tierNote = document.createElement('div')
     tierNote.style.cssText = 'font-size:10px; color:#445566; margin-bottom:6px;'
     tierNote.textContent = `Leg tier: ${legTier}`
     this.invContainer.appendChild(tierNote)
 
-    const unique = [...new Set(weaponInv)]
-    if (unique.length === 0) {
+    if (this.uniqueWeapons.length === 0) {
       const empty = document.createElement('div')
       empty.style.cssText = 'font-size:11px; color:#334455; padding:4px 8px;'
       empty.textContent = 'No weapons found yet'
       this.invContainer.appendChild(empty)
+    } else {
+      this.selectedInvIdx = Math.min(this.selectedInvIdx, this.uniqueWeapons.length - 1)
+      const invFocused = this.focusedPanel === 'inv'
+
+      for (let idx = 0; idx < this.uniqueWeapons.length; idx++) {
+        const wt = this.uniqueWeapons[idx]
+        const el = document.createElement('div')
+        const isSelInv = idx === this.selectedInvIdx
+        el.style.cssText = 'display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:2px; cursor:pointer; margin-bottom:2px;'
+        el.style.background = isSelInv
+          ? (invFocused ? 'rgba(119,119,255,0.2)' : 'rgba(119,119,255,0.08)')
+          : 'transparent'
+
+        el.addEventListener('click', () => { this.selectedInvIdx = idx; this.equipWeapon(wt) })
+        el.addEventListener('mouseenter', () => {
+          if (idx !== this.selectedInvIdx) el.style.background = 'rgba(119,119,255,0.08)'
+        })
+        el.addEventListener('mouseleave', () => {
+          el.style.background = idx === this.selectedInvIdx
+            ? (this.focusedPanel === 'inv' ? 'rgba(119,119,255,0.2)' : 'rgba(119,119,255,0.08)')
+            : 'transparent'
+        })
+
+        const iconEl = document.createElement('span')
+        iconEl.style.cssText = 'width:18px; height:18px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;'
+        const c = `#${WEAPON_COLORS[wt].toString(16).padStart(6,'0')}`
+        iconEl.innerHTML = weaponIconSvg(wt, c, 18)
+
+        const nameEl = document.createElement('span')
+        nameEl.style.cssText = 'font-size:11px; color:#aaaacc;'
+        nameEl.textContent = WEAPON_DATA.get(wt)?.name ?? wt
+
+        el.appendChild(iconEl)
+        el.appendChild(nameEl)
+        this.invContainer.appendChild(el)
+      }
+    }
+
+    this.refreshDetail()
+  }
+
+  private refreshDetail(): void {
+    this.detailEl.innerHTML = ''
+    const wt = this.webbs.weaponSystem.getSlot(this.selectedSlot)
+    if (wt === WeaponType.Empty) {
+      const empty = document.createElement('span')
+      empty.style.cssText = 'color:#334455; font-size:11px; align-self:center;'
+      empty.textContent = '— no weapon in this slot —'
+      this.detailEl.appendChild(empty)
       return
     }
 
-    for (const wt of unique) {
-      const el = document.createElement('div')
-      el.style.cssText = 'display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:2px; cursor:pointer; margin-bottom:2px;'
-      el.addEventListener('mouseenter', () => { el.style.background = 'rgba(119,119,255,0.1)' })
-      el.addEventListener('mouseleave', () => { el.style.background = 'transparent' })
-      el.addEventListener('click', () => this.equipWeapon(wt))
+    const c     = `#${WEAPON_COLORS[wt].toString(16).padStart(6, '0')}`
+    const cfg   = WEAPON_DATA.get(wt)
+    const stats = WEAPON_STATS[wt]
 
-      const dot = document.createElement('span')
-      dot.style.cssText = `width:10px; height:10px; border-radius:50%; flex-shrink:0; background:#${WEAPON_COLORS[wt].toString(16).padStart(6,'0')};`
+    const iconWrap = document.createElement('div')
+    iconWrap.style.cssText = 'flex-shrink:0; width:40px; height:40px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.03); border:1px solid #1e1e2e; border-radius:3px;'
+    iconWrap.innerHTML = weaponIconSvg(wt, c, 30)
 
-      const nameEl = document.createElement('span')
-      nameEl.style.cssText = 'font-size:11px; color:#aaaacc;'
-      nameEl.textContent = WEAPON_DATA.get(wt)?.name ?? wt
+    const info = document.createElement('div')
+    info.style.cssText = 'flex:1; min-width:0;'
 
-      el.appendChild(dot)
-      el.appendChild(nameEl)
-      this.invContainer.appendChild(el)
-    }
+    const nameLine = document.createElement('div')
+    nameLine.style.cssText = `color:${c}; font-size:12px; margin-bottom:3px;`
+    nameLine.textContent = cfg?.name ?? wt
+
+    const statsLine = document.createElement('div')
+    statsLine.style.cssText = 'color:#445566; font-size:10px; margin-bottom:5px;'
+    statsLine.textContent = [
+      `Type: ${cfg?.type ?? '—'}`,
+      `DMG: ${cfg?.damage ?? '—'}`,
+      `DPS: ${dpsFor(wt)}`,
+      `Stam: ${cfg?.staminaCost ?? '—'}`,
+      `Range: ${stats?.range ?? '—'}`,
+      `Tier: ${cfg?.requiredTier ?? 0}`,
+    ].join('  ·  ')
+
+    const blurb = document.createElement('div')
+    blurb.style.cssText = 'color:#778899; font-size:10px; line-height:1.6;'
+    blurb.textContent = stats?.blurb ?? ''
+
+    info.appendChild(nameLine)
+    info.appendChild(statsLine)
+    info.appendChild(blurb)
+    this.detailEl.appendChild(iconWrap)
+    this.detailEl.appendChild(info)
   }
 
   private clickSlot(i: number): void {
     if (!this.webbs.weaponSystem.isSlotUnlocked(i)) return
     this.selectedSlot = i
+    this.focusedPanel = 'slots'
     this.refresh()
   }
 

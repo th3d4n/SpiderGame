@@ -12,6 +12,8 @@ export class FogOfWarSystem3D {
   private arenaW:      number
   private arenaH:      number
   readonly revealRadius: number
+  private threeScene:  THREE.Scene
+  private beacons:     THREE.Mesh[] = []
 
   constructor(
     threeScene:   THREE.Scene,
@@ -26,6 +28,7 @@ export class FogOfWarSystem3D {
     this.arenaW       = arenaMaxX - arenaMinX
     this.arenaH       = arenaMaxZ - arenaMinZ
     this.revealRadius = revealRadius
+    this.threeScene   = threeScene
 
     // Off-screen canvas — circles painted here accumulate permanently
     const canvas  = document.createElement('canvas')
@@ -64,9 +67,10 @@ export class FogOfWarSystem3D {
           float live  = 1.0 - smoothstep(revealRadius * 0.65, revealRadius, dist);
           vec2  uv    = clamp((vWorldXZ - arenaMin) / arenaSize, 0.0, 1.0);
           float perm  = texture2D(revealTex, uv).r;
-          // Already-explored areas show at 55% opacity; current view is fully clear
-          float reveal = max(live, perm * 0.55);
-          gl_FragColor = vec4(0.03, 0.02, 0.0, (1.0 - reveal) * 0.93);
+          // Explored: 10% residual fog. Unexplored: nearly opaque cavern darkness.
+          float exploredVisibility = perm * 0.90;
+          float reveal = max(live, exploredVisibility);
+          gl_FragColor = vec4(0.03, 0.02, 0.0, (1.0 - reveal) * 0.98);
         }
       `,
     })
@@ -98,10 +102,28 @@ export class FogOfWarSystem3D {
     this.revealTex.needsUpdate = true
   }
 
+  // Spawn a small mesh above the fog plane so it remains visible regardless of
+  // explored state — used for fungus orb / lantern navigation beacons.
+  addBeacon(x: number, z: number, color = 0x99ffcc): void {
+    const geo  = new THREE.SphereGeometry(0.08, 6, 4)
+    const mat  = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthTest: false })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.set(x, 2.0, z)
+    mesh.renderOrder = 20
+    this.threeScene.add(mesh)
+    this.beacons.push(mesh)
+  }
+
   destroy(threeScene: THREE.Scene): void {
     threeScene.remove(this.fogMesh)
     this.fogMesh.geometry.dispose()
     this.fogMat.dispose()
     this.revealTex.dispose()
+    for (const b of this.beacons) {
+      threeScene.remove(b)
+      b.geometry.dispose()
+      ;(b.material as THREE.Material).dispose()
+    }
+    this.beacons = []
   }
 }

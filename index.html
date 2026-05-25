@@ -82,6 +82,36 @@
         text-align: center; pointer-events: none;
       }
 
+      /* ── Ammo counter (Bow / Thistle) — bottom right above weapon ring ─── */
+      #ammo-panel {
+        display: none;
+        position: absolute; bottom: 150px; right: 18px;
+        color: #ccaa22; font-size: 11px; letter-spacing: 1px; font-family: monospace;
+        background: rgba(13,13,26,0.8); padding: 3px 10px;
+        border: 1px solid rgba(180,150,30,0.3);
+      }
+      #ammo-panel.empty { color: #cc3333; border-color: rgba(200,50,50,0.4); }
+
+      /* ── Controls legend — top right, toggled by H ──────────────────────── */
+      #controls-legend {
+        display: none;
+        position: absolute; top: 12px; right: 18px;
+        background: rgba(13,13,26,0.92); border: 1px solid #334466;
+        padding: 10px 12px; font-family: monospace; font-size: 10px;
+        min-width: 210px;
+      }
+      #controls-legend .legend-title { color: #7777ff; letter-spacing: 2px; margin-bottom: 8px; }
+      #controls-legend .legend-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
+      #controls-legend .legend-key  { color: #aaaacc; }
+      #controls-legend .legend-act  { color: #556677; text-align: right; }
+
+      /* ── Pickup notifications — bottom center stack ──────────────────────── */
+      #pickup-notifications {
+        position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
+        display: flex; flex-direction: column-reverse; align-items: center; gap: 6px;
+        pointer-events: none; font-family: monospace;
+      }
+
       /* ── Zone-transition fade overlay ───────────────────────────────────── */
       #transition-overlay {
         position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -124,8 +154,25 @@
           <svg id="weapon-ring" width="154" height="154" viewBox="-77 -77 154 154"></svg>
         </div>
 
-        <div id="controls-hint">WASD move &nbsp;·&nbsp; Click attack &nbsp;·&nbsp; I equip &nbsp;·&nbsp; E interact</div>
+        <div id="controls-hint">WASD move &nbsp;·&nbsp; Click attack &nbsp;·&nbsp; I equip &nbsp;·&nbsp; E interact &nbsp;·&nbsp; H controls</div>
         <div id="interact-hint"></div>
+        <div id="ammo-panel">THISTLE: 0</div>
+        <div id="controls-legend">
+          <div class="legend-title">CONTROLS</div>
+          <div class="legend-row"><span class="legend-key">WASD / ↑↓←→</span><span class="legend-act">Move</span></div>
+          <div class="legend-row"><span class="legend-key">1 – 8</span><span class="legend-act">Select weapon</span></div>
+          <div class="legend-row"><span class="legend-key">Click</span><span class="legend-act">Fire weapon</span></div>
+          <div class="legend-row"><span class="legend-key">Q</span><span class="legend-act">Web Thrower</span></div>
+          <div class="legend-row"><span class="legend-key">E</span><span class="legend-act">Interact</span></div>
+          <div class="legend-row"><span class="legend-key">C</span><span class="legend-act">HP Potion</span></div>
+          <div class="legend-row"><span class="legend-key">V</span><span class="legend-act">Stamina Tonic</span></div>
+          <div class="legend-row"><span class="legend-key">X</span><span class="legend-act">Max Potion</span></div>
+          <div class="legend-row"><span class="legend-key">I</span><span class="legend-act">Equipment</span></div>
+          <div class="legend-row"><span class="legend-key">M</span><span class="legend-act">Advance text</span></div>
+          <div class="legend-row"><span class="legend-key">Space</span><span class="legend-act">Skip cutscene</span></div>
+          <div class="legend-row"><span class="legend-key">H</span><span class="legend-act">Hide this panel</span></div>
+        </div>
+        <div id="pickup-notifications"></div>
 
       <!-- Boss HP bar — shown only during boss fights -->
       <div id="boss-hp-wrap">

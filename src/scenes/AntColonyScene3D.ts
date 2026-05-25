@@ -199,6 +199,10 @@ export class AntColonyScene3D {
       AntColonyScene3D.BACK,  AntColonyScene3D.FRONT,
       3.5,
     )
+    // Above-fog beacons for the 8 decorative fungus orbs — always visible through fog
+    for (const [bx, bz] of [[-17,0],[-11,-2.5],[-5,2],[-1,-1.5],[6,2.8],[12,-0.8],[18,1.5],[0,0]] as [number,number][]) {
+      this.fog.addBeacon(bx, bz)
+    }
   }
 
   // ── Ground ───────────────────────────────────────────────────────────────────

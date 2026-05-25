@@ -1,5 +1,8 @@
 import type { Webbs3D } from '../entities/Webbs3D'
 import { WEAPON_COLORS } from '../config/WeaponData'
+import { WeaponType } from '../systems/WeaponSystem'
+import { registry } from '../core/Registry'
+import { weaponIconPaths } from './WeaponIcon3D'
 
 const SLOT_RING_R = 55
 const SLOT_R     = 14
@@ -12,23 +15,30 @@ export class HudSystem {
   private energyFill:  HTMLElement
   private slotFills:   SVGCircleElement[] = []
   private slotLabels:  SVGTextElement[]   = []
+  private slotIcons:   SVGGElement[]      = []
   private bossHpWrap:    HTMLElement
   private bossHpLabel:   HTMLElement
   private bossHpFill:    HTMLElement
   private bossMsgEl:     HTMLElement
   private interactHint:  HTMLElement
-  private bossMsgTimer = 0
+  private ammoPanel:     HTMLElement
+  private controlsLegend: HTMLElement
+  private legendVisible  = false
+  private bossMsgTimer   = 0
 
   constructor() {
-    this.hpFill      = document.getElementById('hp-fill')!
-    this.stamFill    = document.getElementById('stam-fill')!
-    this.energyFill  = document.getElementById('energy-fill')!
-    this.bossHpWrap   = document.getElementById('boss-hp-wrap')!
-    this.bossHpLabel  = document.getElementById('boss-hp-label')!
-    this.bossHpFill   = document.getElementById('boss-hp-fill')!
-    this.bossMsgEl    = document.getElementById('boss-msg')!
-    this.interactHint = document.getElementById('interact-hint')!
+    this.hpFill        = document.getElementById('hp-fill')!
+    this.stamFill      = document.getElementById('stam-fill')!
+    this.energyFill    = document.getElementById('energy-fill')!
+    this.bossHpWrap    = document.getElementById('boss-hp-wrap')!
+    this.bossHpLabel   = document.getElementById('boss-hp-label')!
+    this.bossHpFill    = document.getElementById('boss-hp-fill')!
+    this.bossMsgEl     = document.getElementById('boss-msg')!
+    this.interactHint  = document.getElementById('interact-hint')!
+    this.ammoPanel     = document.getElementById('ammo-panel')!
+    this.controlsLegend = document.getElementById('controls-legend')!
     this.buildWeaponRing()
+    this.setupControlsToggle()
   }
 
   private buildWeaponRing(): void {
@@ -55,6 +65,14 @@ export class HudSystem {
       svg.appendChild(fill)
       this.slotFills.push(fill)
 
+      const iconOuter = document.createElementNS(SVG_NS, 'g')
+      iconOuter.setAttribute('transform', `translate(${xs}, ${ys})`)
+      const iconInner = document.createElementNS(SVG_NS, 'g')
+      iconInner.setAttribute('transform', 'scale(0.75)')
+      iconOuter.appendChild(iconInner)
+      svg.appendChild(iconOuter)
+      this.slotIcons.push(iconInner)
+
       const label = document.createElementNS(SVG_NS, 'text')
       label.setAttribute('x', xs)
       label.setAttribute('y', (y + 4).toFixed(1))
@@ -74,13 +92,34 @@ export class HudSystem {
     this.stamFill.style.width   = `${(webbs.stamina / webbs.maxStamina) * 100}%`
     this.energyFill.style.width = `${(webbs.energy / webbs.maxEnergy) * 100}%`
 
+    let hasBow = false
     for (let i = 0; i < SLOTS; i++) {
       const wt = webbs.weaponSystem.getSlot(i)
       const isEmpty = wt === 'Empty'
       const color = WEAPON_COLORS[wt]
       this.slotFills[i].setAttribute('fill', isEmpty ? '#111122' : `#${color.toString(16).padStart(6, '0')}`)
       this.slotLabels[i].setAttribute('fill', isEmpty ? '#2a2a44' : '#aaaacc')
+      this.slotIcons[i].innerHTML = isEmpty ? '' : weaponIconPaths(wt, '#ffffff')
+      if (wt === WeaponType.Bow) hasBow = true
     }
+
+    // Ammo counter — only visible when Bow is equipped
+    if (hasBow) {
+      const thistles = (registry.get<Record<string, number>>('craftingInventory') ?? {})['Thistle'] ?? 0
+      this.ammoPanel.style.display = 'block'
+      this.ammoPanel.textContent   = `THISTLE: ${thistles}`
+      this.ammoPanel.classList.toggle('empty', thistles === 0)
+    } else {
+      this.ammoPanel.style.display = 'none'
+    }
+  }
+
+  private setupControlsToggle(): void {
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.code !== 'KeyH') return
+      this.legendVisible = !this.legendVisible
+      this.controlsLegend.style.display = this.legendVisible ? 'block' : 'none'
+    })
   }
 
   setZoneLabel(text: string): void {

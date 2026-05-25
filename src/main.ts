@@ -18,6 +18,8 @@ import { HudSystem } from './ui/HudSystem'
 import { EquipScreen3D } from './ui/EquipScreen3D'
 import { CraftingMenu3D } from './ui/CraftingMenu3D'
 import { TextDisplay3D, type TextDisplayData } from './ui/TextDisplay3D'
+import { PickupCelebration3D } from './ui/PickupCelebration3D'
+import { PickupNotification3D } from './ui/PickupNotification3D'
 import { ConsumableSystem } from './systems/ConsumableSystem'
 import { saveSystem } from './systems/SaveSystem'
 
@@ -151,13 +153,16 @@ if (!saveSystem.hasSave()) {
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
-const menuOverlay  = document.getElementById('menu-overlay')!
-const hud          = new HudSystem()
-const equipScreen  = new EquipScreen3D(menuOverlay)
-const craftingMenu = new CraftingMenu3D(menuOverlay)
-const textDisplay  = new TextDisplay3D(menuOverlay)
+const menuOverlay    = document.getElementById('menu-overlay')!
+const hud            = new HudSystem()
+const equipScreen    = new EquipScreen3D(menuOverlay)
+const craftingMenu   = new CraftingMenu3D(menuOverlay)
+const textDisplay    = new TextDisplay3D(menuOverlay)
+const pickupCelebration = new PickupCelebration3D(menuOverlay, textDisplay)
+const pickupNotify   = new PickupNotification3D()
 
-let gamePaused = false
+let gamePaused     = true   // stays true until main menu is dismissed
+let mainMenuActive = true
 equipScreen.onClose  = () => { gamePaused = false }
 craftingMenu.onClose = () => {
   registry.set('consumableInventory', consumables.getInventorySnapshot())
@@ -168,16 +173,24 @@ textDisplay.onClose  = () => {
   gamePaused = false
   if (pendingTransitionResume) { pendingTransitionResume(); pendingTransitionResume = null }
 }
+pickupCelebration.onClose = () => { gamePaused = false }
+
+craftingMenu.onFirstDiscover = (wt) => {
+  craftingMenu.close()
+  pickupCelebration.show(wt)
+  gamePaused = true
+}
 
 // ─── Narrative text ───────────────────────────────────────────────────────────
 
 const OPENING_INTRO: TextDisplayData = {
   pages: [
-    'Another morning in the hollow.\n\nYou count your legs — all eight, still attached.\nFor now.',
-    'The ant scouts have been marking the tunnels.\nYou could hear them scraping through the night.\n\nSomething changed in the colony.\nSomething that doesn\'t belong.',
-    'The passage goes left.\n\nCheck your den first.',
+    'The Den has been a spider colony\nfor as long as anyone can remember.\n\nSilk roads. Packed chambers.\nEight thousand legs, moving at once.',
+    'Three seasons ago, the ants came.\n\nThey tunneled in from the west —\nslow at first, then fast. Six chambers fell.\nThe western passages went dark.',
+    'Most of the colony scattered.\nYour family didn\'t.\n\nYou didn\'t either.',
+    'You are Webbs.\n\nToday is your birthday.\n\nHead east — your family left something\nfor you at the end of the Den.',
   ],
-  title:       '— NO LEGS LEFT TO STAND ON —',
+  title:       '— NO LEG LEFT TO STAND ON —',
   accentColor: '#9966cc',
 }
 
@@ -360,11 +373,20 @@ function gameLoop() {
 
   hud.tickBossMsg(delta)
 
+  // ── Main menu: render background but skip all game input ─────────────────
+
+  if (mainMenuActive) {
+    input.endFrame()
+    composer.render()
+    return
+  }
+
   // ── Menu input (runs even when paused) ───────────────────────────────────
 
-  if (equipScreen.isOpen)       equipScreen.update(input)
-  else if (craftingMenu.isOpen) craftingMenu.update(input)
-  else if (textDisplay.isOpen)  textDisplay.update(input)
+  if (equipScreen.isOpen)            equipScreen.update(input)
+  else if (craftingMenu.isOpen)      craftingMenu.update(input)
+  else if (pickupCelebration.isOpen) pickupCelebration.update(input)
+  else if (textDisplay.isOpen)       textDisplay.update(input)
   else {
     // ── Dev restart (Backtick) — clears save and reloads ────────────────────
     if (input.justDown('Backquote')) {
@@ -412,8 +434,10 @@ function gameLoop() {
           registry.set('weaponInventory', inv)
           if (!registry.get<boolean>('tutorialToothpickSeen')) {
             registry.set('tutorialToothpickSeen', true)
-            textDisplay.show(TUTORIAL_TOOTHPICK)
+            pickupCelebration.show(WeaponType.BoxingGloves, TUTORIAL_TOOTHPICK.pages, TUTORIAL_TOOTHPICK.title, TUTORIAL_TOOTHPICK.accentColor)
             gamePaused = true
+          } else {
+            pickupNotify.notify('Toothpick Stabber', 'weapon found', '#ddccaa')
           }
         } else if (hbs.nearBirthdayCard(px, pz) && hbs.cardAvailable) {
           hbs.collectCard()
@@ -426,8 +450,10 @@ function gameLoop() {
           registry.set('webThrowerFound', true)
           if (!registry.get<boolean>('tutorialWebLauncherSeen')) {
             registry.set('tutorialWebLauncherSeen', true)
-            textDisplay.show(TUTORIAL_WEB_LAUNCHER)
+            pickupCelebration.show(WeaponType.WebLauncher, TUTORIAL_WEB_LAUNCHER.pages, TUTORIAL_WEB_LAUNCHER.title, TUTORIAL_WEB_LAUNCHER.accentColor)
             gamePaused = true
+          } else {
+            pickupNotify.notify('Web Launcher', 'already found', '#ddeeff')
           }
         } else if (canCraft) {
           craftingMenu.show()
@@ -446,7 +472,7 @@ function gameLoop() {
               const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
               inv[result.mat] = (inv[result.mat] ?? 0) + result.qty
               registry.set('craftingInventory', inv)
-              hud.flashBossMessage(`Found: ${result.mat} ×${result.qty}`)
+              pickupNotify.notify(result.mat, `×${result.qty}`, '#88aa44')
             } else {
               hud.flashBossMessage("IT'S A MIMIC!")
             }
@@ -455,7 +481,7 @@ function gameLoop() {
             if (hpIdx >= 0) {
               acs.collectHpModule(hpIdx)
               webbs.hp = Math.min(webbs.hpMax, webbs.hp + 25)
-              hud.flashBossMessage('HP Module: +25 HP')
+              pickupNotify.notify('HP Module', '+25 HP', '#ff4455')
             }
           }
         }
@@ -535,7 +561,7 @@ function gameLoop() {
         inv[pick.mat] = (inv[pick.mat] ?? 0) + pick.qty
         registry.set('craftingInventory', inv)
         ;(activeScene as HomeBaseScene3D).collectMaterialPickup(pick.id)
-        hud.flashBossMessage(`${pick.mat} ×${pick.qty}`)
+        pickupNotify.notify(pick.mat, `×${pick.qty}`, '#aabbcc')
       }
     } else if (currentZone === 'antColony') {
       const acs = activeScene as AntColonyScene3D
@@ -546,7 +572,7 @@ function gameLoop() {
           const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
           inv[cache.mat] = (inv[cache.mat] ?? 0) + cache.qty
           registry.set('craftingInventory', inv)
-          hud.flashBossMessage(`Found: ${cache.mat} ×${cache.qty}`)
+          pickupNotify.notify(cache.mat, `×${cache.qty}`, '#88aa44')
         }
       }
       const tIdx = acs.nearThistle(px, pz)
@@ -555,7 +581,7 @@ function gameLoop() {
         const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
         inv['Thistle'] = (inv['Thistle'] ?? 0) + 1
         registry.set('craftingInventory', inv)
-        hud.flashBossMessage('Thistle seed +1')
+        pickupNotify.notify('Thistle seed', '+1', '#cc99ff')
       }
     }
   }
@@ -676,6 +702,7 @@ function gameLoop() {
     particles.burst(webbs.group.position, 0xaa8855, 6, 2.5, 0.04)
   }
   particles.update(delta)
+  pickupNotify.update(delta)
 
   // ── Camera follow ────────────────────────────────────────────────────────
 
@@ -714,16 +741,56 @@ function gameLoop() {
   composer.render()
 }
 
-// ─── Boot — opening cutscene on first load ────────────────────────────────────
+// ─── Main Menu ────────────────────────────────────────────────────────────────
 
-// Always start the loop first — it handles menu input even while paused
+const mainMenuEl = (() => {
+  const el = document.createElement('div')
+  el.style.cssText = [
+    'position:absolute; inset:0; background:#0a0a14; z-index:200;',
+    'display:flex; flex-direction:column; align-items:center; justify-content:center;',
+    'font-family:monospace; transition:opacity 0.4s;',
+  ].join('')
+
+  const blinkStyle = document.createElement('style')
+  blinkStyle.textContent = '@keyframes mm-blink { 0%,100%{opacity:1} 50%{opacity:0} }'
+  document.head.appendChild(blinkStyle)
+
+  const title = document.createElement('div')
+  title.style.cssText = 'color:#ffffff; font-size:28px; letter-spacing:4px; text-transform:uppercase; margin-bottom:10px;'
+  title.textContent = 'NO LEG LEFT TO STAND ON'
+
+  const sub = document.createElement('div')
+  sub.style.cssText = 'color:#5555aa; font-size:13px; letter-spacing:3px; margin-bottom:56px;'
+  sub.textContent = 'NoLegs'
+
+  const prompt = document.createElement('div')
+  prompt.style.cssText = 'color:#aaaacc; font-size:16px; letter-spacing:2px; animation:mm-blink 1.2s step-end infinite;'
+  prompt.textContent = '[ PRESS SPACE TO START ]'
+
+  el.appendChild(title)
+  el.appendChild(sub)
+  el.appendChild(prompt)
+  document.getElementById('game-container')!.appendChild(el)
+  return el
+})()
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+
 gameLoop()
 
-;(async () => {
+window.addEventListener('keydown', function onSpace(e: KeyboardEvent) {
+  if (e.code !== 'Space') return
+  window.removeEventListener('keydown', onSpace)
+
+  mainMenuEl.style.opacity = '0'
+  setTimeout(() => { mainMenuEl.style.display = 'none' }, 420)
+  mainMenuActive = false
+
   if (!registry.get<boolean>('openingCutsceneSeen')) {
     registry.set('openingCutsceneSeen', true)
-    gamePaused = true
     textDisplay.show(OPENING_INTRO)
-    await new Promise<void>(resolve => { pendingTransitionResume = resolve })
+    // textDisplay.onClose will set gamePaused = false
+  } else {
+    gamePaused = false
   }
-})()
+})

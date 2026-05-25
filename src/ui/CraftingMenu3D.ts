@@ -3,6 +3,7 @@ import { WEAPON_COLORS } from '../config/WeaponData'
 import { registry } from '../core/Registry'
 import type { InputManager } from '../core/InputManager'
 import type { WeaponType } from '../systems/WeaponSystem'
+import { weaponIconSvg } from './WeaponIcon3D'
 
 const MAT_ABBREV: Record<MaterialType, string> = {
   SilkThread: 'SLK', ChitinShard: 'CHT', VenomGland: 'VNM',
@@ -26,6 +27,7 @@ export class CraftingMenu3D {
 
   isOpen  = false
   onClose?: () => void
+  onFirstDiscover?: (wt: WeaponType) => void
 
   constructor(menuOverlay: HTMLElement) {
     this.overlay = menuOverlay
@@ -91,12 +93,13 @@ export class CraftingMenu3D {
       row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:6px 8px; font-size:12px; border-radius:2px; margin-bottom:2px; cursor:default;'
       row.addEventListener('click', () => { this.selectedIndex = i; this.renderSelection() })
 
-      const dot = document.createElement('span')
+      const iconEl = document.createElement('span')
+      iconEl.style.cssText = 'width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;'
       const c = WEAPON_COLORS[recipe.produces]
-      dot.style.cssText = `width:8px; height:8px; border-radius:50%; flex-shrink:0; background:#${c.toString(16).padStart(6,'0')};`
+      iconEl.innerHTML = weaponIconSvg(recipe.produces, `#${c.toString(16).padStart(6,'0')}`, 16)
 
       const name = document.createElement('span')
-      row.appendChild(dot)
+      row.appendChild(iconEl)
       row.appendChild(name)
       left.appendChild(row)
       this.rowEls.push(row)
@@ -192,13 +195,19 @@ export class CraftingMenu3D {
       this.inventory[mat] = (this.inventory[mat] ?? 0) - (recipe.materials[mat] ?? 0)
     }
     const inv = (registry.get<WeaponType[]>('weaponInventory') ?? []).slice()
+    const isFirstDiscover = !inv.includes(recipe.produces)
     inv.push(recipe.produces)
     registry.set('weaponInventory', inv)
     registry.set('craftingInventory', { ...this.inventory })
 
     this.refreshInventory()
     this.renderSelection()
-    this.flash(`Crafted: ${recipe.displayName}`, '#7777ff')
+
+    if (isFirstDiscover && this.onFirstDiscover) {
+      this.onFirstDiscover(recipe.produces)
+    } else {
+      this.flash(`Crafted: ${recipe.displayName}`, '#7777ff')
+    }
   }
 
   private flash(msg: string, color: string): void {
