@@ -23,6 +23,7 @@ export class HudSystem {
   private interactHint:  HTMLElement
   private ammoPanel:     HTMLElement
   private controlsLegend: HTMLElement
+  private vignetteEl:    HTMLElement
   private legendVisible  = false
   private bossMsgTimer   = 0
 
@@ -37,6 +38,7 @@ export class HudSystem {
     this.interactHint  = document.getElementById('interact-hint')!
     this.ammoPanel     = document.getElementById('ammo-panel')!
     this.controlsLegend = document.getElementById('controls-legend')!
+    this.vignetteEl    = document.getElementById('damage-vignette')!
     this.buildWeaponRing()
     this.setupControlsToggle()
   }
@@ -155,6 +157,11 @@ export class HudSystem {
   setInteractHint(text: string): void {
     this.interactHint.textContent  = text
     this.interactHint.style.display = text ? 'block' : 'none'
+  }
+
+  flashDamageVignette(): void {
+    this.vignetteEl.style.opacity = '1'
+    setTimeout(() => { this.vignetteEl.style.opacity = '0' }, 80)
   }
 
   // Call once per frame to tick the message auto-hide

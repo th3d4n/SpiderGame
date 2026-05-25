@@ -41,6 +41,13 @@ interface WebState3D {
   pullElapsed: number
 }
 
+const STUN_DURATION = 0.6   // seconds of stagger forced on any enemy hit
+
+interface SilkWrap {
+  mesh:  THREE.Mesh
+  timer: number
+}
+
 export class WebLauncherSystem3D {
   private state:         WebState3D | null = null
   private cooldown       = 0
@@ -48,6 +55,7 @@ export class WebLauncherSystem3D {
   private wallHitTest:   (x: number, z: number) => boolean = () => false
   private pickupHitTest: (x: number, z: number) => PullablePickup3D | null = () => null
   private threeScene:    THREE.Scene
+  private silkWraps:     Map<Enemy3D, SilkWrap> = new Map()
 
   constructor(threeScene: THREE.Scene) {
     this.threeScene = threeScene
@@ -77,6 +85,7 @@ export class WebLauncherSystem3D {
 
   update(webbs: Webbs3D, delta: number): void {
     if (this.cooldown > 0) this.cooldown -= delta
+    this.tickSilkWraps(delta)
     if (!this.state) return
 
     this.state.age += delta
@@ -161,6 +170,8 @@ export class WebLauncherSystem3D {
       const dx = px - e.collisionBody.x
       const dz = pz - e.collisionBody.z
       if (Math.hypot(dx, dz) < 0.28) {
+        e.staggerTimer = Math.max(e.staggerTimer, STUN_DURATION)
+        this.addSilkWrap(e)
         this.state.attached = { kind: 'enemy', ref: e }
         this.landProjectile()
         this.startPull(webbs)
@@ -293,6 +304,46 @@ export class WebLauncherSystem3D {
 
     pos.needsUpdate = true
     this.state.line.geometry.computeBoundingSphere()
+  }
+
+  private addSilkWrap(enemy: Enemy3D): void {
+    const existing = this.silkWraps.get(enemy)
+    if (existing) {
+      existing.timer = STUN_DURATION
+      return
+    }
+    const r   = enemy.config.bodyRadius + 0.10
+    const geo = new THREE.TorusGeometry(r, 0.025, 6, 18)
+    geo.rotateX(Math.PI / 2)
+    const mat = new THREE.MeshBasicMaterial({ color: 0xddeeff, transparent: true, opacity: 0.8 })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.set(enemy.collisionBody.x, 0.38, enemy.collisionBody.z)
+    this.threeScene.add(mesh)
+    this.silkWraps.set(enemy, { mesh, timer: STUN_DURATION })
+  }
+
+  private tickSilkWraps(delta: number): void {
+    for (const [enemy, wrap] of Array.from(this.silkWraps.entries())) {
+      wrap.timer -= delta
+      if (wrap.timer <= 0 || enemy.isDead()) {
+        this.threeScene.remove(wrap.mesh)
+        wrap.mesh.geometry.dispose()
+        ;(wrap.mesh.material as THREE.Material).dispose()
+        this.silkWraps.delete(enemy)
+      } else {
+        wrap.mesh.position.set(enemy.collisionBody.x, 0.38, enemy.collisionBody.z)
+        ;(wrap.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8 * (wrap.timer / STUN_DURATION)
+      }
+    }
+  }
+
+  clearWraps(): void {
+    for (const [, wrap] of Array.from(this.silkWraps.entries())) {
+      this.threeScene.remove(wrap.mesh)
+      wrap.mesh.geometry.dispose()
+      ;(wrap.mesh.material as THREE.Material).dispose()
+    }
+    this.silkWraps.clear()
   }
 
   release(): void {

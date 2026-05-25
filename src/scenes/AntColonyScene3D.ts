@@ -3,6 +3,8 @@ import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import type { Enemy3D } from '../entities/Enemy3D'
 import { CentipedeAmbusher3D } from '../entities/CentipedeAmbusher3D'
 import { BeetleTank3D } from '../entities/BeetleTank3D'
+import { AntWorker3D } from '../entities/AntWorker3D'
+import { JumpingSpider3D } from '../entities/JumpingSpider3D'
 import { FogOfWarSystem3D } from '../systems/FogOfWarSystem3D'
 import { registry } from '../core/Registry'
 
@@ -69,38 +71,39 @@ const DEAD_END_DATA: Array<{
   { x:   0, cz:   5, dz:  1, type: 'spike'  },
 ]
 
-// ── Enemy spawns (45 total, 9 per corridor) ────────────────────────────────────
-const SPAWN_DATA: Array<{ kind: 'centipede' | 'beetle'; x: number; cz: number }> = [
-  // Corridor 0 (center z=-10)
-  { kind: 'centipede', x: -18, cz: -10 }, { kind: 'centipede', x: -15, cz: -10 },
-  { kind: 'beetle',    x: -12, cz: -10 }, { kind: 'centipede', x:  -7, cz: -10 },
-  { kind: 'centipede', x:  -3, cz: -10 }, { kind: 'beetle',    x:   1, cz: -10 },
-  { kind: 'centipede', x:   6, cz: -10 }, { kind: 'centipede', x:  11, cz: -10 },
-  { kind: 'beetle',    x:  16, cz: -10 },
-  // Corridor 1 (center z=-5)
-  { kind: 'centipede', x: -17, cz:  -5 }, { kind: 'beetle',    x: -13, cz:  -5 },
-  { kind: 'centipede', x:  -9, cz:  -5 }, { kind: 'centipede', x:  -5, cz:  -5 },
-  { kind: 'beetle',    x:  -1, cz:  -5 }, { kind: 'centipede', x:   3, cz:  -5 },
-  { kind: 'centipede', x:   8, cz:  -5 }, { kind: 'beetle',    x:  13, cz:  -5 },
-  { kind: 'centipede', x:  17, cz:  -5 },
-  // Corridor 2 (entry, center z=0)
-  { kind: 'centipede', x: -17, cz:   0 }, { kind: 'centipede', x: -12, cz:   0 },
-  { kind: 'beetle',    x:  -8, cz:   0 }, { kind: 'centipede', x:  -4, cz:   0 },
-  { kind: 'beetle',    x:   2, cz:   0 }, { kind: 'centipede', x:   6, cz:   0 },
-  { kind: 'centipede', x:  10, cz:   0 }, { kind: 'beetle',    x:  14, cz:   0 },
-  { kind: 'centipede', x:  17, cz:   0 },
-  // Corridor 3 (center z=+5)
-  { kind: 'centipede', x: -16, cz:   5 }, { kind: 'beetle',    x: -11, cz:   5 },
-  { kind: 'centipede', x:  -7, cz:   5 }, { kind: 'centipede', x:  -2, cz:   5 },
-  { kind: 'beetle',    x:   3, cz:   5 }, { kind: 'centipede', x:   7, cz:   5 },
-  { kind: 'centipede', x:  12, cz:   5 }, { kind: 'beetle',    x:  16, cz:   5 },
-  { kind: 'centipede', x:  18, cz:   5 },
-  // Corridor 4 (center z=+10)
-  { kind: 'centipede', x: -17, cz:  10 }, { kind: 'centipede', x: -13, cz:  10 },
-  { kind: 'beetle',    x:  -8, cz:  10 }, { kind: 'centipede', x:  -3, cz:  10 },
-  { kind: 'centipede', x:   2, cz:  10 }, { kind: 'beetle',    x:   8, cz:  10 },
-  { kind: 'centipede', x:  12, cz:  10 }, { kind: 'centipede', x:  15, cz:  10 },
-  { kind: 'beetle',    x:  18, cz:  10 },
+// ── Enemy spawns — sparse near home portal (x≈+18), dense near boss (x≈-18) ──
+// ant_worker: fast swarmers placed in clusters; jumping_spider: mid-range leapers
+const SPAWN_DATA: Array<{ kind: 'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'; x: number; cz: number }> = [
+  // Corridor 0 (z=-10) — boss-heavy left, light on right
+  { kind: 'centipede',     x: -18, cz: -10 }, { kind: 'beetle',        x: -14, cz: -10 },
+  { kind: 'ant_worker',    x: -10, cz: -10 }, { kind: 'ant_worker',    x:  -6, cz: -10 },
+  { kind: 'beetle',        x:  -2, cz: -10 }, { kind: 'jumping_spider', x:   3, cz: -10 },
+  { kind: 'centipede',     x:   8, cz: -10 }, { kind: 'beetle',        x:  14, cz: -10 },
+  { kind: 'centipede',     x:  17, cz: -10 },
+  // Corridor 1 (z=-5)
+  { kind: 'centipede',     x: -17, cz:  -5 }, { kind: 'beetle',        x: -13, cz:  -5 },
+  { kind: 'ant_worker',    x:  -9, cz:  -5 }, { kind: 'beetle',        x:  -5, cz:  -5 },
+  { kind: 'ant_worker',    x:  -1, cz:  -5 }, { kind: 'jumping_spider', x:   4, cz:  -5 },
+  { kind: 'beetle',        x:   9, cz:  -5 }, { kind: 'centipede',     x:  15, cz:  -5 },
+  { kind: 'centipede',     x:  18, cz:  -5 },
+  // Corridor 2 (entry, z=0) — open near home portal, enemies cluster mid-to-boss
+  { kind: 'centipede',     x: -18, cz:   0 }, { kind: 'beetle',        x: -13, cz:   0 },
+  { kind: 'ant_worker',    x:  -8, cz:   0 }, { kind: 'ant_worker',    x:  -4, cz:   0 },
+  { kind: 'beetle',        x:   1, cz:   0 }, { kind: 'jumping_spider', x:   5, cz:   0 },
+  { kind: 'centipede',     x:  10, cz:   0 }, { kind: 'centipede',     x:  16, cz:   0 },
+  { kind: 'beetle',        x:  18, cz:   0 },
+  // Corridor 3 (z=+5)
+  { kind: 'centipede',     x: -17, cz:   5 }, { kind: 'beetle',        x: -12, cz:   5 },
+  { kind: 'ant_worker',    x:  -8, cz:   5 }, { kind: 'ant_worker',    x:  -3, cz:   5 },
+  { kind: 'beetle',        x:   2, cz:   5 }, { kind: 'jumping_spider', x:   6, cz:   5 },
+  { kind: 'centipede',     x:  11, cz:   5 }, { kind: 'beetle',        x:  16, cz:   5 },
+  { kind: 'centipede',     x:  18, cz:   5 },
+  // Corridor 4 (z=+10)
+  { kind: 'centipede',     x: -17, cz:  10 }, { kind: 'beetle',        x: -13, cz:  10 },
+  { kind: 'ant_worker',    x:  -9, cz:  10 }, { kind: 'ant_worker',    x:  -4, cz:  10 },
+  { kind: 'beetle',        x:   1, cz:  10 }, { kind: 'jumping_spider', x:   7, cz:  10 },
+  { kind: 'centipede',     x:  12, cz:  10 }, { kind: 'centipede',     x:  16, cz:  10 },
+  { kind: 'beetle',        x:  18, cz:  10 },
 ]
 
 // ── 20 chests, 6 mimics ────────────────────────────────────────────────────────
@@ -188,7 +191,7 @@ const LANTERN_DATA: Array<{ x: number; cz: number }> = [
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface SpawnRecord {
-  kind:         'centipede' | 'beetle'
+  kind:         'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'
   x:            number
   z:            number    // world Z (corridor center + small jitter)
   enemy:        Enemy3D | null
@@ -251,6 +254,7 @@ export class AntColonyScene3D {
   private gradientMap:  THREE.Texture
   private tracked:      THREE.Object3D[] = []
   private wallBodies:   CollisionBody[]  = []
+  private dividerWalls: Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
   private spawnRecords: SpawnRecord[]    = []
   private freeEnemies:  Enemy3D[]        = []
   private chests:       ChestRecord[]    = []
@@ -388,8 +392,7 @@ export class AntColonyScene3D {
   // ── Corridor dividers (horizontal walls between corridors) ────────────────────
 
   private buildCorridorDividers(): void {
-    const wallMat = new THREE.MeshToonMaterial({ color: 0x251a0e, gradientMap: this.gradientMap })
-    const capMat  = new THREE.MeshToonMaterial({ color: 0x332211, gradientMap: this.gradientMap })
+    const capMat = new THREE.MeshToonMaterial({ color: 0x332211, gradientMap: this.gradientMap })
 
     for (let wi = 0; wi < DIV_WALLS.length; wi++) {
       const dw  = DIV_WALLS[wi]
@@ -397,15 +400,24 @@ export class AntColonyScene3D {
       const ht  = dw.hi - dw.lo
       const gxs = DIV_GAPS[wi]
 
-      // Build wall segments — gap-free X stretches between passage openings
       const breakpoints = [AntColonyScene3D.LEFT, ...gxs.flatMap(gx => [gx - GAP_HALF, gx + GAP_HALF]), AntColonyScene3D.RIGHT]
       for (let bi = 0; bi < breakpoints.length - 1; bi += 2) {
         const x0 = breakpoints[bi], x1 = breakpoints[bi + 1]
         const cx = (x0 + x1) / 2, segW = x1 - x0
-        this.addBox(segW, WALL_H, ht, cx, WALL_H / 2, hz, wallMat)
+
+        // Each divider segment gets its own material instance so opacity is independent
+        const segMat = new THREE.MeshToonMaterial({
+          color: 0x251a0e, gradientMap: this.gradientMap,
+          transparent: true, opacity: 1.0,
+        })
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(segW, WALL_H, ht), segMat)
+        mesh.position.set(cx, WALL_H / 2, hz)
+        mesh.castShadow = true; mesh.receiveShadow = true
+        this.tracked.push(mesh); this.threeScene.add(mesh)
+        this.dividerWalls.push({ mesh, mat: segMat, x0, x1, zLo: dw.lo, zHi: dw.hi })
+
         this.addBox(segW + 0.08, 0.10, ht + 0.1, cx, WALL_H + 0.05, hz, capMat)
 
-        // Register AABB body for collision
         const body = physicsWorld.add({
           x: x0, z: dw.lo, radius: 0,
           velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
@@ -414,6 +426,41 @@ export class AntColonyScene3D {
         this.wallBodies.push(body)
       }
     }
+  }
+
+  // Camera-to-player raycast: lerp occluding walls to 0.25 opacity
+  updateWallOcclusion(camX: number, camZ: number, px: number, pz: number): void {
+    for (const dw of this.dividerWalls) {
+      const occluding = this.rayIntersectsAABB2D(camX, camZ, px, pz, dw.x0, dw.x1, dw.zLo, dw.zHi)
+      const target = occluding ? 0.25 : 1.0
+      dw.mat.opacity = dw.mat.opacity + (target - dw.mat.opacity) * 0.18
+    }
+  }
+
+  private rayIntersectsAABB2D(
+    cx: number, cz: number,
+    px: number, pz: number,
+    x0: number, x1: number, zLo: number, zHi: number,
+  ): boolean {
+    const dx = px - cx, dz = pz - cz
+    let tMin = 0, tMax = 1
+    if (Math.abs(dx) < 1e-9) {
+      if (cx < x0 || cx > x1) return false
+    } else {
+      const inv = 1 / dx
+      const t1 = (x0 - cx) * inv, t2 = (x1 - cx) * inv
+      tMin = Math.max(tMin, Math.min(t1, t2))
+      tMax = Math.min(tMax, Math.max(t1, t2))
+    }
+    if (Math.abs(dz) < 1e-9) {
+      if (cz < zLo || cz > zHi) return false
+    } else {
+      const inv = 1 / dz
+      const t1 = (zLo - cz) * inv, t2 = (zHi - cz) * inv
+      tMin = Math.max(tMin, Math.min(t1, t2))
+      tMax = Math.min(tMax, Math.max(t1, t2))
+    }
+    return tMin <= tMax && tMax >= 0 && tMin <= 1
   }
 
   // ── Portals ────────────────────────────────────────────────────────────────────
@@ -662,12 +709,19 @@ export class AntColonyScene3D {
 
   private initSpawns(): void {
     for (const d of SPAWN_DATA) {
-      const z = jitterZ(d.cz, 1.1)
-      const enemy = d.kind === 'centipede'
-        ? new CentipedeAmbusher3D(this.threeScene, d.x, z, this.gradientMap)
-        : new BeetleTank3D(this.threeScene, d.x, z, this.gradientMap)
+      const z     = jitterZ(d.cz, 1.1)
+      const enemy = this.spawnEnemy(d.kind, d.x, z)
       this.spawnRecords.push({ kind: d.kind, x: d.x, z, enemy, respawnTimer: 0 })
       this.enemies.push(enemy)
+    }
+  }
+
+  private spawnEnemy(kind: SpawnRecord['kind'], x: number, z: number): Enemy3D {
+    switch (kind) {
+      case 'centipede':     return new CentipedeAmbusher3D(this.threeScene, x, z, this.gradientMap)
+      case 'beetle':        return new BeetleTank3D(this.threeScene, x, z, this.gradientMap)
+      case 'ant_worker':    return new AntWorker3D(this.threeScene, x, z, this.gradientMap)
+      case 'jumping_spider': return new JumpingSpider3D(this.threeScene, x, z, this.gradientMap)
     }
   }
 
@@ -866,9 +920,7 @@ export class AntColonyScene3D {
       } else {
         s.respawnTimer = Math.max(0, s.respawnTimer - delta)
         if (s.respawnTimer <= 0) {
-          s.enemy = s.kind === 'centipede'
-            ? new CentipedeAmbusher3D(this.threeScene, s.x, s.z, this.gradientMap)
-            : new BeetleTank3D(this.threeScene, s.x, s.z, this.gradientMap)
+          s.enemy = this.spawnEnemy(s.kind, s.x, s.z)
         }
       }
     }

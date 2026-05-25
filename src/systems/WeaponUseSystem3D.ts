@@ -32,9 +32,9 @@ const FLAME_DPS       = 18
 const FLAME_DRAIN     = 120    // energy/s at 60fps-equivalent (2/frame × 60)
 
 // ── Animation durations (seconds) ────────────────────────────────────────────
-const ANIM_SWORD  = 0.20
-const ANIM_AXE    = 0.32
-const ANIM_GLOVES = 0.18
+const ANIM_SWORD  = 0.28
+const ANIM_AXE    = 0.76
+const ANIM_GLOVES = 0.22
 const ANIM_BOW    = 0.22
 const ANIM_FLAME  = 0.08  // repeating spray cycle
 
@@ -51,6 +51,7 @@ interface HitEffect {
   elapsed: number
   duration: number
   maxRadius: number
+  fadeOnly?: boolean   // if true: only fade opacity, don't scale
 }
 
 // ── Projectile ────────────────────────────────────────────────────────────────
@@ -214,7 +215,7 @@ export class WeaponUseSystem3D {
     this.cooldowns[slot] = SWORD_CD
     webbs.legs.triggerAnim(slot, ANIM_SWORD, webbs.facingX, webbs.facingZ, SWORD_REACH)
 
-    this.spawnSwingArc(webbs, SWORD_RADIUS, 0xaaaaff)
+    this.spawnSwingFan(webbs, SWORD_RADIUS, SWORD_SWEEP, 0xaaaaff, ANIM_SWORD)
     const hit = this.hitsInArc(webbs, SWORD_RADIUS, SWORD_SWEEP, SWORD_DMG, SWORD_KB)
     if (hit) {
       this.spawnHitRing(webbs.group.position, 0.8, 0.55, 0xaaaaff)
@@ -231,7 +232,7 @@ export class WeaponUseSystem3D {
     this.cooldowns[slot] = AXE_CD
     webbs.legs.triggerAnim(slot, ANIM_AXE, webbs.facingX, webbs.facingZ, AXE_REACH)
 
-    this.spawnSwingArc(webbs, AXE_RADIUS, 0xaa6633)
+    this.spawnSwingFan(webbs, AXE_RADIUS, AXE_SWEEP, 0xaa6633, ANIM_AXE)
     const hit = this.hitsInArc(webbs, AXE_RADIUS, AXE_SWEEP, AXE_DMG, AXE_KB)
     if (hit) {
       this.spawnHitRing(webbs.group.position, 1.0, 0.45, 0xaa6633)
@@ -248,7 +249,7 @@ export class WeaponUseSystem3D {
     this.cooldowns[slot] = GLOVES_CD
     webbs.legs.triggerAnim(slot, ANIM_GLOVES, webbs.facingX, webbs.facingZ, GLOVES_REACH)
 
-    this.spawnSwingArc(webbs, GLOVES_RADIUS, 0xeeddaa)
+    this.spawnSwingFan(webbs, GLOVES_RADIUS, GLOVES_CONE, 0xeeddaa, ANIM_GLOVES)
 
     const wx = webbs.collisionBody.x
     const wz = webbs.collisionBody.z
@@ -307,12 +308,38 @@ export class WeaponUseSystem3D {
     })
   }
 
-  // ── Swing arc VFX (always shown on melee fire) ────────────────────────────
+  // ── Swing fan VFX — pie-slice that matches exact hit geometry ─────────────
 
-  private spawnSwingArc(webbs: Webbs3D, radius: number, color: number): void {
-    const cx = webbs.collisionBody.x + webbs.facingX * radius * 0.6
-    const cz = webbs.collisionBody.z + webbs.facingZ * radius * 0.6
-    this.spawnHitRing(new THREE.Vector3(cx, 0.02, cz), radius, 0.14, color)
+  private spawnSwingFan(
+    webbs:    Webbs3D,
+    radius:   number,
+    sweepDeg: number,
+    color:    number,
+    duration: number,
+  ): void {
+    const facing   = Math.atan2(webbs.facingX, webbs.facingZ)
+    const half     = (sweepDeg / 2) * DEG
+    const segments = Math.max(8, Math.round(sweepDeg / 10))
+
+    // Build pie-slice vertices in local XZ space (y=0), center at origin
+    const verts: number[] = [0, 0, 0]
+    for (let i = 0; i <= segments; i++) {
+      const a = facing - half + (i / segments) * sweepDeg * DEG
+      verts.push(Math.sin(a) * radius, 0, Math.cos(a) * radius)
+    }
+    const tris: number[] = []
+    for (let i = 0; i < segments; i++) tris.push(0, i + 1, i + 2)
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
+    geo.setIndex(tris)
+    const mat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.set(webbs.collisionBody.x, 0.04, webbs.collisionBody.z)
+    this.threeScene.add(mesh)
+    this.hitEffects.push({ mesh, elapsed: 0, duration, maxRadius: 1, fadeOnly: true })
   }
 
   // ── Arc hit detection (Sword + Axe) ───────────────────────────────────────
@@ -435,10 +462,13 @@ export class WeaponUseSystem3D {
     for (const fx of this.hitEffects) {
       fx.elapsed += delta
       const t = fx.elapsed / fx.duration
-      if (t >= 1) { fx.mesh.removeFromParent(); continue }
-      const s = fx.maxRadius * t
-      fx.mesh.scale.setScalar(s)
-      ;(fx.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - t)
+      if (t >= 1) { fx.mesh.removeFromParent(); fx.mesh.geometry.dispose(); continue }
+      if (fx.fadeOnly) {
+        ;(fx.mesh.material as THREE.MeshBasicMaterial).opacity = 0.38 * (1 - t)
+      } else {
+        fx.mesh.scale.setScalar(fx.maxRadius * t)
+        ;(fx.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - t)
+      }
       keep.push(fx)
     }
     this.hitEffects = keep

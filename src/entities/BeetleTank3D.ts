@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D, WeakPointZone } from './Enemy3D'
+import { physicsWorld } from '../core/PhysicsWorld'
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 const CONFIG: EnemyConfig3D = {
@@ -13,22 +14,27 @@ const CONFIG: EnemyConfig3D = {
   weakMultiplier:  1.8,
 }
 
-const CHARGE_SPEED   = 2.9    // 290 px/s × 0.01
-const CHARGE_RANGE   = 2.6    // 260 px × 0.01
-const CHARGE_DUR     = 0.68
+const CHARGE_SPEED    = 2.9    // 290 px/s × 0.01
+const CHARGE_RANGE    = 2.6    // trigger charge within this distance
+const CHARGE_DUR      = 0.68
 const CHARGE_COOLDOWN = 3.6
+const WINDUP_DUR      = 0.52   // wind-up before charge
+const RECOVER_DUR     = 0.50   // post-charge recovery
+const WALL_NEAR_DIST  = 0.75   // distance to physics boundary = "hit a wall"
 
-type BeetleState = 'PATROL' | 'CHARGING'
+type BeetleState = 'PATROL' | 'WINDUP' | 'CHARGING' | 'RECOVERING'
 
 export class BeetleTank3D extends Enemy3D {
-  private state:        BeetleState = 'PATROL'
-  private patrolDir     = 1          // +1 right, -1 left
-  private chargeTimer   = 0
+  private state:         BeetleState = 'PATROL'
+  private patrolDir      = 1          // +1 right, -1 left
+  private chargeTimer    = 0
   private chargeCooldown = 0
-  private chargeDir     = new THREE.Vector2(1, 0)
-  private facingAngle   = 0
+  private chargeDir      = new THREE.Vector2(1, 0)
+  private facingAngle    = 0
 
-  private shellMesh: THREE.Mesh | null = null
+  private shellMesh:   THREE.Mesh | null = null
+  private shellMat:    THREE.MeshToonMaterial | null = null
+  private slamRings:   Array<{ mesh: THREE.Mesh; elapsed: number }> = []
 
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     super(threeScene, x, z, CONFIG, gradientMap)
@@ -38,8 +44,11 @@ export class BeetleTank3D extends Enemy3D {
   buildVisuals(): void {
     // Shell — dark green flattened ellipsoid
     const shellGeo = new THREE.SphereGeometry(1, 14, 10)
-    const shellMat = new THREE.MeshToonMaterial({ color: 0x2d4a1a, gradientMap: this.gradientMap })
-    this.shellMesh = new THREE.Mesh(shellGeo, shellMat)
+    this.shellMat  = new THREE.MeshToonMaterial({
+      color: 0x2d4a1a, gradientMap: this.gradientMap,
+      emissive: new THREE.Color(0, 0, 0), emissiveIntensity: 0,
+    })
+    this.shellMesh = new THREE.Mesh(shellGeo, this.shellMat)
     this.shellMesh.scale.set(0.28, 0.16, 0.35)
     this.shellMesh.position.y = 0.18
     this.shellMesh.castShadow = true
@@ -92,33 +101,63 @@ export class BeetleTank3D extends Enemy3D {
 
   updateAI(delta: number, playerX: number, playerZ: number): void {
     this.chargeCooldown = Math.max(0, this.chargeCooldown - delta)
+    this.tickSlamRings(delta)
 
-    const dx = playerX - this.collisionBody.x
-    const dz = playerZ - this.collisionBody.z
+    const dx   = playerX - this.collisionBody.x
+    const dz   = playerZ - this.collisionBody.z
     const dist = Math.sqrt(dx * dx + dz * dz)
 
     switch (this.state) {
       case 'PATROL': {
-        // Check if we should start a charge
         if (dist < CHARGE_RANGE && this.chargeCooldown <= 0) {
-          this.state = 'CHARGING'
+          this.state      = 'WINDUP'
           this.chargeTimer = 0
           this.chargeDir.set(dx, dz).normalize()
+          this.collisionBody.velocity.x = 0
+          this.collisionBody.velocity.z = 0
           break
         }
 
-        // Patrol horizontally
         this.collisionBody.velocity.x = this.patrolDir * CONFIG.speed
         this.collisionBody.velocity.z = 0
 
-        // Reverse at patrol limits or world edge
         const x = this.collisionBody.x
-        if (x > 11.5 || x < -11.5) {
-          this.patrolDir *= -1
+        if (x > 11.5 || x < -11.5) this.patrolDir *= -1
+
+        this.facingAngle    = this.patrolDir > 0 ? Math.PI / 2 : -Math.PI / 2
+        this.group.rotation.y = this.facingAngle
+        break
+      }
+
+      case 'WINDUP': {
+        this.chargeTimer += delta
+        this.collisionBody.velocity.x = 0
+        this.collisionBody.velocity.z = 0
+
+        // Re-lock charge direction toward player each frame during windup
+        this.chargeDir.set(dx, dz).normalize()
+        this.group.rotation.y = Math.atan2(this.chargeDir.x, this.chargeDir.y)
+
+        // Pulsing orange glow on shell as wind-up tell
+        if (this.shellMat) {
+          const t    = this.chargeTimer / WINDUP_DUR
+          const glow = Math.sin(t * Math.PI * 5) * 0.5 + 0.5
+          this.shellMat.emissive.setRGB(glow * 0.9, glow * 0.38, 0)
+          this.shellMat.emissiveIntensity = t * 0.9 + glow * 0.4
+          // Slight vibrate
+          const jitter = t * 0.012
+          this.group.position.x = this.collisionBody.x + (Math.random() - 0.5) * jitter
+          this.group.position.z = this.collisionBody.z + (Math.random() - 0.5) * jitter
         }
 
-        this.facingAngle = this.patrolDir > 0 ? Math.PI / 2 : -Math.PI / 2
-        this.group.rotation.y = this.facingAngle
+        if (this.chargeTimer >= WINDUP_DUR) {
+          this.state       = 'CHARGING'
+          this.chargeTimer = 0
+          if (this.shellMat) {
+            this.shellMat.emissive.setRGB(0, 0, 0)
+            this.shellMat.emissiveIntensity = 0
+          }
+        }
         break
       }
 
@@ -126,18 +165,76 @@ export class BeetleTank3D extends Enemy3D {
         this.chargeTimer += delta
         this.collisionBody.velocity.x = this.chargeDir.x * CHARGE_SPEED
         this.collisionBody.velocity.z = this.chargeDir.y * CHARGE_SPEED
-
-        // Face charge direction
         this.group.rotation.y = Math.atan2(this.chargeDir.x, this.chargeDir.y)
 
         if (this.chargeTimer >= CHARGE_DUR) {
-          this.state = 'PATROL'
-          this.chargeCooldown = CHARGE_COOLDOWN
+          this.state      = 'RECOVERING'
+          this.chargeTimer = 0
           this.collisionBody.velocity.x = 0
           this.collisionBody.velocity.z = 0
+          this.spawnSlamRing()
+        }
+        break
+      }
+
+      case 'RECOVERING': {
+        this.collisionBody.velocity.x = 0
+        this.collisionBody.velocity.z = 0
+        if (this.chargeTimer >= RECOVER_DUR) {
+          this.state           = 'PATROL'
+          this.chargeTimer     = 0
+          this.chargeCooldown  = CHARGE_COOLDOWN
+        } else {
+          this.chargeTimer += delta
         }
         break
       }
     }
+  }
+
+  private spawnSlamRing(): void {
+    const b         = physicsWorld.bounds
+    const nearWall  = b != null && (
+      this.collisionBody.x < b.minX + WALL_NEAR_DIST ||
+      this.collisionBody.x > b.maxX - WALL_NEAR_DIST ||
+      this.collisionBody.z < b.minZ + WALL_NEAR_DIST ||
+      this.collisionBody.z > b.maxZ - WALL_NEAR_DIST
+    )
+    const ringSize  = nearWall ? 0.48 : 0.30
+    const opacity   = nearWall ? 0.85 : 0.55
+
+    const geo  = new THREE.RingGeometry(0.06, ringSize, 20)
+    geo.rotateX(-Math.PI / 2)
+    const mat  = new THREE.MeshBasicMaterial({ color: 0xaa8840, transparent: true, opacity, side: THREE.DoubleSide })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.set(this.collisionBody.x, 0.02, this.collisionBody.z)
+    this.threeScene.add(mesh)
+    this.slamRings.push({ mesh, elapsed: 0 })
+  }
+
+  private tickSlamRings(delta: number): void {
+    for (let i = this.slamRings.length - 1; i >= 0; i--) {
+      const r = this.slamRings[i]
+      r.elapsed += delta
+      const t = r.elapsed / 0.50
+      r.mesh.scale.setScalar(1 + t * 2.2)
+      ;(r.mesh.material as THREE.MeshBasicMaterial).opacity *= (1 - delta * 3.5)
+      if (t >= 1) {
+        this.threeScene.remove(r.mesh)
+        r.mesh.geometry.dispose()
+        ;(r.mesh.material as THREE.Material).dispose()
+        this.slamRings.splice(i, 1)
+      }
+    }
+  }
+
+  override cleanup(): void {
+    for (const r of this.slamRings) {
+      this.threeScene.remove(r.mesh)
+      r.mesh.geometry.dispose()
+      ;(r.mesh.material as THREE.Material).dispose()
+    }
+    this.slamRings = []
+    super.cleanup()
   }
 }

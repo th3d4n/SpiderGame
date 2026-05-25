@@ -27,13 +27,29 @@ const RECOVER_DUR   = 0.62
 // Trigger distances (world units)
 const HIDE_TRIGGER  = 1.9   // 190 px × 0.01
 
+// Burst-slither constants
+const SLITHER_FREQ  = 4.0   // rad/s perpendicular oscillator
+const SLITHER_AMP   = 0.42  // max angle weave (radians)
+const SCURRY_ON     = 0.40  // seconds of high-speed burst
+const SCURRY_OFF    = 0.14  // seconds of brief pause between bursts
+const SCURRY_FAST   = 1.0   // speed multiplier during burst
+const SCURRY_SLOW   = 0.28  // speed multiplier during pause
+
+// Wall-hugging: Z boundaries of corridor dividers (AntColonyScene3D layout)
+const WALL_Z_BOUNDS = [-11.5, -8.5, -6.5, -3.5, -1.5, 1.5, 3.5, 6.5, 8.5, 11.5]
+const WALL_HUG_DIST = 0.48  // wu from wall to trigger hugging
+const WALL_HUG_STR  = 0.78  // blend strength toward wall-run angle
+
 type CentState = 'HIDING' | 'BURSTING' | 'TRACKING' | 'WINDUP' | 'LUNGING' | 'RECOVERING'
 
 export class CentipedeAmbusher3D extends Enemy3D {
-  private state: CentState = 'HIDING'
-  private stateTimer = 0
-  private lungeDir   = new THREE.Vector2(0, 1)
-  private facingAngle = 0
+  private state:       CentState = 'HIDING'
+  private stateTimer   = 0
+  private lungeDir     = new THREE.Vector2(0, 1)
+  private facingAngle  = 0
+  private slitherPhase = Math.random() * Math.PI * 2
+  private scurryTimer  = SCURRY_ON
+  private scurryActive = true
 
   // Visual meshes for flash tint
   private bodyMeshes:     THREE.Mesh[] = []
@@ -140,17 +156,37 @@ export class CentipedeAmbusher3D extends Enemy3D {
       }
 
       case 'TRACKING': {
-        const targetAngle = Math.atan2(dx, dz)
-        const angleDiff = wrapAngle(targetAngle - this.facingAngle)
+        // Burst-scurry cycle: alternate full-speed bursts with brief pauses
+        this.scurryTimer -= delta
+        if (this.scurryTimer <= 0) {
+          this.scurryActive = !this.scurryActive
+          this.scurryTimer  = this.scurryActive ? SCURRY_ON : SCURRY_OFF
+        }
+        const speedMult = this.scurryActive ? SCURRY_FAST : SCURRY_SLOW
+
+        // Slither oscillator: weave perpendicularly to heading
+        this.slitherPhase += SLITHER_FREQ * delta
+        const weaveOffset = this.scurryActive ? Math.sin(this.slitherPhase) * SLITHER_AMP : 0
+
+        let desiredAngle = Math.atan2(dx, dz) + weaveOffset
+
+        // Wall-hug: if near a corridor wall, blend toward running along X axis
+        const nearWall = nearestWallZ(this.collisionBody.z)
+        if (nearWall !== null) {
+          const wallRunAngle = (playerX > this.collisionBody.x) ? Math.PI / 2 : -Math.PI / 2
+          desiredAngle = lerpAngleMix(desiredAngle, wallRunAngle, WALL_HUG_STR)
+        }
+
+        const angleDiff = wrapAngle(desiredAngle - this.facingAngle)
         this.facingAngle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), TURN_RATE * delta)
         this.group.rotation.y = this.facingAngle
 
-        this.collisionBody.velocity.x = Math.sin(this.facingAngle) * TRACK_SPEED
-        this.collisionBody.velocity.z = Math.cos(this.facingAngle) * TRACK_SPEED
+        this.collisionBody.velocity.x = Math.sin(this.facingAngle) * TRACK_SPEED * speedMult
+        this.collisionBody.velocity.z = Math.cos(this.facingAngle) * TRACK_SPEED * speedMult
 
-        // Enter windup when close and roughly facing player
-        if (dist < 1.0 && Math.abs(angleDiff) < 0.4) {
-          this.state = 'WINDUP'
+        // Enter windup when close and roughly facing player (only during active scurry)
+        if (this.scurryActive && dist < 1.0 && Math.abs(wrapAngle(Math.atan2(dx, dz) - this.facingAngle)) < 0.4) {
+          this.state      = 'WINDUP'
           this.stateTimer = 0
           this.collisionBody.velocity.x = 0
           this.collisionBody.velocity.z = 0
@@ -210,4 +246,18 @@ function wrapAngle(a: number): number {
   while (a >  Math.PI) a -= Math.PI * 2
   while (a < -Math.PI) a += Math.PI * 2
   return a
+}
+
+function nearestWallZ(z: number): number | null {
+  for (const wz of WALL_Z_BOUNDS) {
+    if (Math.abs(z - wz) < WALL_HUG_DIST) return wz
+  }
+  return null
+}
+
+function lerpAngleMix(a: number, b: number, t: number): number {
+  let diff = b - a
+  while (diff >  Math.PI) diff -= Math.PI * 2
+  while (diff < -Math.PI) diff += Math.PI * 2
+  return a + diff * t
 }

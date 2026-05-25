@@ -3,38 +3,42 @@ import { physicsWorld } from '../core/PhysicsWorld'
 import { registry } from '../core/Registry'
 import type { Enemy3D } from '../entities/Enemy3D'
 
-const W      = 32    // world width  (x: -16 … +16)
-const D      = 8.5   // world depth  (z: -4.25 … +4.25)
-const WALL_H = 1.8
+const W      = 22    // world width  (x: -11 … +11)
+const D      = 22    // world depth  (z: -11 … +11)
+const WALL_H = 2.0
 
-// 11 material pickups scattered around the den.  Persistent via registry.
+// 11 material pickups around the chamber perimeter.  Persistent via registry.
 const MATERIAL_PICKUPS = [
-  { id: 0,  x: -13.0, z: -2.5, mat: 'SilkThread',  qty: 3, color: 0xddeeff },
-  { id: 1,  x:  -9.0, z:  3.0, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
-  { id: 2,  x:  -5.5, z: -1.5, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
-  { id: 3,  x:   2.5, z:  3.5, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
-  { id: 4,  x:   7.0, z: -3.0, mat: 'ChitinShard',  qty: 3, color: 0x88aa44 },
-  { id: 5,  x:  13.0, z:  2.5, mat: 'BoneFragment', qty: 2, color: 0xccbbaa },
-  { id: 6,  x: -11.0, z:  1.5, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
-  { id: 7,  x:   0.0, z: -3.5, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
-  { id: 8,  x:   9.0, z:  1.0, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
-  { id: 9,  x: -14.5, z:  2.0, mat: 'BoneFragment', qty: 1, color: 0xccbbaa },
-  { id: 10, x:  14.0, z: -1.5, mat: 'WebFluid',     qty: 1, color: 0x44aaff },
+  { id: 0,  x:  -8.5, z:  -5.0, mat: 'SilkThread',  qty: 3, color: 0xddeeff },
+  { id: 1,  x:   5.0, z:  -9.5, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
+  { id: 2,  x:   9.5, z:   2.0, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
+  { id: 3,  x:  -3.0, z:   9.5, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
+  { id: 4,  x:   1.5, z:  -9.5, mat: 'ChitinShard',  qty: 3, color: 0x88aa44 },
+  { id: 5,  x:  -9.5, z:   3.5, mat: 'BoneFragment', qty: 2, color: 0xccbbaa },
+  { id: 6,  x:   5.5, z:   9.0, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
+  { id: 7,  x:  -6.0, z:  -8.5, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
+  { id: 8,  x:   9.5, z:  -4.0, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
+  { id: 9,  x:  -9.5, z:  -3.0, mat: 'BoneFragment', qty: 1, color: 0xccbbaa },
+  { id: 10, x:   0.0, z:   9.5, mat: 'WebFluid',     qty: 1, color: 0x44aaff },
 ] as const
 
 export class HomeBaseScene3D {
-  static readonly LEFT   = -W / 2         // -16
-  static readonly RIGHT  =  W / 2         // +16
-  static readonly BACK   = -D / 2         // -4.25
-  static readonly FRONT  =  D / 2         // +4.25
+  static readonly LEFT   = -W / 2         // -11
+  static readonly RIGHT  =  W / 2         // +11
+  static readonly BACK   = -D / 2         // -11
+  static readonly FRONT  =  D / 2         // +11
 
-  static readonly WORKBENCH_X    =  5.4
-  static readonly CARD_X         =  9.2
-  static readonly GIFT_X         = 11.0
-  static readonly TOOTHPICK_X    = -0.8
-  static readonly OBJ_Z          =  2.6
-  static readonly SPAWN_X        = -10.0
-  static readonly EXIT_TRIGGER_X = -15.5
+  static readonly WORKBENCH_X    = -5.0
+  static readonly WORKBENCH_Z    = -7.5
+  static readonly CARD_X         =  9.0
+  static readonly CARD_Z         =  5.5
+  static readonly GIFT_X         =  9.0
+  static readonly GIFT_Z         = -4.5
+  static readonly TOOTHPICK_X    = -3.0
+  static readonly TOOTHPICK_Z    =  8.5
+  static readonly OBJ_Z          =  0.0   // legacy compat (unused)
+  static readonly SPAWN_X        = -8.5   // west side — returning from colony
+  static readonly EXIT_TRIGGER_X = -10.2  // just inside the west portal
 
   enemies: Enemy3D[] = []
 
@@ -55,9 +59,9 @@ export class HomeBaseScene3D {
     this.gradientMap = gradientMap
 
     physicsWorld.bounds = {
-      minX: HomeBaseScene3D.LEFT - 1,
+      minX: HomeBaseScene3D.LEFT  + 0.3,
       maxX: HomeBaseScene3D.RIGHT - 0.3,
-      minZ: HomeBaseScene3D.BACK + 0.3,
+      minZ: HomeBaseScene3D.BACK  + 0.3,
       maxZ: HomeBaseScene3D.FRONT - 0.3,
     }
 
@@ -82,26 +86,28 @@ export class HomeBaseScene3D {
   // ── Ground ──────────────────────────────────────────────────────────────────
 
   private buildGround(): void {
+    // Circular floor (16-sided polygon gives a smooth den feel)
+    const R = 10.5
     const mat = new THREE.MeshToonMaterial({ color: 0x3a2010, gradientMap: this.gradientMap })
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(W, D).rotateX(-Math.PI / 2), mat)
+    const mesh = new THREE.Mesh(new THREE.CircleGeometry(R, 16).rotateX(-Math.PI / 2), mat)
     mesh.receiveShadow = true
     this.add(mesh)
 
-    const strip = new THREE.Mesh(
-      new THREE.PlaneGeometry(W, 0.8).rotateX(-Math.PI / 2),
-      new THREE.MeshToonMaterial({ color: 0x281508, gradientMap: this.gradientMap })
+    // Dark ring border just inside the walls
+    const borderMat = new THREE.MeshBasicMaterial({ color: 0x281508 })
+    const border = new THREE.Mesh(
+      new THREE.RingGeometry(R - 0.8, R, 16).rotateX(-Math.PI / 2), borderMat
     )
-    strip.position.set(0, 0.005, HomeBaseScene3D.BACK + 0.4)
-    strip.receiveShadow = true
-    this.add(strip)
+    border.position.y = 0.004
+    this.add(border)
 
     const patchMat = new THREE.MeshBasicMaterial({ color: 0x2a1808 })
     const patchPositions = [
-      [-12, 1.5], [-8, -1.0], [-3, 2.2], [1, -0.8], [4, 1.8], [7, -1.5],
-      [12, 2.0], [-5, -3.0], [0, 0.5],
+      [-7, 3.5], [-3, -6], [2, 5], [6, -3], [-5, -2],
+      [8, 2], [-8, -5], [0, -8], [4, 8], [-2, 7],
     ]
     for (const [px, pz] of patchPositions) {
-      const r = 0.3 + Math.random() * 0.4
+      const r = 0.3 + Math.random() * 0.45
       const patch = new THREE.Mesh(new THREE.CircleGeometry(r, 10).rotateX(-Math.PI / 2), patchMat)
       patch.position.set(px, 0.006, pz)
       this.add(patch)
@@ -114,29 +120,39 @@ export class HomeBaseScene3D {
     const wallMat = new THREE.MeshToonMaterial({ color: 0x4a2e18, gradientMap: this.gradientMap })
     const capMat  = new THREE.MeshToonMaterial({ color: 0x5a3a20, gradientMap: this.gradientMap })
 
-    this.addWallBox(W + 0.6, WALL_H, 0.4,         0,                   WALL_H / 2, HomeBaseScene3D.BACK,  wallMat)
-    this.addWallBox(0.4,     WALL_H, D + 0.6,      HomeBaseScene3D.RIGHT, WALL_H / 2, 0,                  wallMat)
-    this.addWallBox(W + 0.6, WALL_H * 0.4, 0.3,   0,                   WALL_H * 0.2, HomeBaseScene3D.FRONT, wallMat)
+    // 8 wall panels forming an octagonal chamber (radius ≈10.8)
+    const R = 10.8, N = 8
+    for (let i = 0; i < N; i++) {
+      const a0 = (i / N) * Math.PI * 2
+      const a1 = ((i + 1) / N) * Math.PI * 2
+      const mx = Math.cos((a0 + a1) / 2) * R
+      const mz = Math.sin((a0 + a1) / 2) * R
+      const chord = 2 * R * Math.sin(Math.PI / N) + 0.2
 
-    this.addWallBox(W + 0.6, 0.12, 0.6,  0,                   WALL_H + 0.06, HomeBaseScene3D.BACK,  capMat)
-    this.addWallBox(0.6,     0.12, D + 0.6, HomeBaseScene3D.RIGHT, WALL_H + 0.06, 0,                  capMat)
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(chord, WALL_H, 0.4), wallMat)
+      panel.position.set(mx, WALL_H / 2, mz)
+      panel.rotation.y = -(a0 + a1) / 2
+      panel.castShadow = true; panel.receiveShadow = true
+      this.add(panel)
 
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(chord + 0.1, 0.12, 0.5), capMat)
+      cap.position.set(mx, WALL_H + 0.06, mz)
+      cap.rotation.y = panel.rotation.y
+      this.add(cap)
+    }
+
+    // Stone rubble at base of walls
     const stoneMat = new THREE.MeshToonMaterial({ color: 0x3d2514, gradientMap: this.gradientMap })
-    for (const sx of [-14, -9, -4, 1, 6, 11, 15]) {
-      const h = 0.2 + Math.random() * 0.35
-      const stone = new THREE.Mesh(new THREE.BoxGeometry(0.9, h, 0.15), stoneMat)
-      stone.position.set(sx, h / 2 + 0.05, HomeBaseScene3D.BACK + 0.15)
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2 + 0.2
+      const r = 9.4 + Math.random() * 0.6
+      const h = 0.15 + Math.random() * 0.3
+      const stone = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.18), stoneMat)
+      stone.position.set(Math.cos(angle) * r, h / 2 + 0.04, Math.sin(angle) * r)
+      stone.rotation.y = angle
       stone.castShadow = true
       this.add(stone)
     }
-  }
-
-  private addWallBox(w: number, h: number, d: number, x: number, y: number, z: number, mat: THREE.Material): void {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
-    mesh.position.set(x, y, z)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-    this.add(mesh)
   }
 
   // ── Workbench ────────────────────────────────────────────────────────────────
@@ -145,7 +161,7 @@ export class HomeBaseScene3D {
     const woodMat = new THREE.MeshToonMaterial({ color: 0x5c3d1e, gradientMap: this.gradientMap })
     const darkMat = new THREE.MeshToonMaterial({ color: 0x3b2510, gradientMap: this.gradientMap })
     const bx = HomeBaseScene3D.WORKBENCH_X
-    const bz = HomeBaseScene3D.OBJ_Z
+    const bz = HomeBaseScene3D.WORKBENCH_Z
 
     const top = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.12, 0.9), woodMat)
     top.position.set(bx, 0.52, bz); top.castShadow = true; this.add(top)
@@ -177,54 +193,53 @@ export class HomeBaseScene3D {
   // ── Birthday area ────────────────────────────────────────────────────────────
 
   private buildBirthdayArea(): void {
-    const cz = HomeBaseScene3D.OBJ_Z
-
-    // ── Birthday card ───────────────────────────────────────────────────────
+    // ── Birthday card (east-north wall) ────────────────────────────────────
     const cardGroup = new THREE.Group()
     const cardMat = new THREE.MeshToonMaterial({ color: 0xeeddbb, gradientMap: this.gradientMap })
     const cardLine = new THREE.MeshToonMaterial({ color: 0xcc4444, gradientMap: this.gradientMap })
+    const cx = HomeBaseScene3D.CARD_X, ccz = HomeBaseScene3D.CARD_Z
     const card = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.5, 0.04), cardMat)
-    card.position.set(HomeBaseScene3D.CARD_X, 0.28, cz)
+    card.position.set(cx, 0.28, ccz)
     card.rotation.y = 0.15; card.castShadow = true
     cardGroup.add(card)
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.06, 0.05), cardLine)
-    stripe.position.set(HomeBaseScene3D.CARD_X, 0.38, cz + 0.01)
+    stripe.position.set(cx, 0.38, ccz + 0.01)
     stripe.rotation.y = 0.15; cardGroup.add(stripe)
     const cardGlow = new THREE.Mesh(
       new THREE.RingGeometry(0.3, 0.4, 20).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({ color: 0xcc8844, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
     )
-    cardGlow.position.set(HomeBaseScene3D.CARD_X, 0.01, cz); cardGroup.add(cardGlow)
+    cardGlow.position.set(cx, 0.01, ccz); cardGroup.add(cardGlow)
     this.cardGroup = cardGroup
     this.threeScene.add(cardGroup); this.tracked.push(cardGroup)
 
-    // ── Gift box ────────────────────────────────────────────────────────────
+    // ── Gift box (east-south wall) ──────────────────────────────────────────
     const giftGroup = new THREE.Group()
     const giftMat   = new THREE.MeshToonMaterial({ color: 0xdd4488, gradientMap: this.gradientMap })
     const ribbonMat = new THREE.MeshToonMaterial({ color: 0xffee44, gradientMap: this.gradientMap })
-    const gx = HomeBaseScene3D.GIFT_X
+    const gx = HomeBaseScene3D.GIFT_X, gz = HomeBaseScene3D.GIFT_Z
 
     const gift = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.55), giftMat)
-    gift.position.set(gx, 0.28, cz); gift.castShadow = true; giftGroup.add(gift)
+    gift.position.set(gx, 0.28, gz); gift.castShadow = true; giftGroup.add(gift)
     const ribH = new THREE.Mesh(new THREE.BoxGeometry(0.57, 0.09, 0.09), ribbonMat)
-    ribH.position.set(gx, 0.28, cz); giftGroup.add(ribH)
+    ribH.position.set(gx, 0.28, gz); giftGroup.add(ribH)
     const ribV = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.57, 0.09), ribbonMat)
-    ribV.position.set(gx, 0.28, cz); giftGroup.add(ribV)
+    ribV.position.set(gx, 0.28, gz); giftGroup.add(ribV)
     for (const angle of [0, Math.PI / 2]) {
       const bow = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.035, 6, 12), ribbonMat)
-      bow.position.set(gx, 0.62, cz)
+      bow.position.set(gx, 0.62, gz)
       bow.rotation.x = Math.PI / 2; bow.rotation.z = angle; giftGroup.add(bow)
     }
     const giftGlow = new THREE.Mesh(
       new THREE.RingGeometry(0.35, 0.48, 20).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({ color: 0xeeeeff, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
     )
-    giftGlow.position.set(gx, 0.01, cz); giftGroup.add(giftGlow)
+    giftGlow.position.set(gx, 0.01, gz); giftGroup.add(giftGlow)
     this.giftGroup = giftGroup
     this.threeScene.add(giftGroup); this.tracked.push(giftGroup)
 
-    const bdLight = new THREE.PointLight(0xff88cc, 0.5, 4.0)
-    bdLight.position.set((HomeBaseScene3D.CARD_X + HomeBaseScene3D.GIFT_X) / 2, 1.2, cz)
+    const bdLight = new THREE.PointLight(0xff88cc, 0.5, 4.5)
+    bdLight.position.set(gx - 1.5, 1.2, (ccz + gz) / 2)
     this.add(bdLight)
   }
 
@@ -232,7 +247,7 @@ export class HomeBaseScene3D {
 
   private buildToothpickPickup(): void {
     const bx = HomeBaseScene3D.TOOTHPICK_X
-    const bz = HomeBaseScene3D.OBJ_Z
+    const bz = HomeBaseScene3D.TOOTHPICK_Z
 
     const group = new THREE.Group()
     group.position.set(bx, 0, bz)
@@ -263,7 +278,7 @@ export class HomeBaseScene3D {
   // ── Exit portal (left — to Ant Colony) ───────────────────────────────────────
 
   private buildExitPortal(): void {
-    const px = HomeBaseScene3D.LEFT + 0.25
+    const px = HomeBaseScene3D.LEFT + 0.3
     const pz = 0
 
     const frameMat = new THREE.MeshToonMaterial({
@@ -299,7 +314,7 @@ export class HomeBaseScene3D {
   // ── Blocked portal (right — future zone, sealed) ─────────────────────────────
 
   private buildBlockedPortal(): void {
-    const px = HomeBaseScene3D.RIGHT - 0.25
+    const px = HomeBaseScene3D.RIGHT - 0.3
     const pz = 0
 
     // Dormant frame — dark gray, no emissive glow
@@ -339,10 +354,10 @@ export class HomeBaseScene3D {
     const capMat    = new THREE.MeshToonMaterial({ color: 0xcc5522, gradientMap: this.gradientMap })
 
     const pebbleData: [number, number, number][] = [
-      [-13, -1.2, 0.18], [-9, 2.8, 0.14], [-5, -2.5, 0.22],
-      [2.5, -1.8, 0.16], [8, -2.2, 0.20], [12.5, 1.0, 0.15],
-      [-6, 0.5, 0.19], [3, 3.5, 0.13], [-1, -3.5, 0.17],
-      [15, -1.5, 0.16], [-14.5, 3.0, 0.12],
+      [-7, 4.5, 0.18], [-4, -7, 0.14], [2, 6, 0.22],
+      [6, -4, 0.16], [-2, -5, 0.20], [8, 3, 0.15],
+      [-8, -4, 0.19], [3, -9, 0.13], [-1, 8, 0.17],
+      [0, 5, 0.16], [-5, 7, 0.12],
     ]
     for (const [px, pz, r] of pebbleData) {
       const pebble = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), pebbleMat)
@@ -351,23 +366,24 @@ export class HomeBaseScene3D {
       pebble.castShadow = true; this.add(pebble)
     }
 
-    for (const [tx, tz, tl, tr] of [[-10, -1.2, 2.5, 0.2], [4, -3.5, 1.8, -0.4], [13, 2.0, 2.2, 0.6]] as [number,number,number,number][]) {
+    for (const [tx, tz, tl, tr] of [[-6, -3, 2.2, 0.2], [3, 7, 1.8, -0.4], [7, -6, 2.0, 0.6]] as [number,number,number,number][]) {
       const twig = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, tl, 8), twigMat)
       twig.position.set(tx, 0.07, tz)
       twig.rotation.z = Math.PI / 2; twig.rotation.y = tr
       twig.castShadow = true; this.add(twig)
     }
 
-    for (const [fx, fz] of [[-14, -3.2], [-4, 3.8], [6.5, -3.8], [13, 3.5], [-2, -3.8]] as [number,number][]) {
+    for (const [fx, fz] of [[-8, 7], [-9, -6], [7, 7], [8, -7], [-1, -9]] as [number,number][]) {
       const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.28, 7), fungMat)
       stem.position.set(fx, 0.14, fz); stem.castShadow = true; this.add(stem)
       const cap = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2), capMat)
       cap.position.set(fx, 0.3, fz); cap.castShadow = true; this.add(cap)
     }
 
-    this.buildCobweb(-15.6, HomeBaseScene3D.BACK + 0.05, 0.9)
-    this.buildCobweb(HomeBaseScene3D.RIGHT - 0.05, HomeBaseScene3D.BACK + 0.2, 0.7)
-    this.buildCobweb(-8, HomeBaseScene3D.BACK + 0.08, 0.5)
+    // Cobwebs in alcove corners
+    this.buildCobweb(-9.5,  9.5, 0.9)
+    this.buildCobweb( 9.5, -9.5, 0.7)
+    this.buildCobweb(-9.5, -9.5, 0.6)
   }
 
   // ── Party decorations (extra birthday atmosphere) ────────────────────────────
@@ -375,9 +391,9 @@ export class HomeBaseScene3D {
   private buildPartyExtra(): void {
     const gm = this.gradientMap
 
-    // Birthday cake — stacked cylinders near the gift
-    const cakeX = HomeBaseScene3D.GIFT_X + 1.8
-    const cakeZ = HomeBaseScene3D.OBJ_Z
+    // Birthday cake — near the gift
+    const cakeX = HomeBaseScene3D.GIFT_X - 1.5
+    const cakeZ = HomeBaseScene3D.GIFT_Z - 1.5
     const cakeMat   = new THREE.MeshToonMaterial({ color: 0xeeaacc, gradientMap: gm })
     const icingMat  = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: gm })
     const candleMat = new THREE.MeshToonMaterial({ color: 0xffee44, gradientMap: gm })
@@ -404,16 +420,17 @@ export class HomeBaseScene3D {
       leg.position.set(chX + lz, 0.1, chZ + lx); leg.rotation.z = 1.3; this.add(leg)
     }
 
-    // Silk streamers — thin semi-transparent colored strips
+    // Silk streamers — radially arranged around chamber
     const streamerColors = [0xff6688, 0x88eecc, 0xffee44, 0x88aaff]
     for (let i = 0; i < 6; i++) {
       const color = streamerColors[i % streamerColors.length]
       const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55 })
-      const sx  = -14 + i * 4.5
-      const geo = new THREE.BoxGeometry(0.06, 0.04, 1.8)
+      const angle = (i / 6) * Math.PI * 2
+      const r = 8.5
+      const geo = new THREE.BoxGeometry(0.06, 0.04, 2.0)
       const s   = new THREE.Mesh(geo, mat)
-      s.position.set(sx, WALL_H * 0.85, HomeBaseScene3D.BACK + 0.5)
-      s.rotation.y = 0.15 + i * 0.12
+      s.position.set(Math.cos(angle) * r, WALL_H * 0.85, Math.sin(angle) * r)
+      s.rotation.y = -angle
       this.add(s)
     }
   }
@@ -507,11 +524,14 @@ export class HomeBaseScene3D {
   // ── Lighting ──────────────────────────────────────────────────────────────────
 
   private buildLighting(): void {
-    const ambient = new THREE.AmbientLight(0x553322, 0.3)
-    this.add(ambient)
-    const sunCrack = new THREE.DirectionalLight(0xffcc88, 0.5)
-    sunCrack.position.set(15, 10, -5)
+    this.add(new THREE.AmbientLight(0x553322, 0.3))
+    const sunCrack = new THREE.DirectionalLight(0xffcc88, 0.45)
+    sunCrack.position.set(8, 10, -5)
     this.add(sunCrack)
+    // Warm center lamp — makes chamber feel inhabited
+    const centerLight = new THREE.PointLight(0xffaa44, 0.3, 14)
+    centerLight.position.set(0, 2.0, 0)
+    this.add(centerLight)
   }
 
   // ── Public API ────────────────────────────────────────────────────────────────
@@ -522,36 +542,34 @@ export class HomeBaseScene3D {
 
   nearWorkbench(playerX: number, playerZ: number): boolean {
     const dx = playerX - HomeBaseScene3D.WORKBENCH_X
-    const dz = playerZ - HomeBaseScene3D.OBJ_Z
-    return dx * dx + dz * dz < 0.6 * 0.6
+    const dz = playerZ - HomeBaseScene3D.WORKBENCH_Z
+    return dx * dx + dz * dz < 0.7 * 0.7
   }
 
   nearToothpick(playerX: number, playerZ: number): boolean {
     if (!this.toothpickAvailable) return false
     const dx = playerX - HomeBaseScene3D.TOOTHPICK_X
-    const dz = playerZ - HomeBaseScene3D.OBJ_Z
-    return dx * dx + dz * dz < 0.6 * 0.6
+    const dz = playerZ - HomeBaseScene3D.TOOTHPICK_Z
+    return dx * dx + dz * dz < 0.7 * 0.7
   }
 
   nearBirthdayCard(playerX: number, playerZ: number): boolean {
     if (!this.cardAvailable) return false
     const dx = playerX - HomeBaseScene3D.CARD_X
-    const dz = playerZ - HomeBaseScene3D.OBJ_Z
-    return dx * dx + dz * dz < 0.7 * 0.7
+    const dz = playerZ - HomeBaseScene3D.CARD_Z
+    return dx * dx + dz * dz < 0.8 * 0.8
   }
 
   nearGift(playerX: number, playerZ: number): boolean {
     if (!this.giftAvailable) return false
     const dx = playerX - HomeBaseScene3D.GIFT_X
-    const dz = playerZ - HomeBaseScene3D.OBJ_Z
-    return dx * dx + dz * dz < 0.7 * 0.7
+    const dz = playerZ - HomeBaseScene3D.GIFT_Z
+    return dx * dx + dz * dz < 0.8 * 0.8
   }
 
   webWallHitTest(x: number, z: number): boolean {
-    return x <= HomeBaseScene3D.LEFT  + 0.5 ||
-           x >= HomeBaseScene3D.RIGHT - 0.5 ||
-           z <= HomeBaseScene3D.BACK  + 0.3 ||
-           z >= HomeBaseScene3D.FRONT - 0.3
+    // Circular chamber (radius ≈10.5) — test if outside the chamber
+    return x * x + z * z > 10.0 * 10.0
   }
 
   pickupToothpick(): void {

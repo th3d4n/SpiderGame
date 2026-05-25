@@ -119,7 +119,7 @@ scene.add(playerLight)
 
 if (!saveSystem.hasSave()) {
   registry.set('legTier', 0)
-  registry.set('weaponInventory', [WeaponType.Sword])
+  registry.set('weaponInventory', [])      // new game: no weapons yet
   registry.set('craftingInventory', {
     SilkThread: 5, ChitinShard: 5, WebFluid: 4,
   })
@@ -143,8 +143,6 @@ if (!saveSystem.hasSave()) {
       const wt = savedSlots[i] as WeaponType
       if (wt && wt !== WeaponType.Empty) webbs.weaponSystem.equip(i, wt)
     }
-  } else {
-    webbs.weaponSystem.equip(0, WeaponType.Sword)
   }
 
   const savedConsumables = registry.get<Record<string, number>>('consumableInventory')
@@ -173,22 +171,26 @@ textDisplay.onClose  = () => {
   gamePaused = false
   if (pendingTransitionResume) { pendingTransitionResume(); pendingTransitionResume = null }
 }
-pickupCelebration.onClose = () => { gamePaused = false }
+pickupCelebration.onClose = () => { gamePaused = false; celebZoom = false }
 
 craftingMenu.onFirstDiscover = (wt) => {
   craftingMenu.close()
   pickupCelebration.show(wt)
-  gamePaused = true
+  gamePaused  = true
+  celebZoom   = true
+  particles.burst(webbs.group.position, 0xddeeff, 18, 4.5, 0.07)
 }
 
 // ─── Narrative text ───────────────────────────────────────────────────────────
 
 const OPENING_INTRO: TextDisplayData = {
   pages: [
-    'The Den has been a spider colony\nfor as long as anyone can remember.\n\nSilk roads. Packed chambers.\nEight thousand legs, moving at once.',
-    'Three seasons ago, the ants came.\n\nThey tunneled in from the west —\nslow at first, then fast. Six chambers fell.\nThe western passages went dark.',
-    'Most of the colony scattered.\nYour family didn\'t.\n\nYou didn\'t either.',
-    'You are Webbs.\n\nToday is your birthday.\n\nHead east — your family left something\nfor you at the end of the Den.',
+    'Webbs was born wrong.',
+    'The colony called him broken.\n\nEight legs.\nNone of them his.',
+    'His mother built him legs.\n\nChitin and thread.\nSilk wrapped tight around hollow bone.',
+    'He made them better.\n\nEvery moult, he rebuilt.\nEvery season, they moved faster.',
+    'Today is Molt Day.\n\nHe is seventeen moults old.\nHis mother left something for him at the Den.',
+    'They never got the chance to see.',
   ],
   title:       '— NO LEG LEFT TO STAND ON —',
   accentColor: '#9966cc',
@@ -271,6 +273,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
   saveSystem.save()
 
   webLauncher.release()
+  webLauncher.clearWraps()
   weaponUseSystem.stopFlame()
 
   const ZONE_TITLES: Record<ZoneId, string> = {
@@ -369,6 +372,7 @@ const clock        = new THREE.Clock()
 const camLookTarget = new THREE.Vector3()
 let cameraShakeRemaining = 0
 let cameraShakeIntensity = 0
+let celebZoom        = false   // true while pickup celebration is open
 
 function gameLoop() {
   requestAnimationFrame(gameLoop)
@@ -440,7 +444,8 @@ function gameLoop() {
           if (!registry.get<boolean>('tutorialToothpickSeen')) {
             registry.set('tutorialToothpickSeen', true)
             pickupCelebration.show(WeaponType.BoxingGloves, TUTORIAL_TOOTHPICK.pages, TUTORIAL_TOOTHPICK.title, TUTORIAL_TOOTHPICK.accentColor)
-            gamePaused = true
+            gamePaused = true; celebZoom = true
+            particles.burst(webbs.group.position, 0xddccaa, 16, 4.0, 0.07)
           } else {
             pickupNotify.notify('Toothpick Stabber', 'weapon found', '#ddccaa')
           }
@@ -456,7 +461,8 @@ function gameLoop() {
           if (!registry.get<boolean>('tutorialWebLauncherSeen')) {
             registry.set('tutorialWebLauncherSeen', true)
             pickupCelebration.show(WeaponType.WebLauncher, TUTORIAL_WEB_LAUNCHER.pages, TUTORIAL_WEB_LAUNCHER.title, TUTORIAL_WEB_LAUNCHER.accentColor)
-            gamePaused = true
+            gamePaused = true; celebZoom = true
+            particles.burst(webbs.group.position, 0xddeeff, 20, 5.0, 0.07)
           } else {
             pickupNotify.notify('Web Launcher', 'already found', '#ddeeff')
           }
@@ -604,6 +610,14 @@ function gameLoop() {
       if (dx * dx + dz * dz < touchDist * touchDist) {
         webbs.damage(enemy.config.damage)
         enemy.contactCooldown = 0.75
+        // Player damage feedback
+        hud.flashDamageVignette()
+        cameraShakeRemaining = 0.09
+        cameraShakeIntensity = 0.005
+        // Push player away from enemy
+        const dlen = Math.hypot(dx, dz) || 1
+        webbs.collisionBody.velocity.x += (dx / dlen) * 3.5
+        webbs.collisionBody.velocity.z += (dz / dlen) * 3.5
       }
     }
   } else {
@@ -698,6 +712,7 @@ function gameLoop() {
     const acs = activeScene as AntColonyScene3D
     acs.fog.update(webbs.collisionBody.x, webbs.collisionBody.z)
     acs.tickVisuals(delta, webbs.collisionBody.x, webbs.collisionBody.z)
+    acs.updateWallOcclusion(camera.position.x, camera.position.z, webbs.collisionBody.x, webbs.collisionBody.z)
 
     // Dead-end room triggers (spike / ambush / loot)
     const deadEndResult = acs.checkDeadEndTriggers(webbs.collisionBody.x, webbs.collisionBody.z)
@@ -737,6 +752,13 @@ function gameLoop() {
   )
   camera.lookAt(camLookTarget)
 
+  // Pickup celebration zoom in
+  const targetZoom = celebZoom ? 2.2 : 1.6
+  if (Math.abs(camera.zoom - targetZoom) > 0.002) {
+    camera.zoom += (targetZoom - camera.zoom) * 0.08
+    camera.updateProjectionMatrix()
+  }
+
   if (cameraShakeRemaining > 0) {
     cameraShakeRemaining -= delta
     const s = cameraShakeIntensity
@@ -761,7 +783,45 @@ function gameLoop() {
   composer.render()
 }
 
-// ─── Main Menu ────────────────────────────────────────────────────────────────
+// ─── Title Menu ───────────────────────────────────────────────────────────────
+
+function dismissTitleMenu(el: HTMLElement): void {
+  el.style.opacity = '0'
+  setTimeout(() => { el.style.display = 'none' }, 420)
+  mainMenuActive = false
+}
+
+function initNewGame(el: HTMLElement): void {
+  // Wipe save + reset all in-memory state
+  saveSystem.deleteSave()
+  registry.set('legTier', 0)
+  registry.set('weaponInventory', [])
+  registry.set('craftingInventory', { SilkThread: 5, ChitinShard: 5, WebFluid: 4 })
+  registry.set('openingCutsceneSeen', false)
+  registry.set('webThrowerFound', false)
+  registry.set('toothpickCollected', false)
+  registry.set('birthdayCardRead', false)
+  registry.set('tutorialToothpickSeen', false)
+  registry.set('tutorialWebLauncherSeen', false)
+  registry.set('antColonyFirstVisit', false)
+  webbs.hasWebLauncher = false
+  for (let i = 0; i < 8; i++) webbs.weaponSystem.unequip(i)
+  webbs.resetHp()
+
+  dismissTitleMenu(el)
+  registry.set('openingCutsceneSeen', true)
+  textDisplay.show(OPENING_INTRO)
+}
+
+function initContinue(el: HTMLElement): void {
+  dismissTitleMenu(el)
+  if (!registry.get<boolean>('openingCutsceneSeen')) {
+    registry.set('openingCutsceneSeen', true)
+    textDisplay.show(OPENING_INTRO)
+  } else {
+    gamePaused = false
+  }
+}
 
 const mainMenuEl = (() => {
   const el = document.createElement('div')
@@ -771,25 +831,47 @@ const mainMenuEl = (() => {
     'font-family:monospace; transition:opacity 0.4s;',
   ].join('')
 
-  const blinkStyle = document.createElement('style')
-  blinkStyle.textContent = '@keyframes mm-blink { 0%,100%{opacity:1} 50%{opacity:0} }'
-  document.head.appendChild(blinkStyle)
+  const style = document.createElement('style')
+  style.textContent = [
+    '@keyframes mm-blink { 0%,100%{opacity:1} 50%{opacity:0} }',
+    '.mm-btn { font-family:monospace; font-size:15px; letter-spacing:3px; padding:11px 38px;',
+    '  border:1px solid; background:#0d0d1a; cursor:pointer; transition:all 0.12s; }',
+    '.mm-btn:hover { background:#1a1a2e; }',
+    '.mm-btn.active { color:#aaaacc; border-color:#44447a; }',
+    '.mm-btn.inactive { color:#3a3a55; border-color:#22223a; cursor:default; }',
+  ].join('\n')
+  document.head.appendChild(style)
 
   const title = document.createElement('div')
-  title.style.cssText = 'color:#ffffff; font-size:28px; letter-spacing:4px; text-transform:uppercase; margin-bottom:10px;'
+  title.style.cssText = 'color:#ffffff; font-size:26px; letter-spacing:4px; text-transform:uppercase; margin-bottom:8px;'
   title.textContent = 'NO LEG LEFT TO STAND ON'
 
   const sub = document.createElement('div')
-  sub.style.cssText = 'color:#5555aa; font-size:13px; letter-spacing:3px; margin-bottom:56px;'
+  sub.style.cssText = 'color:#5555aa; font-size:12px; letter-spacing:3px; margin-bottom:52px;'
   sub.textContent = 'NoLegs'
 
-  const prompt = document.createElement('div')
-  prompt.style.cssText = 'color:#aaaacc; font-size:16px; letter-spacing:2px; animation:mm-blink 1.2s step-end infinite;'
-  prompt.textContent = '[ PRESS SPACE TO START ]'
+  const btnWrap = document.createElement('div')
+  btnWrap.style.cssText = 'display:flex; flex-direction:column; align-items:center; gap:14px;'
 
+  const newBtn = document.createElement('div')
+  newBtn.className = 'mm-btn active'
+  newBtn.textContent = 'NEW GAME'
+  newBtn.addEventListener('click', () => initNewGame(el))
+  newBtn.addEventListener('keydown', (e) => { if (e.code === 'Space' || e.code === 'Enter') initNewGame(el) })
+
+  const hasSave = saveSystem.hasSave()
+  const contBtn = document.createElement('div')
+  contBtn.className = `mm-btn ${hasSave ? 'active' : 'inactive'}`
+  contBtn.textContent = 'CONTINUE'
+  if (hasSave) {
+    contBtn.addEventListener('click', () => initContinue(el))
+  }
+
+  btnWrap.appendChild(newBtn)
+  btnWrap.appendChild(contBtn)
   el.appendChild(title)
   el.appendChild(sub)
-  el.appendChild(prompt)
+  el.appendChild(btnWrap)
   document.getElementById('game-container')!.appendChild(el)
   return el
 })()
@@ -798,19 +880,14 @@ const mainMenuEl = (() => {
 
 gameLoop()
 
+// Keyboard navigation for title menu (Space on New Game when no save, or use mouse)
 window.addEventListener('keydown', function onSpace(e: KeyboardEvent) {
-  if (e.code !== 'Space') return
+  if (!mainMenuActive) { window.removeEventListener('keydown', onSpace); return }
+  if (e.code !== 'Space' && e.code !== 'Enter') return
   window.removeEventListener('keydown', onSpace)
-
-  mainMenuEl.style.opacity = '0'
-  setTimeout(() => { mainMenuEl.style.display = 'none' }, 420)
-  mainMenuActive = false
-
-  if (!registry.get<boolean>('openingCutsceneSeen')) {
-    registry.set('openingCutsceneSeen', true)
-    textDisplay.show(OPENING_INTRO)
-    // textDisplay.onClose will set gamePaused = false
+  if (saveSystem.hasSave()) {
+    initContinue(mainMenuEl)
   } else {
-    gamePaused = false
+    initNewGame(mainMenuEl)
   }
 })
