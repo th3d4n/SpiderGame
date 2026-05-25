@@ -7,19 +7,20 @@ const W      = 22    // world width  (x: -11 … +11)
 const D      = 22    // world depth  (z: -11 … +11)
 const WALL_H = 2.0
 
-// 11 material pickups around the chamber perimeter.  Persistent via registry.
+// 11 material pickups distributed across the chamber interior.  Persistent via registry.
+// All positions are within radius 7.5 of center so the player can always reach them.
 const MATERIAL_PICKUPS = [
-  { id: 0,  x:  -8.5, z:  -5.0, mat: 'SilkThread',  qty: 3, color: 0xddeeff },
-  { id: 1,  x:   5.0, z:  -9.5, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
-  { id: 2,  x:   9.5, z:   2.0, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
-  { id: 3,  x:  -3.0, z:   9.5, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
-  { id: 4,  x:   1.5, z:  -9.5, mat: 'ChitinShard',  qty: 3, color: 0x88aa44 },
-  { id: 5,  x:  -9.5, z:   3.5, mat: 'BoneFragment', qty: 2, color: 0xccbbaa },
-  { id: 6,  x:   5.5, z:   9.0, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
-  { id: 7,  x:  -6.0, z:  -8.5, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
-  { id: 8,  x:   9.5, z:  -4.0, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
-  { id: 9,  x:  -9.5, z:  -3.0, mat: 'BoneFragment', qty: 1, color: 0xccbbaa },
-  { id: 10, x:   0.0, z:   9.5, mat: 'WebFluid',     qty: 1, color: 0x44aaff },
+  { id: 0,  x:  -5.0, z:  -5.0, mat: 'SilkThread',  qty: 3, color: 0xddeeff },
+  { id: 1,  x:   4.0, z:  -5.5, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
+  { id: 2,  x:   6.0, z:   2.0, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
+  { id: 3,  x:  -2.5, z:   6.0, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
+  { id: 4,  x:   1.5, z:  -6.5, mat: 'ChitinShard',  qty: 3, color: 0x88aa44 },
+  { id: 5,  x:  -6.0, z:   3.0, mat: 'BoneFragment', qty: 2, color: 0xccbbaa },
+  { id: 6,  x:   4.0, z:   6.0, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
+  { id: 7,  x:  -4.5, z:  -5.5, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
+  { id: 8,  x:   6.5, z:  -3.0, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
+  { id: 9,  x:  -6.5, z:  -2.0, mat: 'BoneFragment', qty: 1, color: 0xccbbaa },
+  { id: 10, x:   0.0, z:   6.5, mat: 'WebFluid',     qty: 1, color: 0x44aaff },
 ] as const
 
 export class HomeBaseScene3D {
@@ -30,10 +31,10 @@ export class HomeBaseScene3D {
 
   static readonly WORKBENCH_X    = -5.0
   static readonly WORKBENCH_Z    = -7.5
-  static readonly CARD_X         =  9.0
-  static readonly CARD_Z         =  5.5
-  static readonly GIFT_X         =  9.0
-  static readonly GIFT_Z         = -4.5
+  static readonly CARD_X         =  5.5
+  static readonly CARD_Z         =  4.5
+  static readonly GIFT_X         =  5.5
+  static readonly GIFT_Z         = -3.0
   static readonly TOOTHPICK_X    = -3.0
   static readonly TOOTHPICK_Z    =  8.5
   static readonly OBJ_Z          =  0.0   // legacy compat (unused)

@@ -54,6 +54,7 @@ export abstract class Enemy3D {
 
     this.group = new THREE.Group()
     this.group.position.set(x, 0, z)
+    this.group.renderOrder = 10   // renders above transparent walls
     threeScene.add(this.group)
 
     this.collisionBody = physicsWorld.add({

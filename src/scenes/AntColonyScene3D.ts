@@ -36,8 +36,10 @@ const DIV_GAPS: ReadonlyArray<ReadonlyArray<number>> = [
   [-14, 0, 14],          // C3–C4: far ends + center
 ]
 
-const RESPAWN = 22
-const CULL_R  = 14
+const CULL_R = 14
+
+const SPAWN_DELAY:  Record<'entry' | 'mid' | 'deep', number> = { entry: 15, mid: 8, deep: 2 }
+const RESPAWN_TIME: Record<'entry' | 'mid' | 'deep', number> = { entry: 45, mid: 25, deep: 15 }
 
 // ── Dead-end rooms ─────────────────────────────────────────────────────────────
 // Alcoves that branch off the outer corridors (C0 / C4) in the Z direction,
@@ -72,38 +74,33 @@ const DEAD_END_DATA: Array<{
 ]
 
 // ── Enemy spawns — sparse near home portal (x≈+18), dense near boss (x≈-18) ──
-// ant_worker: fast swarmers placed in clusters; jumping_spider: mid-range leapers
+// No spawn point with x > 13.5 (must be 5wu clear of entry portal at x=18.5).
 const SPAWN_DATA: Array<{ kind: 'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'; x: number; cz: number }> = [
-  // Corridor 0 (z=-10) — boss-heavy left, light on right
-  { kind: 'centipede',     x: -18, cz: -10 }, { kind: 'beetle',        x: -14, cz: -10 },
-  { kind: 'ant_worker',    x: -10, cz: -10 }, { kind: 'ant_worker',    x:  -6, cz: -10 },
-  { kind: 'beetle',        x:  -2, cz: -10 }, { kind: 'jumping_spider', x:   3, cz: -10 },
-  { kind: 'centipede',     x:   8, cz: -10 }, { kind: 'beetle',        x:  14, cz: -10 },
-  { kind: 'centipede',     x:  17, cz: -10 },
+  // Corridor 0 (z=-10)
+  { kind: 'centipede',      x: -18, cz: -10 }, { kind: 'beetle',         x: -14, cz: -10 },
+  { kind: 'ant_worker',     x: -10, cz: -10 }, { kind: 'ant_worker',     x:  -6, cz: -10 },
+  { kind: 'beetle',         x:  -2, cz: -10 }, { kind: 'jumping_spider', x:   3, cz: -10 },
+  { kind: 'centipede',      x:   8, cz: -10 },
   // Corridor 1 (z=-5)
-  { kind: 'centipede',     x: -17, cz:  -5 }, { kind: 'beetle',        x: -13, cz:  -5 },
-  { kind: 'ant_worker',    x:  -9, cz:  -5 }, { kind: 'beetle',        x:  -5, cz:  -5 },
-  { kind: 'ant_worker',    x:  -1, cz:  -5 }, { kind: 'jumping_spider', x:   4, cz:  -5 },
-  { kind: 'beetle',        x:   9, cz:  -5 }, { kind: 'centipede',     x:  15, cz:  -5 },
-  { kind: 'centipede',     x:  18, cz:  -5 },
-  // Corridor 2 (entry, z=0) — open near home portal, enemies cluster mid-to-boss
-  { kind: 'centipede',     x: -18, cz:   0 }, { kind: 'beetle',        x: -13, cz:   0 },
-  { kind: 'ant_worker',    x:  -8, cz:   0 }, { kind: 'ant_worker',    x:  -4, cz:   0 },
-  { kind: 'beetle',        x:   1, cz:   0 }, { kind: 'jumping_spider', x:   5, cz:   0 },
-  { kind: 'centipede',     x:  10, cz:   0 }, { kind: 'centipede',     x:  16, cz:   0 },
-  { kind: 'beetle',        x:  18, cz:   0 },
+  { kind: 'centipede',      x: -17, cz:  -5 }, { kind: 'beetle',         x: -13, cz:  -5 },
+  { kind: 'ant_worker',     x:  -9, cz:  -5 }, { kind: 'beetle',         x:  -5, cz:  -5 },
+  { kind: 'ant_worker',     x:  -1, cz:  -5 }, { kind: 'jumping_spider', x:   4, cz:  -5 },
+  { kind: 'beetle',         x:   9, cz:  -5 },
+  // Corridor 2 (entry, z=0)
+  { kind: 'centipede',      x: -18, cz:   0 }, { kind: 'beetle',         x: -13, cz:   0 },
+  { kind: 'ant_worker',     x:  -8, cz:   0 }, { kind: 'ant_worker',     x:  -4, cz:   0 },
+  { kind: 'beetle',         x:   1, cz:   0 }, { kind: 'jumping_spider', x:   5, cz:   0 },
+  { kind: 'centipede',      x:  10, cz:   0 },
   // Corridor 3 (z=+5)
-  { kind: 'centipede',     x: -17, cz:   5 }, { kind: 'beetle',        x: -12, cz:   5 },
-  { kind: 'ant_worker',    x:  -8, cz:   5 }, { kind: 'ant_worker',    x:  -3, cz:   5 },
-  { kind: 'beetle',        x:   2, cz:   5 }, { kind: 'jumping_spider', x:   6, cz:   5 },
-  { kind: 'centipede',     x:  11, cz:   5 }, { kind: 'beetle',        x:  16, cz:   5 },
-  { kind: 'centipede',     x:  18, cz:   5 },
+  { kind: 'centipede',      x: -17, cz:   5 }, { kind: 'beetle',         x: -12, cz:   5 },
+  { kind: 'ant_worker',     x:  -8, cz:   5 }, { kind: 'ant_worker',     x:  -3, cz:   5 },
+  { kind: 'beetle',         x:   2, cz:   5 }, { kind: 'jumping_spider', x:   6, cz:   5 },
+  { kind: 'centipede',      x:  11, cz:   5 },
   // Corridor 4 (z=+10)
-  { kind: 'centipede',     x: -17, cz:  10 }, { kind: 'beetle',        x: -13, cz:  10 },
-  { kind: 'ant_worker',    x:  -9, cz:  10 }, { kind: 'ant_worker',    x:  -4, cz:  10 },
-  { kind: 'beetle',        x:   1, cz:  10 }, { kind: 'jumping_spider', x:   7, cz:  10 },
-  { kind: 'centipede',     x:  12, cz:  10 }, { kind: 'centipede',     x:  16, cz:  10 },
-  { kind: 'beetle',        x:  18, cz:  10 },
+  { kind: 'centipede',      x: -17, cz:  10 }, { kind: 'beetle',         x: -13, cz:  10 },
+  { kind: 'ant_worker',     x:  -9, cz:  10 }, { kind: 'ant_worker',     x:  -4, cz:  10 },
+  { kind: 'beetle',         x:   1, cz:  10 }, { kind: 'jumping_spider', x:   7, cz:  10 },
+  { kind: 'centipede',      x:  12, cz:  10 },
 ]
 
 // ── 20 chests, 6 mimics ────────────────────────────────────────────────────────
@@ -191,11 +188,13 @@ const LANTERN_DATA: Array<{ x: number; cz: number }> = [
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface SpawnRecord {
-  kind:         'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'
-  x:            number
-  z:            number    // world Z (corridor center + small jitter)
-  enemy:        Enemy3D | null
-  respawnTimer: number
+  kind:             'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'
+  zone:             'entry' | 'mid' | 'deep'
+  x:                number
+  z:                number    // world Z (corridor center + small jitter)
+  enemy:            Enemy3D | null
+  spawnDelayTimer:  number   // counts down from initial delay; spawns when reaches 0
+  respawnTimer:     number   // counts down after death before respawn
 }
 
 interface ChestRecord {
@@ -234,6 +233,12 @@ function jitterZ(cz: number, range = 0.8): number {
   return cz + (Math.random() - 0.5) * range
 }
 
+function zoneOf(x: number): 'entry' | 'mid' | 'deep' {
+  if (x > 8)  return 'entry'
+  if (x < -8) return 'deep'
+  return 'mid'
+}
+
 export class AntColonyScene3D {
   static readonly LEFT  = -W / 2          // -20
   static readonly RIGHT =  W / 2          // +20
@@ -250,12 +255,13 @@ export class AntColonyScene3D {
   enemies: Enemy3D[] = []
   fog:     FogOfWarSystem3D
 
-  private threeScene:   THREE.Scene
-  private gradientMap:  THREE.Texture
-  private tracked:      THREE.Object3D[] = []
-  private wallBodies:   CollisionBody[]  = []
-  private dividerWalls: Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
-  private spawnRecords: SpawnRecord[]    = []
+  private threeScene:    THREE.Scene
+  private gradientMap:   THREE.Texture
+  private tracked:       THREE.Object3D[] = []
+  private wallBodies:    CollisionBody[]  = []
+  private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
+  private spawnRecords:  SpawnRecord[]    = []
+  private readonly _occRaycaster = new THREE.Raycaster()
   private freeEnemies:  Enemy3D[]        = []
   private chests:       ChestRecord[]    = []
   private hpModules:    PickupRecord[]   = []
@@ -405,10 +411,11 @@ export class AntColonyScene3D {
         const x0 = breakpoints[bi], x1 = breakpoints[bi + 1]
         const cx = (x0 + x1) / 2, segW = x1 - x0
 
-        // Each divider segment gets its own material instance so opacity is independent
+        // Each divider segment gets its own material instance so opacity is independent.
+        // depthWrite:false prevents Z-fighting when walls fade transparent.
         const segMat = new THREE.MeshToonMaterial({
           color: 0x251a0e, gradientMap: this.gradientMap,
-          transparent: true, opacity: 1.0,
+          transparent: true, opacity: 1.0, depthWrite: false,
         })
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(segW, WALL_H, ht), segMat)
         mesh.position.set(cx, WALL_H / 2, hz)
@@ -428,39 +435,23 @@ export class AntColonyScene3D {
     }
   }
 
-  // Camera-to-player raycast: lerp occluding walls to 0.25 opacity
-  updateWallOcclusion(camX: number, camZ: number, px: number, pz: number): void {
-    for (const dw of this.dividerWalls) {
-      const occluding = this.rayIntersectsAABB2D(camX, camZ, px, pz, dw.x0, dw.x1, dw.zLo, dw.zHi)
-      const target = occluding ? 0.25 : 1.0
-      dw.mat.opacity = dw.mat.opacity + (target - dw.mat.opacity) * 0.18
-    }
-  }
+  // Camera-to-player THREE.Raycaster: lerp occluding walls to 0.15 opacity.
+  updateWallOcclusion(camera: THREE.Camera, playerPos: THREE.Vector3): void {
+    const meshes    = this.dividerWalls.map(dw => dw.mesh)
+    const targetPos = playerPos.clone()
+    targetPos.y    += 0.4
+    const dir  = new THREE.Vector3().subVectors(targetPos, camera.position).normalize()
+    const dist = camera.position.distanceTo(targetPos)
 
-  private rayIntersectsAABB2D(
-    cx: number, cz: number,
-    px: number, pz: number,
-    x0: number, x1: number, zLo: number, zHi: number,
-  ): boolean {
-    const dx = px - cx, dz = pz - cz
-    let tMin = 0, tMax = 1
-    if (Math.abs(dx) < 1e-9) {
-      if (cx < x0 || cx > x1) return false
-    } else {
-      const inv = 1 / dx
-      const t1 = (x0 - cx) * inv, t2 = (x1 - cx) * inv
-      tMin = Math.max(tMin, Math.min(t1, t2))
-      tMax = Math.min(tMax, Math.max(t1, t2))
+    this._occRaycaster.set(camera.position, dir)
+    this._occRaycaster.far = dist
+    const hits      = this._occRaycaster.intersectObjects(meshes, false)
+    const occluding = new Set(hits.map(h => h.object))
+
+    for (const dw of this.dividerWalls) {
+      const target = occluding.has(dw.mesh) ? 0.15 : 1.0
+      dw.mat.opacity = THREE.MathUtils.lerp(dw.mat.opacity, target, 0.18)
     }
-    if (Math.abs(dz) < 1e-9) {
-      if (cz < zLo || cz > zHi) return false
-    } else {
-      const inv = 1 / dz
-      const t1 = (zLo - cz) * inv, t2 = (zHi - cz) * inv
-      tMin = Math.max(tMin, Math.min(t1, t2))
-      tMax = Math.min(tMax, Math.max(t1, t2))
-    }
-    return tMin <= tMax && tMax >= 0 && tMin <= 1
   }
 
   // ── Portals ────────────────────────────────────────────────────────────────────
@@ -709,10 +700,14 @@ export class AntColonyScene3D {
 
   private initSpawns(): void {
     for (const d of SPAWN_DATA) {
-      const z     = jitterZ(d.cz, 1.1)
-      const enemy = this.spawnEnemy(d.kind, d.x, z)
-      this.spawnRecords.push({ kind: d.kind, x: d.x, z, enemy, respawnTimer: 0 })
-      this.enemies.push(enemy)
+      const z    = jitterZ(d.cz, 1.1)
+      const zone = zoneOf(d.x)
+      this.spawnRecords.push({
+        kind: d.kind, zone, x: d.x, z,
+        enemy: null,
+        spawnDelayTimer: SPAWN_DELAY[zone],
+        respawnTimer: 0,
+      })
     }
   }
 
@@ -915,8 +910,10 @@ export class AntColonyScene3D {
         if (s.enemy.isExpired()) {
           s.enemy.cleanup()
           s.enemy        = null
-          s.respawnTimer = RESPAWN
+          s.respawnTimer = RESPAWN_TIME[s.zone]
         }
+      } else if (s.spawnDelayTimer > 0) {
+        s.spawnDelayTimer = Math.max(0, s.spawnDelayTimer - delta)
       } else {
         s.respawnTimer = Math.max(0, s.respawnTimer - delta)
         if (s.respawnTimer <= 0) {

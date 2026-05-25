@@ -22,8 +22,10 @@ export class PickupCelebration3D {
   private tutorialTitle?: string
   private tutorialAccent?: string
 
-  isOpen  = false
+  isOpen     = false
   onClose?: () => void
+
+  private animTimer = 0
 
   constructor(menuOverlay: HTMLElement, textDisplay: TextDisplay3D) {
     this.overlay     = menuOverlay
@@ -64,6 +66,7 @@ export class PickupCelebration3D {
     this.tutorialPages  = tutorialPages ?? []
     this.tutorialTitle  = tutorialTitle
     this.tutorialAccent = tutorialAccent
+    this.animTimer      = 0
 
     const colorNum = WEAPON_COLORS[weaponType]
     const colorHex = `#${colorNum.toString(16).padStart(6, '0')}`
@@ -118,12 +121,10 @@ export class PickupCelebration3D {
     descEl.style.cssText = 'color:#778899; font-size:11px; line-height:1.7; text-align:center; margin-bottom:18px; white-space:pre-wrap;'
     descEl.textContent = desc
 
-    // Dismiss prompt
+    // Hold beat — auto-advances after 2.5s, no skip
     const prompt = document.createElement('div')
     prompt.style.cssText = 'color:#444466; font-size:10px; animation:celeb-blink 1.4s ease-in-out infinite;'
-    prompt.textContent = this.tutorialPages.length > 0
-      ? '[ M ] Tutorial   [ Space ] Skip'
-      : '[ M ] Continue   [ Space ] Dismiss'
+    prompt.textContent = '— — —'
 
     box.appendChild(header)
     box.appendChild(glowWrap)
@@ -136,9 +137,10 @@ export class PickupCelebration3D {
     this.isOpen = true
   }
 
-  update(input: InputManager): void {
+  update(_input: InputManager, delta: number): void {
     if (!this.isOpen) return
-    if (input.justDown('KeyM') || input.justDown('Space')) this.dismiss()
+    this.animTimer += delta
+    if (this.animTimer >= 2.5) this.dismiss()
   }
 
   close(): void {
@@ -158,7 +160,9 @@ export class PickupCelebration3D {
         title:       this.tutorialTitle,
         accentColor: this.tutorialAccent,
       }
-      // textDisplay reuses the same overlay; onClose handles unpausing
+      // Chain onClose so celebZoom is reset when the card is dismissed
+      const prevClose = this.textDisplay.onClose
+      this.textDisplay.onClose = () => { prevClose?.(); this.onClose?.() }
       this.textDisplay.show(data)
     } else {
       this.overlay.style.display = 'none'

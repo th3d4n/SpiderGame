@@ -102,6 +102,7 @@ saveSystem.load()
 // ─── Player ───────────────────────────────────────────────────────────────────
 
 const webbs = new Webbs3D(scene, HomeBaseScene3D.SPAWN_X, 0, gradientMap)
+webbs.group.renderOrder = 10   // renders above transparent corridor walls
 
 // ─── Combat system ────────────────────────────────────────────────────────────
 
@@ -394,7 +395,7 @@ function gameLoop() {
 
   if (equipScreen.isOpen)            equipScreen.update(input)
   else if (craftingMenu.isOpen)      craftingMenu.update(input)
-  else if (pickupCelebration.isOpen) pickupCelebration.update(input)
+  else if (pickupCelebration.isOpen) pickupCelebration.update(input, delta)
   else if (textDisplay.isOpen)       textDisplay.update(input)
   else {
     // ── Dev restart (Backtick) — clears save and reloads ────────────────────
@@ -597,58 +598,7 @@ function gameLoop() {
     }
   }
 
-  // ── Enemy / scene update ─────────────────────────────────────────────────
-
-  if (currentZone !== 'bossRoller') {
-    activeScene.updateEnemies(delta, webbs.collisionBody.x, webbs.collisionBody.z)
-
-    for (const enemy of (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies) {
-      if (enemy.isDead() || enemy.contactCooldown > 0) continue
-      const dx = webbs.collisionBody.x - enemy.collisionBody.x
-      const dz = webbs.collisionBody.z - enemy.collisionBody.z
-      const touchDist = webbs.collisionBody.radius + enemy.config.bodyRadius + 0.05
-      if (dx * dx + dz * dz < touchDist * touchDist) {
-        webbs.damage(enemy.config.damage)
-        enemy.contactCooldown = 0.75
-        // Player damage feedback
-        hud.flashDamageVignette()
-        cameraShakeRemaining = 0.09
-        cameraShakeIntensity = 0.005
-        // Push player away from enemy
-        const dlen = Math.hypot(dx, dz) || 1
-        webbs.collisionBody.velocity.x += (dx / dlen) * 3.5
-        webbs.collisionBody.velocity.z += (dz / dlen) * 3.5
-      }
-    }
-  } else {
-    const bs     = activeScene as BossRollerScene3D
-    const result = bs.update(delta, webbs, weaponUseSystem, hud, webLauncher.isAttachedToWall())
-
-    if (result === 'victory' && !transitioning) {
-      if (bs.pendingLoot) {
-        const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
-        for (const [mat, qty] of Object.entries(bs.pendingLoot)) {
-          inv[mat] = (inv[mat] ?? 0) + qty
-        }
-        registry.set('craftingInventory', inv)
-        bs.pendingLoot = null
-      }
-      setTimeout(() => transitionTo('antColony'), 2000)
-      transitioning = true
-    } else if (result === 'defeat' && !transitioning) {
-      webbs.hp = webbs.hpMax
-      transitionTo('homeBase')
-    }
-  }
-
-  // ── Player death (non-boss zones) ────────────────────────────────────────
-
-  if (webbs.hp <= 0 && !transitioning) {
-    webbs.hp = webbs.hpMax
-    transitionTo('homeBase')
-  }
-
-  // ── Weapon attack — left-click fires lastActiveSlot; keys 1-8 fire + select ──
+  // ── Weapon attack — runs BEFORE enemy AI so hit detection sees this frame's swing ──
 
   const aimPos = input.mouseToWorld(camera, CANVAS_W, CANVAS_H)
   const aimDx  = aimPos.x - webbs.collisionBody.x
@@ -704,6 +654,57 @@ function gameLoop() {
     weaponUseSystem.lastShakeIntensity = 0
   }
 
+  // ── Enemy / scene update ─────────────────────────────────────────────────
+
+  if (currentZone !== 'bossRoller') {
+    activeScene.updateEnemies(delta, webbs.collisionBody.x, webbs.collisionBody.z)
+
+    for (const enemy of (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies) {
+      if (enemy.isDead() || enemy.contactCooldown > 0) continue
+      const dx = webbs.collisionBody.x - enemy.collisionBody.x
+      const dz = webbs.collisionBody.z - enemy.collisionBody.z
+      const touchDist = webbs.collisionBody.radius + enemy.config.bodyRadius + 0.05
+      if (dx * dx + dz * dz < touchDist * touchDist) {
+        webbs.damage(enemy.config.damage)
+        enemy.contactCooldown = 0.75
+        // Player damage feedback
+        hud.flashDamageVignette()
+        cameraShakeRemaining = 0.09
+        cameraShakeIntensity = 0.005
+        // Push player away from enemy
+        const dlen = Math.hypot(dx, dz) || 1
+        webbs.collisionBody.velocity.x += (dx / dlen) * 3.5
+        webbs.collisionBody.velocity.z += (dz / dlen) * 3.5
+      }
+    }
+  } else {
+    const bs     = activeScene as BossRollerScene3D
+    const result = bs.update(delta, webbs, weaponUseSystem, hud, webLauncher.isAttachedToWall())
+
+    if (result === 'victory' && !transitioning) {
+      if (bs.pendingLoot) {
+        const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
+        for (const [mat, qty] of Object.entries(bs.pendingLoot)) {
+          inv[mat] = (inv[mat] ?? 0) + qty
+        }
+        registry.set('craftingInventory', inv)
+        bs.pendingLoot = null
+      }
+      setTimeout(() => transitionTo('antColony'), 2000)
+      transitioning = true
+    } else if (result === 'defeat' && !transitioning) {
+      webbs.hp = webbs.hpMax
+      transitionTo('homeBase')
+    }
+  }
+
+  // ── Player death (non-boss zones) ────────────────────────────────────────
+
+  if (webbs.hp <= 0 && !transitioning) {
+    webbs.hp = webbs.hpMax
+    transitionTo('homeBase')
+  }
+
   webbs.updateLegs(delta)
 
   // ── Fog of war ───────────────────────────────────────────────────────────
@@ -712,7 +713,7 @@ function gameLoop() {
     const acs = activeScene as AntColonyScene3D
     acs.fog.update(webbs.collisionBody.x, webbs.collisionBody.z)
     acs.tickVisuals(delta, webbs.collisionBody.x, webbs.collisionBody.z)
-    acs.updateWallOcclusion(camera.position.x, camera.position.z, webbs.collisionBody.x, webbs.collisionBody.z)
+    acs.updateWallOcclusion(camera, new THREE.Vector3(webbs.collisionBody.x, 0, webbs.collisionBody.z))
 
     // Dead-end room triggers (spike / ambush / loot)
     const deadEndResult = acs.checkDeadEndTriggers(webbs.collisionBody.x, webbs.collisionBody.z)
