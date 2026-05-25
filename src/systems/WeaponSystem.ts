@@ -59,6 +59,11 @@ export class WeaponSystem {
 
   equip(slot: number, weaponType: WeaponType): boolean {
     if (!this.canEquip(slot, weaponType)) return false
+    if (weaponType !== WeaponType.Empty) {
+      for (let i = 0; i < 8; i++) {
+        if (i !== slot && this.slots[i] === weaponType) this.slots[i] = WeaponType.Empty
+      }
+    }
     this.slots[slot] = weaponType
     return true
   }

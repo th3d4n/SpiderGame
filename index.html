@@ -7,10 +7,143 @@
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { background: #1a1a2e; display: flex; justify-content: center; align-items: center; height: 100vh; }
+
+      #game-container { position: relative; width: 1280px; height: 720px; }
+
+      /* ── HUD overlay — pointer-events:none so clicks reach the canvas ───── */
+      #hud-overlay {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        pointer-events: none;
+        font-family: monospace;
+      }
+
+      /* Zone label — top center */
+      #zone-label {
+        position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+        color: #7777ff; font-size: 12px; letter-spacing: 4px; opacity: 0.85;
+        background: rgba(13,13,26,0.7); padding: 4px 14px; border: 1px solid rgba(119,119,255,0.25);
+      }
+
+      /* HP / stamina / energy bars — bottom left */
+      #bars-group {
+        position: absolute; bottom: 18px; left: 18px;
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .bar-row { display: flex; align-items: center; gap: 8px; }
+      .bar-label { color: #556677; font-size: 10px; width: 30px; text-align: right; }
+      .bar-track {
+        width: 130px; height: 8px;
+        background: #0a0a18; border: 1px solid #1e1e2e; border-radius: 2px; overflow: hidden;
+      }
+      .bar-fill { height: 100%; border-radius: 1px; transition: width 80ms linear; }
+      #hp-fill    { background: #cc3344; }
+      #stam-fill  { background: #ccaa22; }
+      #energy-fill{ background: #3388cc; }
+
+      /* Weapon ring SVG — bottom right */
+      #weapon-ring-wrap {
+        position: absolute; bottom: 12px; right: 18px;
+        pointer-events: none;
+      }
+
+      /* Controls hint — bottom center */
+      #controls-hint {
+        position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+        color: #334455; font-size: 10px; letter-spacing: 1px;
+      }
+
+      /* Interact hint — above controls hint, shown near interactable objects */
+      #interact-hint {
+        display: none;
+        position: absolute; bottom: 38px; left: 50%; transform: translateX(-50%);
+        color: #aaccaa; font-size: 11px; letter-spacing: 2px; font-family: monospace;
+        background: rgba(0,0,0,0.6); padding: 3px 10px;
+        border: 1px solid rgba(100,180,100,0.3);
+      }
+
+      /* ── Boss HP bar ────────────────────────────────────────────────────── */
+      #boss-hp-wrap {
+        display: none;
+        position: absolute; top: 36px; left: 50%; transform: translateX(-50%);
+        flex-direction: column; align-items: center; gap: 4px;
+      }
+      #boss-hp-label { color: #ffaacc; font-size: 11px; letter-spacing: 2px; font-family: monospace; }
+      #boss-hp-track {
+        width: 360px; height: 16px;
+        background: #220011; border: 1px solid #884455; border-radius: 1px; overflow: hidden;
+      }
+      #boss-hp-fill { height: 100%; background: #ff5577; transition: width 60ms linear; }
+
+      /* Boss warning message */
+      #boss-msg {
+        display: none;
+        position: absolute; top: 68px; left: 50%; transform: translateX(-50%);
+        color: #ff4444; font-size: 13px; letter-spacing: 1px; font-family: monospace;
+        text-align: center; pointer-events: none;
+      }
+
+      /* ── Zone-transition fade overlay ───────────────────────────────────── */
+      #transition-overlay {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: #000; opacity: 0; pointer-events: none;
+        transition: opacity 400ms ease;
+      }
+
+      /* ── Menu overlay — shown when any menu is open ─────────────────────── */
+      #menu-overlay {
+        display: none;
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.75);
+        pointer-events: auto;
+      }
     </style>
   </head>
   <body>
-    <div id="game-container"></div>
+    <div id="game-container">
+
+      <!-- HUD (always visible, no pointer events) -->
+      <div id="hud-overlay">
+        <div id="zone-label">HOME BASE</div>
+
+        <div id="bars-group">
+          <div class="bar-row">
+            <span class="bar-label">HP</span>
+            <div class="bar-track"><div class="bar-fill" id="hp-fill" style="width:100%"></div></div>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">STAM</span>
+            <div class="bar-track"><div class="bar-fill" id="stam-fill" style="width:100%"></div></div>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">ENRG</span>
+            <div class="bar-track"><div class="bar-fill" id="energy-fill" style="width:100%"></div></div>
+          </div>
+        </div>
+
+        <div id="weapon-ring-wrap">
+          <svg id="weapon-ring" width="154" height="154" viewBox="-77 -77 154 154"></svg>
+        </div>
+
+        <div id="controls-hint">WASD move &nbsp;·&nbsp; Click attack &nbsp;·&nbsp; I equip &nbsp;·&nbsp; E interact</div>
+        <div id="interact-hint"></div>
+
+      <!-- Boss HP bar — shown only during boss fights -->
+      <div id="boss-hp-wrap">
+        <div id="boss-hp-label">BOSS</div>
+        <div id="boss-hp-track"><div id="boss-hp-fill" style="width:100%"></div></div>
+      </div>
+
+      <!-- Boss warning message -->
+      <div id="boss-msg"></div>
+      </div>
+
+      <!-- Menu overlay (hidden until a menu opens) -->
+      <div id="menu-overlay"></div>
+
+      <!-- Full-screen fade overlay for zone transitions -->
+      <div id="transition-overlay"></div>
+
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
