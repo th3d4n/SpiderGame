@@ -5,8 +5,10 @@ export class FogOfWarSystem3D {
   private fogMat:       THREE.ShaderMaterial
   private ctx:          CanvasRenderingContext2D
   private revealTex:    THREE.CanvasTexture
+  // Canvas resolution.  RH bumped from 64 → 256 so stamps aren't crushed in the
+  // Z direction (was ~2.5 px/unit; now ~10 px/unit, matching X resolution).
   private readonly RW = 512
-  private readonly RH = 64
+  private readonly RH = 256
   private arenaMinX:   number
   private arenaMinZ:   number
   private arenaW:      number
@@ -36,6 +38,11 @@ export class FogOfWarSystem3D {
     canvas.height = this.RH
     this.ctx      = canvas.getContext('2d')!
     this.revealTex = new THREE.CanvasTexture(canvas)
+    // CRITICAL: CanvasTexture defaults flipY=true which flips the texture vertically
+    // on upload.  Our stamping code uses canvas-Y (top=0, bottom=RH-1), but the shader
+    // samples world-Z directly as uv.y — with flipY=true these get mirrored, so the
+    // top/bottom corridors of the colony never accumulate any reveal.  Disable flipY.
+    this.revealTex.flipY = false
 
     this.fogMat = new THREE.ShaderMaterial({
       transparent: true,
@@ -67,9 +74,8 @@ export class FogOfWarSystem3D {
           float live  = 1.0 - smoothstep(revealRadius * 0.65, revealRadius, dist);
           vec2  uv    = clamp((vWorldXZ - arenaMin) / arenaSize, 0.0, 1.0);
           float perm  = texture2D(revealTex, uv).r;
-          // Explored: 10% residual fog. Unexplored: nearly opaque cavern darkness.
-          float exploredVisibility = perm * 0.90;
-          float reveal = max(live, exploredVisibility);
+          // Once explored, area stays fully clear (no residual fog).
+          float reveal = max(live, perm);
           gl_FragColor = vec4(0.03, 0.02, 0.0, (1.0 - reveal) * 0.98);
         }
       `,
@@ -87,13 +93,16 @@ export class FogOfWarSystem3D {
   update(playerX: number, playerZ: number): void {
     this.fogMat.uniforms.playerPos.value.set(playerX, playerZ)
 
-    // Stamp a reveal ellipse at the current player position
+    // Stamp a reveal ellipse at the current player position.
+    // The stamp's effective size is slightly larger than the "live" halo so
+    // the player is always inside a fully-revealed footprint as they move.
     const u  = (playerX - this.arenaMinX) / this.arenaW
     const v  = (playerZ - this.arenaMinZ) / this.arenaH
     const px = u * this.RW
     const pz = v * this.RH
-    const rx = (this.revealRadius / this.arenaW) * this.RW * 1.15
-    const ry = (this.revealRadius / this.arenaH) * this.RH * 1.15
+    const stampR = this.revealRadius * 1.05
+    const rx = (stampR / this.arenaW) * this.RW
+    const ry = (stampR / this.arenaH) * this.RH
 
     this.ctx.fillStyle = 'white'
     this.ctx.beginPath()
@@ -113,10 +122,12 @@ export class FogOfWarSystem3D {
   }
 
   // Restore reveal canvas from a previously serialized data-URL.
+  // Scales the saved image to fit the current canvas dimensions so old saves
+  // (which were 512x64) still restore correctly into the new 512x256 canvas.
   restore(dataUrl: string): void {
     const img = new Image()
     img.onload = () => {
-      this.ctx.drawImage(img, 0, 0)
+      this.ctx.drawImage(img, 0, 0, this.RW, this.RH)
       this.revealTex.needsUpdate = true
     }
     img.src = dataUrl
