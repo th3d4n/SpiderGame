@@ -12,6 +12,7 @@ import { WeaponUseSystem3D } from './systems/WeaponUseSystem3D'
 import { WebLauncherSystem3D } from './systems/WebLauncherSystem3D'
 import { ZoneTransitionSystem3D } from './systems/ZoneTransitionSystem3D'
 import { ParticleBurstSystem3D } from './systems/ParticleBurstSystem3D'
+import { PresentationPhase } from './systems/PresentationPhase'
 import { WeaponType } from './systems/WeaponSystem'
 import { registry } from './core/Registry'
 import { HudSystem } from './ui/HudSystem'
@@ -61,7 +62,7 @@ const camera = new THREE.OrthographicCamera(
 const CAM_OFFSET = new THREE.Vector3(18, 18, 18)
 camera.position.copy(CAM_OFFSET)
 camera.lookAt(0, 0, 0)
-camera.zoom = 1.6
+camera.zoom = 2.0          // Round 6 Issue 8: closer default view
 camera.updateProjectionMatrix()
 
 // Wire composer passes now that camera exists
@@ -159,6 +160,7 @@ const craftingMenu   = new CraftingMenu3D(menuOverlay)
 const textDisplay    = new TextDisplay3D(menuOverlay)
 const pickupCelebration = new PickupCelebration3D(menuOverlay, textDisplay)
 const pickupNotify   = new PickupNotification3D()
+const presentation   = new PresentationPhase()
 
 let gamePaused     = true   // stays true until main menu is dismissed
 let mainMenuActive = true
@@ -169,10 +171,43 @@ craftingMenu.onClose = () => {
   gamePaused = false
 }
 textDisplay.onClose  = () => {
+  if (presentation.isActive()) {
+    presentation.onTutorialCardClosed()
+    return
+  }
   gamePaused = false
-  if (pendingTransitionResume) { pendingTransitionResume(); pendingTransitionResume = null }
+  if (pendingTransitionResume) {
+    transitioning = false   // Round 6 Issue 2: clear stuck transition flag
+    pendingTransitionResume()
+    pendingTransitionResume = null
+  }
 }
-pickupCelebration.onClose = () => { gamePaused = false; celebZoom = false; webbs.endCelebrationPose() }
+// Round 6 Issue 1: discovery card closing → advance to tutorial phase (or finish)
+pickupCelebration.onClose = () => {
+  if (presentation.isActive()) {
+    presentation.onDiscoveryCardClosed()
+  } else {
+    gamePaused = false; celebZoom = false; webbs.endCelebrationPose()
+  }
+}
+
+// Wire the three-phase presentation hooks
+presentation.onShowDiscoveryCard = (wt) => {
+  // Phase 2 — purely the discovery card; no tutorial chained inside this overlay.
+  pickupCelebration.show(wt)
+}
+presentation.onShowTutorialCard = (wt) => {
+  // Phase 3 — show the tutorial pages for this weapon if any.
+  const tutorial = wt === WeaponType.BoxingGloves ? TUTORIAL_TOOTHPICK
+                 : wt === WeaponType.WebLauncher  ? TUTORIAL_WEB_LAUNCHER
+                 : null
+  if (tutorial) textDisplay.show(tutorial)
+  else presentation.onTutorialCardClosed()
+}
+presentation.onComplete = () => {
+  gamePaused = false
+  celebZoom  = false
+}
 
 craftingMenu.onFirstDiscover = (wt) => {
   craftingMenu.close()
@@ -246,6 +281,23 @@ scene.add(cursorMesh)
 // ─── Input ────────────────────────────────────────────────────────────────────
 
 const input = new InputManager(renderer.domElement)
+
+// ─── Mouse-wheel zoom ─────────────────────────────────────────────────────────
+// Round 6 Issue 8: wheel adjusts a separate `userZoom`; the game loop lerps the
+// camera toward `celebZoom ? 2.8 : userZoom` so the celebration override works
+// without permanently overwriting the player's chosen zoom.
+
+const ZOOM_MIN  = 1.0
+const ZOOM_MAX  = 3.5
+const ZOOM_STEP = 0.15
+let   userZoom  = 2.0
+
+window.addEventListener('wheel', (e: WheelEvent) => {
+  if (mainMenuActive) return
+  e.preventDefault()
+  const dir = e.deltaY > 0 ? -1 : 1   // wheel up = zoom in
+  userZoom = THREE.MathUtils.clamp(userZoom + dir * ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
+}, { passive: false })
 
 // ─── Zone management ──────────────────────────────────────────────────────────
 
@@ -363,6 +415,15 @@ function isMeleeWeapon(wt: WeaponType): boolean {
   return wt === WeaponType.Sword || wt === WeaponType.Axe || wt === WeaponType.BoxingGloves
 }
 
+// Round 6 Issue 8: smooth zoom lerp toward celebration override or userZoom.
+function tickZoom(): void {
+  const target = celebZoom ? 2.8 : userZoom
+  if (Math.abs(camera.zoom - target) > 0.002) {
+    camera.zoom += (target - camera.zoom) * 0.08
+    camera.updateProjectionMatrix()
+  }
+}
+
 // ─── Combat callbacks ─────────────────────────────────────────────────────────
 
 weaponUseSystem.onOutOfAmmo = () => hud.flashBossMessage('NO THISTLE SEEDS')
@@ -390,6 +451,15 @@ function gameLoop() {
     composer.render()
     return
   }
+
+  // ── Presentation phase tick (runs even when paused) ─────────────────────
+  // Round 6 Issue 1: drive the Webbs-lifts-item phase timer + transition to UI.
+  presentation.update(webbs)
+  if (webbs.celebratingPose) {
+    webbs.updateLegs(0)   // tick the celebration pose every frame while paused
+  }
+  // Camera zoom lerp must run even when paused so celebration zoom is visible
+  tickZoom()
 
   // ── Menu input (runs even when paused) ───────────────────────────────────
 
@@ -444,10 +514,9 @@ function gameLoop() {
           registry.set('weaponInventory', inv)
           if (!registry.get<boolean>('tutorialToothpickSeen')) {
             registry.set('tutorialToothpickSeen', true)
-            pickupCelebration.show(WeaponType.BoxingGloves, TUTORIAL_TOOTHPICK.pages, TUTORIAL_TOOTHPICK.title, TUTORIAL_TOOTHPICK.accentColor)
+            // Round 6 Issue 1: three-phase presentation kicks off Webbs's lift pose
             gamePaused = true; celebZoom = true
-            webbs.startCelebrationPose()
-            particles.burst(webbs.group.position, 0xddccaa, 16, 4.0, 0.07)
+            presentation.start(WeaponType.BoxingGloves, webbs, particles)
           } else {
             pickupNotify.notify('Toothpick Stabber', 'weapon found', '#ddccaa')
           }
@@ -462,10 +531,9 @@ function gameLoop() {
           registry.set('webThrowerFound', true)
           if (!registry.get<boolean>('tutorialWebLauncherSeen')) {
             registry.set('tutorialWebLauncherSeen', true)
-            pickupCelebration.show(WeaponType.WebLauncher, TUTORIAL_WEB_LAUNCHER.pages, TUTORIAL_WEB_LAUNCHER.title, TUTORIAL_WEB_LAUNCHER.accentColor)
+            // Round 6 Issue 1: three-phase presentation kicks off Webbs's lift pose
             gamePaused = true; celebZoom = true
-            webbs.startCelebrationPose()
-            particles.burst(webbs.group.position, 0xddeeff, 20, 5.0, 0.07)
+            presentation.start(WeaponType.WebLauncher, webbs, particles)
           } else {
             pickupNotify.notify('Web Launcher', 'already found', '#ddeeff')
           }
@@ -663,6 +731,8 @@ function gameLoop() {
 
     for (const enemy of (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies) {
       if (enemy.isDead() || enemy.contactCooldown > 0) continue
+      if (enemy.staggerTimer > 0)   continue   // Round 6 Issue 3: stunned enemies do no contact damage
+      if (enemy.knockbackTimer > 0) continue   // ditto — knockbacked enemies are flailing
       const dx = webbs.collisionBody.x - enemy.collisionBody.x
       const dz = webbs.collisionBody.z - enemy.collisionBody.z
       const touchDist = webbs.collisionBody.radius + enemy.config.bodyRadius + 0.05
@@ -755,12 +825,9 @@ function gameLoop() {
   )
   camera.lookAt(camLookTarget)
 
-  // Pickup celebration zoom in
-  const targetZoom = celebZoom ? 2.2 : 1.6
-  if (Math.abs(camera.zoom - targetZoom) > 0.002) {
-    camera.zoom += (targetZoom - camera.zoom) * 0.08
-    camera.updateProjectionMatrix()
-  }
+  // Round 6 Issue 8: lerp toward the celebration zoom override OR the user's
+  // wheel-set zoom otherwise.  Updated outside the pause gate via tickZoom().
+  tickZoom()
 
   if (cameraShakeRemaining > 0) {
     cameraShakeRemaining -= delta

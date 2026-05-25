@@ -326,37 +326,35 @@ export class SpiderLegs {
 
   // Celebration pose — front two legs lift and reach forward while the rest stay planted.
   // Call in place of update() when Webbs3D.celebratingPose is true.
-  updateCelebrationPose(bodyPos: THREE.Vector3, bodyRotY: number, elapsedMs: number): void {
-    this.updateWorldVecs(bodyPos, bodyRotY)
+  //
+  // Round 6 Issue 1 spec: 2-arg signature, body rotation is assumed snapped to face
+  // the camera (Webbs3D.startCelebrationPose snaps rotation.y).
+  updateCelebrationPose(bodyPos: THREE.Vector3, elapsedMs: number): void {
+    // Compute root/anchor world positions using the body's current rotation.
+    // We read the rotation indirectly via the legs' own root meshes; safer to
+    // require the caller has updated the group rotation before this call.
+    this.updateWorldVecs(bodyPos, 0)   // assume bodyRotY=0 (camera-facing snap)
 
-    const tSec = elapsedMs / 1000
-    const bobY = 0.05 * Math.sin(tSec * Math.PI * 2)   // ±0.05 gentle pulse at 1 Hz
-
-    // Body forward direction in world XZ (spider faces -Z in local space, rotated by bodyRotY)
-    const fwdX = -Math.sin(bodyRotY)
-    const fwdZ = -Math.cos(bodyRotY)
-    // Right direction (perpendicular)
-    const rgtX =  fwdZ
-    const rgtZ = -fwdX
+    const tSec  = elapsedMs / 1000
+    const bobY  = Math.sin(tSec * Math.PI * 2) * 0.08
+    const liftY = 0.55 + bobY              // raised foot height
+    const reachZ = bodyPos.z - 0.5         // forward in world -Z (toward camera view)
+    const spread = 0.35
 
     for (const leg of this.legs) {
       if (leg.index === 6 || leg.index === 7) {
-        // Anatomical front legs (anchor z = -0.7 in body space) — lift and extend forward
-        const side = (leg.index === 6) ? -1 : 1   // 6 = left, 7 = right
-        leg.footPos.set(
-          bodyPos.x + fwdX * 0.55 + rgtX * side * 0.3,
-          0.5 + bobY,
-          bodyPos.z + fwdZ * 0.55 + rgtZ * side * 0.3,
-        )
+        // Anatomical front legs lifted and extended forward
+        const side = (leg.index === 6) ? -1 : 1
+        leg.footPos.set(bodyPos.x + side * spread, liftY, reachZ)
       } else {
-        // Remaining six legs — planted at their world-space anchor positions
+        // Other six legs planted at their world-space rest position
         leg.footPos.copy(leg.anchorWorld)
         leg.footPos.y = 0
       }
       leg.isStepping = false
     }
 
-    // Solve IK and update all leg meshes
+    // Solve IK + update meshes for every leg
     for (const leg of this.legs) {
       solveTwoBoneIK(leg.rootWorld, leg.footPos, UPPER_LEN, LOWER_LEN, leg.poleDir, this.kneePos)
       positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048)

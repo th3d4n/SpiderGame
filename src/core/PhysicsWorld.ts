@@ -93,11 +93,21 @@ export class PhysicsWorld {
 
     const dist = Math.sqrt(distSq)
     const overlap = (minDist - dist) / dist
-    const pushX = dx * overlap * 0.5
-    const pushZ = dz * overlap * 0.5
 
-    if (!a.isStatic) { a.x -= pushX; a.z -= pushZ }
-    if (!b.isStatic) { b.x += pushX; b.z += pushZ }
+    // Round 6 Issue 4: when one body is static, push the dynamic one by the full
+    // overlap so it doesn't slowly creep through stones/posts over many frames.
+    if (a.isStatic && !b.isStatic) {
+      b.x += dx * overlap
+      b.z += dz * overlap
+    } else if (!a.isStatic && b.isStatic) {
+      a.x -= dx * overlap
+      a.z -= dz * overlap
+    } else if (!a.isStatic && !b.isStatic) {
+      const pushX = dx * overlap * 0.5
+      const pushZ = dz * overlap * 0.5
+      a.x -= pushX; a.z -= pushZ
+      b.x += pushX; b.z += pushZ
+    }
   }
 
   private resolveCircleAABB(circle: CollisionBody, wall: CollisionBody): void {

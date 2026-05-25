@@ -1,11 +1,33 @@
 import * as THREE from 'three'
-import { physicsWorld } from '../core/PhysicsWorld'
+import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import { registry } from '../core/Registry'
 import type { Enemy3D } from '../entities/Enemy3D'
 
 const W      = 22    // world width  (x: -11 … +11)
 const D      = 22    // world depth  (z: -11 … +11)
 const WALL_H = 1.2
+
+// Round 6 Issue 9: procedural dirt/wall noise textures for organic surface variation
+function createNoiseTexture(
+  size: number,
+  baseR: number, baseG: number, baseB: number,
+  amplitude: number,
+  repeat = 4,
+): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4)
+  for (let i = 0; i < size * size; i++) {
+    const n = Math.random() * amplitude
+    data[i * 4 + 0] = Math.min(255, baseR + n)
+    data[i * 4 + 1] = Math.min(255, baseG + n * 0.6)
+    data[i * 4 + 2] = Math.min(255, baseB + n * 0.3)
+    data[i * 4 + 3] = 255
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.repeat.set(repeat, repeat)
+  tex.needsUpdate = true
+  return tex
+}
 
 // 11 material pickups distributed across the chamber interior.  Persistent via registry.
 // All positions are within radius 7.5 of center so the player can always reach them.
@@ -54,6 +76,7 @@ export class HomeBaseScene3D {
   private giftGroup:      THREE.Group | null = null
   private cardGroup:      THREE.Group | null = null
   private pickupMeshes:   Array<THREE.Group | null> = Array(MATERIAL_PICKUPS.length).fill(null)
+  private staticBodies:   CollisionBody[] = []   // stones + doorframe posts
 
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
     this.threeScene  = threeScene
@@ -76,6 +99,7 @@ export class HomeBaseScene3D {
     this.buildBlockedPortal()
     this.buildDecoration()
     this.buildPartyExtra()
+    this.buildAttackDamage()   // Round 6 Issue 9: knocked-over stuff, claw marks, hanging streamers
     this.buildMaterialPickups()
     this.buildLighting()
 
@@ -90,7 +114,10 @@ export class HomeBaseScene3D {
   private buildGround(): void {
     // Circular floor (16-sided polygon gives a smooth den feel)
     const R = 10.5
-    const mat = new THREE.MeshToonMaterial({ color: 0x3a2010, gradientMap: this.gradientMap })
+    const floorTex = createNoiseTexture(64, 58, 32, 16, 40, 5)
+    const mat = new THREE.MeshToonMaterial({
+      color: 0xffffff, map: floorTex, gradientMap: this.gradientMap,
+    })
     const mesh = new THREE.Mesh(new THREE.CircleGeometry(R, 16).rotateX(-Math.PI / 2), mat)
     mesh.receiveShadow = true
     this.add(mesh)
@@ -119,7 +146,11 @@ export class HomeBaseScene3D {
   // ── Walls ───────────────────────────────────────────────────────────────────
 
   private buildWalls(): void {
-    const wallMat = new THREE.MeshToonMaterial({ color: 0x4a2e18, gradientMap: this.gradientMap })
+    // Round 6 Issue 9: textured walls with dirt-noise diffuse map
+    const wallTex = createNoiseTexture(64, 74, 46, 24, 36, 4)
+    const wallMat = new THREE.MeshToonMaterial({
+      color: 0xffffff, map: wallTex, gradientMap: this.gradientMap,
+    })
     const capMat  = new THREE.MeshToonMaterial({ color: 0x5a3a20, gradientMap: this.gradientMap })
 
     // 8-panel octagon.  Panels 3 (135°–180°) and 4 (180°–225°) are SKIPPED to create
@@ -161,6 +192,15 @@ export class HomeBaseScene3D {
     const post2 = new THREE.Mesh(new THREE.BoxGeometry(0.2, WALL_H, 0.2), frameMat)
     post2.position.set(-10.0, WALL_H / 2,  4.5)
     this.add(post2)
+    // Round 6 Issue 4: solid collision footprints for the doorframe posts
+    this.staticBodies.push(physicsWorld.add({
+      x: -10.0, z: -4.5, radius: 0.18,
+      velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
+    }))
+    this.staticBodies.push(physicsWorld.add({
+      x: -10.0, z:  4.5, radius: 0.18,
+      velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
+    }))
     // Lintel across the top
     const lintel = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 9.2), frameMat)
     lintel.position.set(-10.0, WALL_H, 0)
@@ -179,11 +219,18 @@ export class HomeBaseScene3D {
       if (angleDeg >= 135 && angleDeg <= 225) continue
       const r = 9.4 + Math.random() * 0.6
       const h = 0.15 + Math.random() * 0.3
+      const sx = Math.cos(angle) * r
+      const sz = Math.sin(angle) * r
       const stone = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.18), stoneMat)
-      stone.position.set(Math.cos(angle) * r, h / 2 + 0.04, Math.sin(angle) * r)
+      stone.position.set(sx, h / 2 + 0.04, sz)
       stone.rotation.y = angle
       stone.castShadow = true
       this.add(stone)
+      // Round 6 Issue 4: stone rubble gets a static collision body
+      this.staticBodies.push(physicsWorld.add({
+        x: sx, z: sz, radius: 0.32,
+        velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
+      }))
     }
   }
 
@@ -467,6 +514,99 @@ export class HomeBaseScene3D {
     }
   }
 
+  // ── Attack damage (Round 6 Issue 9) ───────────────────────────────────────────
+  // Tells the story of the kidnapping — knocked-over decorations, claw marks,
+  // half-fallen party streamers.  All purely visual.
+
+  private buildAttackDamage(): void {
+    const debrisMat = new THREE.MeshToonMaterial({ color: 0x4a3320, gradientMap: this.gradientMap })
+
+    const objects: Array<{ x: number; z: number; type: 'box' | 'jar' | 'streamer' }> = [
+      { x: -2.0, z:  3.0, type: 'box'      },
+      { x:  3.5, z:  1.0, type: 'jar'      },
+      { x: -4.5, z: -1.5, type: 'box'      },
+      { x:  1.5, z: -3.5, type: 'jar'      },
+      { x:  4.0, z: -6.0, type: 'streamer' },
+      { x: -3.5, z:  5.5, type: 'streamer' },
+    ]
+
+    for (const o of objects) {
+      if (o.type === 'box') {
+        const box = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 0.3), debrisMat)
+        box.position.set(o.x, 0.15, o.z)
+        box.rotation.set(0.4, Math.random() * Math.PI, 0.3)
+        box.castShadow = true
+        this.add(box)
+      } else if (o.type === 'jar') {
+        const jar = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 0.3, 8), debrisMat)
+        jar.position.set(o.x, 0.10, o.z)
+        jar.rotation.set(1.2, 0, Math.random() * 0.5)
+        jar.castShadow = true
+        this.add(jar)
+        // Spilled contents — small dots around the jar
+        for (let i = 0; i < 5; i++) {
+          const drop = new THREE.Mesh(
+            new THREE.SphereGeometry(0.04, 6, 4),
+            new THREE.MeshBasicMaterial({ color: 0xddcc88 }),
+          )
+          drop.position.set(o.x + (Math.random() - 0.5) * 0.6, 0.04, o.z + (Math.random() - 0.5) * 0.6)
+          this.add(drop)
+        }
+      } else {
+        // Fallen streamer — thin curved line on the floor
+        const points: THREE.Vector3[] = []
+        for (let i = 0; i < 16; i++) {
+          const t = i / 15
+          points.push(new THREE.Vector3(
+            o.x + (t - 0.5) * 0.8 + Math.sin(t * 8) * 0.1,
+            0.03,
+            o.z + Math.cos(t * 6) * 0.2,
+          ))
+        }
+        const geo  = new THREE.BufferGeometry().setFromPoints(points)
+        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xcc4488 }))
+        this.add(line)
+      }
+    }
+
+    // Claw marks on a few wall panels (skip the doorway arc 135°–225°)
+    const scratchMat = new THREE.LineBasicMaterial({ color: 0x1a0e04, transparent: true, opacity: 0.7 })
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 + 0.4
+      const deg = (angle * 180 / Math.PI) % 360
+      if (deg >= 135 && deg <= 225) continue
+      const sx = Math.cos(angle) * 10.2
+      const sz = Math.sin(angle) * 10.2
+      for (let s = 0; s < 3; s++) {
+        const pts = [
+          new THREE.Vector3(sx + (s - 1) * 0.1, 0.3,                  sz),
+          new THREE.Vector3(sx + (s - 1) * 0.1 + 0.10, WALL_H * 0.85, sz),
+        ]
+        const geo = new THREE.BufferGeometry().setFromPoints(pts)
+        this.add(new THREE.Line(geo, scratchMat))
+      }
+    }
+
+    // Hanging silk streamers from "ceiling" — half-fallen party decorations
+    const streamerMat = new THREE.LineBasicMaterial({ color: 0xccaa55, transparent: true, opacity: 0.7 })
+    for (let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2 + 0.3
+      const sx = Math.cos(angle) * 6
+      const sz = Math.sin(angle) * 6
+      const pts: THREE.Vector3[] = []
+      for (let j = 0; j < 8; j++) {
+        const t = j / 7
+        pts.push(new THREE.Vector3(
+          sx + Math.sin(t * 4) * 0.1,
+          WALL_H - t * 1.0,
+          sz + Math.cos(t * 4) * 0.1,
+        ))
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(pts)
+      this.add(new THREE.Line(geo, streamerMat))
+    }
+  }
+
   // ── Material pickup orbs ──────────────────────────────────────────────────────
 
   private buildMaterialPickups(): void {
@@ -656,7 +796,9 @@ export class HomeBaseScene3D {
       this.threeScene.remove(obj)
       if ((obj as THREE.Mesh).isMesh) (obj as THREE.Mesh).geometry.dispose()
     }
-    this.tracked = []
+    for (const body of this.staticBodies) physicsWorld.remove(body)
+    this.staticBodies   = []
+    this.tracked        = []
     this.toothpickGroup = null
     physicsWorld.bounds         = null
     physicsWorld.circularBound  = null

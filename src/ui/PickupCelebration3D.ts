@@ -2,7 +2,7 @@ import { WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_COLORS, WEAPON_DATA } from '../config/WeaponData'
 import { weaponIconSvg } from './WeaponIcon3D'
 import type { InputManager } from '../core/InputManager'
-import type { TextDisplay3D, TextDisplayData } from './TextDisplay3D'
+import type { TextDisplay3D } from './TextDisplay3D'
 
 const WEAPON_DESCRIPTIONS: Partial<Record<WeaponType, string>> = {
   [WeaponType.Sword]:         'A blade of woven silk.\nQuick arcing swing, low stamina cost.\nReliable in close quarters.',
@@ -14,27 +14,26 @@ const WEAPON_DESCRIPTIONS: Partial<Record<WeaponType, string>> = {
   [WeaponType.WebLauncher]:   'The Web Thrower.\nFires sticky silk — pull yourself or items\ntoward the anchor point.',
 }
 
-// HARD MINIMUM duration in wall-clock milliseconds.
-// This MUST be at least 2500. Do not reduce this value.
-const MIN_DURATION_MS = 2800
+// Round 6 Issue 1 — discovery card is now player-dismissed (Space/M).
+// MIN_VISIBLE_MS keeps an accidental keypress at the moment of opening from
+// closing the card instantly.
+const MIN_VISIBLE_MS = 400
 
 export class PickupCelebration3D {
   private overlay: HTMLElement
   private panel:   HTMLDivElement
-  private textDisplay: TextDisplay3D
-  private tutorialPages: string[] = []
-  private tutorialTitle?: string
-  private tutorialAccent?: string
 
   isOpen   = false
   onClose?: () => void
 
   private openedAtMs = 0   // wall-clock timestamp when shown — not affected by delta clamping
 
-  constructor(menuOverlay: HTMLElement, textDisplay: TextDisplay3D) {
-    this.overlay     = menuOverlay
-    this.textDisplay = textDisplay
-    this.panel       = document.createElement('div')
+  // Round 6 Issue 1: constructor still accepts a TextDisplay3D for backwards
+  // compatibility with callers, but the value is no longer used internally —
+  // PresentationPhase now owns the tutorial follow-up.
+  constructor(menuOverlay: HTMLElement, _textDisplay: TextDisplay3D) {
+    this.overlay = menuOverlay
+    this.panel   = document.createElement('div')
     this.panel.style.display = 'none'
 
     if (!document.getElementById('celeb-styles')) {
@@ -65,15 +64,12 @@ export class PickupCelebration3D {
   }
 
   show(
-    weaponType:      WeaponType,
-    tutorialPages?:  string[],
-    tutorialTitle?:  string,
-    tutorialAccent?: string,
+    weaponType:       WeaponType,
+    _tutorialPages?:  string[],
+    _tutorialTitle?:  string,
+    _tutorialAccent?: string,
   ): void {
-    this.tutorialPages  = tutorialPages ?? []
-    this.tutorialTitle  = tutorialTitle
-    this.tutorialAccent = tutorialAccent
-    this.openedAtMs     = performance.now()   // WALL CLOCK — not affected by delta
+    this.openedAtMs = performance.now()   // WALL CLOCK — not affected by delta
 
     const colorNum = WEAPON_COLORS[weaponType]
     const colorHex = `#${colorNum.toString(16).padStart(6, '0')}`
@@ -122,7 +118,7 @@ export class PickupCelebration3D {
 
     const prompt = document.createElement('div')
     prompt.style.cssText = 'color:#556677; font-size:11px; animation:celeb-blink 1.4s ease-in-out infinite;'
-    prompt.textContent = '— Presenting your find —'
+    prompt.textContent = '[ Space ] continue'
 
     box.appendChild(header)
     box.appendChild(iconWrap)
@@ -135,13 +131,14 @@ export class PickupCelebration3D {
     this.isOpen = true
   }
 
-  // NOTE: delta parameter is intentionally IGNORED. Wall-clock time is the
-  // only safe way to time the celebration — accumulated delta values can be
-  // clamped or stutter, causing premature dismissal.
-  update(_input: InputManager, _delta: number): void {
+  // Round 6 Issue 1: discovery card waits for player input rather than auto-dismissing.
+  // MIN_VISIBLE_MS gate prevents an in-flight Space press (from the Webbs pose phase)
+  // from closing the card instantly.
+  update(input: InputManager, _delta: number): void {
     if (!this.isOpen) return
     const elapsedMs = performance.now() - this.openedAtMs
-    if (elapsedMs >= MIN_DURATION_MS) this.dismiss()
+    if (elapsedMs < MIN_VISIBLE_MS) return
+    if (input.justDown('Space') || input.justDown('KeyM')) this.dismiss()
   }
 
   close(): void {
@@ -152,21 +149,10 @@ export class PickupCelebration3D {
   }
 
   private dismiss(): void {
-    this.panel.style.display = 'none'
+    this.panel.style.display   = 'none'
+    this.overlay.style.display = 'none'
     this.isOpen = false
-
-    if (this.tutorialPages.length > 0) {
-      const data: TextDisplayData = {
-        pages:       this.tutorialPages,
-        title:       this.tutorialTitle,
-        accentColor: this.tutorialAccent,
-      }
-      const prevClose = this.textDisplay.onClose
-      this.textDisplay.onClose = () => { prevClose?.(); this.onClose?.() }
-      this.textDisplay.show(data)
-    } else {
-      this.overlay.style.display = 'none'
-      this.onClose?.()
-    }
+    // Round 6 Issue 1: PresentationPhase owns the tutorial follow-up — just notify.
+    this.onClose?.()
   }
 }

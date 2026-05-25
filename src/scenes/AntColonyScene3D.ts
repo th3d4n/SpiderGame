@@ -259,7 +259,7 @@ export class AntColonyScene3D {
   private gradientMap:   THREE.Texture
   private tracked:       THREE.Object3D[] = []
   private wallBodies:    CollisionBody[]  = []
-  private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
+  private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; capMat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
   private spawnRecords:  SpawnRecord[]    = []
   private readonly _occRaycaster = new THREE.Raycaster()
   private freeEnemies:  Enemy3D[]        = []
@@ -312,6 +312,11 @@ export class AntColonyScene3D {
       AntColonyScene3D.BACK,  AntColonyScene3D.FRONT,
       3.5,
     )
+    // Round 6 Issue 7: rehydrate previously explored areas so leaving and returning
+    // to the colony preserves the player's exploration trail.
+    const savedFog = registry.get<string>('fogReveal_antColony')
+    if (savedFog) this.fog.restore(savedFog)
+
     for (const l of LANTERN_DATA) {
       this.fog.addBeacon(l.x, l.cz)
     }
@@ -399,8 +404,6 @@ export class AntColonyScene3D {
   // ── Corridor dividers (horizontal walls between corridors) ────────────────────
 
   private buildCorridorDividers(): void {
-    const capMat = new THREE.MeshToonMaterial({ color: 0x332211, gradientMap: this.gradientMap })
-
     for (let wi = 0; wi < DIV_WALLS.length; wi++) {
       const dw  = DIV_WALLS[wi]
       const hz  = (dw.lo + dw.hi) / 2
@@ -422,9 +425,18 @@ export class AntColonyScene3D {
         mesh.position.set(cx, WALL_H / 2, hz)
         mesh.castShadow = true; mesh.receiveShadow = true
         this.tracked.push(mesh); this.threeScene.add(mesh)
-        this.dividerWalls.push({ mesh, mat: segMat, x0, x1, zLo: dw.lo, zHi: dw.hi })
 
-        this.addBox(segW + 0.08, 0.10, ht + 0.1, cx, WALL_H + 0.05, hz, capMat)
+        // Round 6 Issue 6: pair each cap with its panel and a private material so
+        // the occlusion system can fade them together (caps were staying opaque).
+        const capMat = new THREE.MeshToonMaterial({
+          color: 0x332211, gradientMap: this.gradientMap,
+          transparent: true, opacity: 1.0, depthWrite: false,
+        })
+        const cap = new THREE.Mesh(new THREE.BoxGeometry(segW + 0.08, 0.10, ht + 0.1), capMat)
+        cap.position.set(cx, WALL_H + 0.05, hz)
+        this.tracked.push(cap); this.threeScene.add(cap)
+
+        this.dividerWalls.push({ mesh, mat: segMat, capMat, x0, x1, zLo: dw.lo, zHi: dw.hi })
 
         const body = physicsWorld.add({
           x: x0, z: dw.lo, radius: 0,
@@ -457,7 +469,8 @@ export class AntColonyScene3D {
 
     for (const dw of this.dividerWalls) {
       const target = occluding.has(dw.mesh) ? 0.15 : 1.0
-      dw.mat.opacity = THREE.MathUtils.lerp(dw.mat.opacity, target, 0.18)
+      dw.mat.opacity    = THREE.MathUtils.lerp(dw.mat.opacity,    target, 0.18)
+      dw.capMat.opacity = THREE.MathUtils.lerp(dw.capMat.opacity, target, 0.18)
     }
   }
 
@@ -949,6 +962,10 @@ export class AntColonyScene3D {
   // ── Destroy ─────────────────────────────────────────────────────────────────────
 
   destroy(): void {
+    // Round 6 Issue 7: snapshot the reveal canvas before destroying so the next
+    // visit can restore it.
+    const fogSnapshot = this.fog.serialize()
+    if (fogSnapshot) registry.set('fogReveal_antColony', fogSnapshot)
     this.fog.destroy(this.threeScene)
     for (const s of this.spawnRecords) { if (s.enemy) s.enemy.cleanup() }
     for (const e of this.freeEnemies) e.cleanup()

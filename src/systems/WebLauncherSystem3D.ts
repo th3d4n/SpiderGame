@@ -42,7 +42,7 @@ interface WebState3D {
   pullElapsed: number
 }
 
-const STUN_DURATION = 0.6   // seconds of stagger forced on any enemy hit
+const STUN_DURATION = 1.2   // seconds of stagger forced on any enemy hit (Round 6 Issue 3)
 
 interface SilkWrap {
   mesh:  THREE.Mesh
@@ -280,6 +280,14 @@ export class WebLauncherSystem3D {
     if (!this.state?.attached) return
     this.state.pulling     = true
     this.state.pullElapsed = 0
+
+    // Round 6 Issue 3: stretch the stun across the entire pull plus a brief follow-up
+    // so the pulled enemy can't immediately bonk into the player on arrival.
+    if (this.state.attached.kind === 'enemy') {
+      const e = this.state.attached.ref
+      e.staggerTimer = Math.max(e.staggerTimer, PULL_DURATION + 0.6)
+    }
+
     this.applyPullVelocity(webbs, 0)
   }
 

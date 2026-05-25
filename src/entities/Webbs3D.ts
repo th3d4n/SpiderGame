@@ -171,7 +171,6 @@ export class Webbs3D {
     if (this.celebratingPose) {
       this.legs.updateCelebrationPose(
         this.group.position,
-        this.group.rotation.y,
         performance.now() - this.celebPoseStartMs,
       )
     } else {
@@ -186,8 +185,17 @@ export class Webbs3D {
   }
 
   startCelebrationPose(): void {
-    this.celebratingPose   = true
-    this.celebPoseStartMs  = performance.now()
+    this.celebratingPose  = true
+    this.celebPoseStartMs = performance.now()
+    // Snap to face -Z (default forward) so the celebration pose's world-space
+    // foot positions line up with the spider's anatomy.
+    this.group.rotation.y = 0
+    this.facingX = 0
+    this.facingZ = -1
+    // Stop any residual movement so the spider stays put for the pose
+    this.collisionBody.velocity.x = 0
+    this.collisionBody.velocity.z = 0
+    this.moveDir.set(0, 0)
   }
 
   endCelebrationPose(): void {

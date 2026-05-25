@@ -102,6 +102,26 @@ export class FogOfWarSystem3D {
     this.revealTex.needsUpdate = true
   }
 
+  // Round 6 Issue 7: serialize the reveal canvas as a PNG data-URL so the
+  // explored-area state can persist across scene transitions via Registry.
+  serialize(): string | null {
+    try {
+      return (this.ctx.canvas as HTMLCanvasElement).toDataURL('image/png')
+    } catch {
+      return null
+    }
+  }
+
+  // Restore reveal canvas from a previously serialized data-URL.
+  restore(dataUrl: string): void {
+    const img = new Image()
+    img.onload = () => {
+      this.ctx.drawImage(img, 0, 0)
+      this.revealTex.needsUpdate = true
+    }
+    img.src = dataUrl
+  }
+
   // Spawn a small mesh above the fog plane so it remains visible regardless of
   // explored state — used for fungus orb / lantern navigation beacons.
   addBeacon(x: number, z: number, color = 0x99ffcc): void {
