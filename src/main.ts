@@ -273,6 +273,11 @@ async function transitionTo(zone: ZoneId): Promise<void> {
   webLauncher.release()
   weaponUseSystem.stopFlame()
 
+  const ZONE_TITLES: Record<ZoneId, string> = {
+    homeBase:   'HOME BASE',
+    antColony:  'ZONE 1  —  ANT COLONY',
+    bossRoller: 'ZONE 2  —  THE ROLLER',
+  }
   await ZoneTransitionSystem3D.transition(() => {
     activeScene.destroy()
 
@@ -298,15 +303,14 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         weaponUseSystem.setEnemies(s.enemies)
         webLauncher.setEnemies(s.enemies)
         webLauncher.setWallHitTest((x, z) => s.webWallHitTest(x, z))
-        webbs.collisionBody.x = AntColonyScene3D.SPAWN_FROM_HOME_X
-        webbs.collisionBody.z = 0
+        const fromBoss = currentZone === 'bossRoller'
+        const spawnX   = fromBoss ? AntColonyScene3D.SPAWN_FROM_BOSS_X : AntColonyScene3D.SPAWN_FROM_HOME_X
+        const spawnZ   = fromBoss ? s.getBossPortalZ() : 0
+        webbs.collisionBody.x = spawnX
+        webbs.collisionBody.z = spawnZ
         webbs.collisionBody.velocity.x = 0
         webbs.collisionBody.velocity.z = 0
-        camera.position.set(
-          AntColonyScene3D.SPAWN_FROM_HOME_X + CAM_OFFSET.x,
-          CAM_OFFSET.y,
-          CAM_OFFSET.z,
-        )
+        camera.position.set(spawnX + CAM_OFFSET.x, CAM_OFFSET.y, spawnZ + CAM_OFFSET.z)
         hud.setZoneLabel('ZONE 1 — ANT COLONY')
         hud.hideBossHp()
         break
@@ -326,6 +330,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
           CAM_OFFSET.y,
           BossRollerScene3D.SPAWN_Z + CAM_OFFSET.z,
         )
+        registry.set('bossPortalZ', undefined)   // next colony visit re-randomizes portal
         hud.setZoneLabel('BOSS CHAMBER')
         break
       }
@@ -334,7 +339,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
     currentZone = zone
     const savedHp = registry.get<number>('health')
     if (savedHp !== undefined) webbs.hp = Math.max(1, savedHp)
-  })
+  }, ZONE_TITLES[zone])
 
   if (zone === 'antColony' && !registry.get<boolean>('antColonyFirstVisit')) {
     registry.set('antColonyFirstVisit', true)
@@ -690,10 +695,25 @@ function gameLoop() {
   // ── Fog of war ───────────────────────────────────────────────────────────
 
   if (currentZone === 'antColony') {
-    ;(activeScene as AntColonyScene3D).fog.update(
-      webbs.collisionBody.x,
-      webbs.collisionBody.z,
-    )
+    const acs = activeScene as AntColonyScene3D
+    acs.fog.update(webbs.collisionBody.x, webbs.collisionBody.z)
+    acs.tickVisuals(delta, webbs.collisionBody.x, webbs.collisionBody.z)
+
+    // Dead-end room triggers (spike / ambush / loot)
+    const deadEndResult = acs.checkDeadEndTriggers(webbs.collisionBody.x, webbs.collisionBody.z)
+    if (deadEndResult) {
+      if (deadEndResult.type === 'spike') {
+        webbs.damage(deadEndResult.damage)
+        pickupNotify.notify('SPIKE TRAP', `-${deadEndResult.damage} HP`, '#ff2222')
+      } else if (deadEndResult.type === 'ambush') {
+        pickupNotify.notify('AMBUSH!', 'Enemies spawned', '#ff6622')
+      } else if (deadEndResult.type === 'loot') {
+        const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
+        inv[deadEndResult.mat] = (inv[deadEndResult.mat] ?? 0) + deadEndResult.qty
+        registry.set('craftingInventory', inv)
+        pickupNotify.notify(deadEndResult.mat, `×${deadEndResult.qty}`, '#88aa44')
+      }
+    }
   }
 
   // ── Hit particles ────────────────────────────────────────────────────────

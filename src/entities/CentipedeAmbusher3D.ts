@@ -36,7 +36,10 @@ export class CentipedeAmbusher3D extends Enemy3D {
   private facingAngle = 0
 
   // Visual meshes for flash tint
-  private bodyMeshes: THREE.Mesh[] = []
+  private bodyMeshes:     THREE.Mesh[] = []
+  private eyeMeshes:      THREE.Mesh[] = []
+  private mandibleMeshes: THREE.Mesh[] = []
+  private mandibleSides:  number[]     = []
 
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     super(threeScene, x, z, CONFIG, gradientMap)
@@ -81,6 +84,7 @@ export class CentipedeAmbusher3D extends Enemy3D {
       const eye = new THREE.Mesh(eyeGeo, eyeMat)
       eye.position.set(ex, 0.085, 0.22)
       this.group.add(eye)
+      this.eyeMeshes.push(eye)
     }
 
     // Mandibles — two small thin cones
@@ -90,6 +94,8 @@ export class CentipedeAmbusher3D extends Enemy3D {
       mand.position.set(mx, 0.06, 0.28)
       mand.rotation.x = -Math.PI / 2
       this.group.add(mand)
+      this.mandibleMeshes.push(mand)
+      this.mandibleSides.push(mx < 0 ? -1 : 1)
     }
   }
 
@@ -185,6 +191,17 @@ export class CentipedeAmbusher3D extends Enemy3D {
         }
         break
       }
+    }
+
+    const windupT = this.state === 'WINDUP' ? Math.min(1, this.stateTimer / WINDUP_DUR) : 0
+    this.applyWindupTell(windupT)
+  }
+
+  private applyWindupTell(t: number): void {
+    const eyeScale = 1 + t * 0.8        // up to ×1.8
+    for (const eye of this.eyeMeshes) eye.scale.setScalar(eyeScale)
+    for (let i = 0; i < this.mandibleMeshes.length; i++) {
+      this.mandibleMeshes[i].rotation.y = this.mandibleSides[i] * t * 0.55
     }
   }
 }

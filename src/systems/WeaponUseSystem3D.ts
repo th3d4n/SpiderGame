@@ -3,6 +3,8 @@ import { WeaponType } from './WeaponSystem'
 import { WeakPointZone, type Enemy3D } from '../entities/Enemy3D'
 import type { Webbs3D } from '../entities/Webbs3D'
 import { registry } from '../core/Registry'
+import { BeetleTank3D } from '../entities/BeetleTank3D'
+import { RollerBoss3D } from '../entities/RollerBoss3D'
 
 // ── Weapon constants (pixel values × 0.01 = world units) ────────────────────
 const SWORD_RADIUS    = 0.70;  const SWORD_SWEEP  = 90;  const SWORD_DMG  = 18
@@ -262,7 +264,7 @@ export class WeaponUseSystem3D {
       if (dist - enemy.config.bodyRadius > GLOVES_RADIUS) continue
       const toEnemy = Math.atan2(dx, dz)
       if (Math.abs(wrapAngle(toEnemy - facingAngle)) <= halfCone) {
-        enemy.takeDamage(GLOVES_DMG, WeakPointZone.Body)
+        enemy.takeDamage(GLOVES_DMG, this.resolveZone(enemy, wx, wz))
         enemy.applyKnockback(webbs.facingX * GLOVES_KB, webbs.facingZ * GLOVES_KB)
         this.lastHitFrame = true
         hit = true
@@ -336,7 +338,7 @@ export class WeaponUseSystem3D {
       if (dist - enemy.config.bodyRadius > radius) continue
       const toEnemy = Math.atan2(dx, dz)
       if (Math.abs(wrapAngle(toEnemy - facingAngle)) <= halfRad) {
-        enemy.takeDamage(damage, WeakPointZone.Body)
+        enemy.takeDamage(damage, this.resolveZone(enemy, wx, wz))
         const kx = Math.sin(toEnemy) * knockback
         const kz = Math.cos(toEnemy) * knockback
         enemy.applyKnockback(kx, kz)
@@ -401,6 +403,31 @@ export class WeaponUseSystem3D {
     mesh.position.set(pos.x, 0.02, pos.z)
     this.threeScene.add(mesh)
     this.hitEffects.push({ mesh, elapsed: 0, duration, maxRadius: maxR })
+  }
+
+  // ── Per-enemy weak-point zone resolver ───────────────────────────────────
+  // Returns the appropriate WeakPointZone for a hit given the attacker position.
+
+  private resolveZone(enemy: Enemy3D, wx: number, wz: number): WeakPointZone {
+    // Beetle underbelly: hit from behind while beetle is charging
+    if (enemy instanceof BeetleTank3D && enemy.isCharging()) {
+      const cf = enemy.getChargeFacing()
+      const bax = wx - enemy.collisionBody.x
+      const baz = wz - enemy.collisionBody.z
+      const len = Math.hypot(bax, baz) || 1
+      // dot > 0.5 means attacker is roughly in the direction beetle came FROM
+      if (cf.x * (bax / len) + cf.z * (baz / len) > 0.5) {
+        return WeakPointZone.Underbelly
+      }
+    }
+    // Roller snout: attacker within 0.35wu of snout world position
+    if (enemy instanceof RollerBoss3D) {
+      const fd = enemy.getFacingDir()
+      const snoutX = enemy.collisionBody.x + 0.62 * fd
+      const dsx = wx - snoutX, dsz = wz - enemy.collisionBody.z
+      if (dsx * dsx + dsz * dsz < 0.35 * 0.35) return WeakPointZone.Head
+    }
+    return WeakPointZone.Body
   }
 
   private tickHitEffects(delta: number): void {

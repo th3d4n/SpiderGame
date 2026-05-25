@@ -1,136 +1,208 @@
 import * as THREE from 'three'
-import { physicsWorld } from '../core/PhysicsWorld'
+import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import type { Enemy3D } from '../entities/Enemy3D'
 import { CentipedeAmbusher3D } from '../entities/CentipedeAmbusher3D'
 import { BeetleTank3D } from '../entities/BeetleTank3D'
 import { FogOfWarSystem3D } from '../systems/FogOfWarSystem3D'
+import { registry } from '../core/Registry'
 
-const W       = 40    // world width  (X: -20 … +20)
-const D       = 7.2   // world depth  (Z: -3.6 … +3.6)
-const WALL_H  = 2.0
-const WALL_T  = 0.30  // maze wall thickness
-const RESPAWN = 22    // seconds between respawns
-const CULL_R  = 13    // skip update beyond this X distance from player
+// ── World dimensions ───────────────────────────────────────────────────────────
+const W      = 40    // X: -20 … +20
+const D      = 26    // Z: -13 … +13
+const WALL_H = 2.0
 
-// ─── Maze walls — 5 cross-barriers dividing the corridor into 6 sections ──────
-// Each entry lists wall SEGMENTS that BLOCK the passage (player walks through gaps).
-const MAZE_WALLS: Array<{ x: number; segs: Array<{ z1: number; z2: number }> }> = [
-  { x: -14, segs: [{ z1: -0.3,  z2:  3.6 }] },             // passage: back half
-  { x:  -7, segs: [{ z1: -3.6,  z2:  0.4 }] },             // passage: front half
-  { x:   0, segs: [{ z1: -3.6, z2: -0.9 }, { z1: 0.9, z2: 3.6 }] }, // center gap
-  { x:   7, segs: [{ z1: -0.3,  z2:  3.6 }] },             // passage: back half
-  { x:  14, segs: [{ z1: -3.6,  z2:  0.4 }] },             // passage: front half
+// ── 5 parallel corridors ───────────────────────────────────────────────────────
+// Each corridor: 3wu wide, running the full X extent.
+// CZ[i] is the center Z of corridor i (0=bottom, 4=top).
+const CZ      = [-10, -5, 0, 5, 10] as const   // 5 corridor center Z values
+const CORR_HW = 1.5                              // corridor half-width
+
+// Dividing wall Z ranges  (between adjacent corridors)
+const DIV_WALLS = [
+  { lo: CZ[0] + CORR_HW, hi: CZ[1] - CORR_HW },   // between C0 and C1
+  { lo: CZ[1] + CORR_HW, hi: CZ[2] - CORR_HW },   // between C1 and C2
+  { lo: CZ[2] + CORR_HW, hi: CZ[3] - CORR_HW },   // between C2 and C3
+  { lo: CZ[3] + CORR_HW, hi: CZ[4] - CORR_HW },   // between C3 and C4
+] as const
+
+// Passage x-positions per dividing wall (1.5wu half-width gaps)
+const GAP_HALF = 1.0
+const DIV_GAPS: ReadonlyArray<ReadonlyArray<number>> = [
+  [-14, 0, 14],          // C0–C1: far ends + center
+  [-14, -7, 7, 14],      // C1–C2: all 4
+  [-14, -7, 7, 14],      // C2–C3: all 4
+  [-14, 0, 14],          // C3–C4: far ends + center
 ]
 
-// ─── 23 enemy spawns ──────────────────────────────────────────────────────────
-const SPAWN_DATA: Array<{ kind: 'centipede' | 'beetle'; x: number; z: number }> = [
-  // Section 1  (X: -20…-14)
-  { kind: 'centipede', x: -18,  z: -1.0 },
-  { kind: 'centipede', x: -17,  z:  2.5 },
-  { kind: 'beetle',    x: -16,  z: -2.8 },
-  { kind: 'centipede', x: -15,  z:  1.0 },
-  // Section 2  (X: -14…-7)
-  { kind: 'centipede', x: -12,  z:  2.2 },
-  { kind: 'beetle',    x: -11,  z: -2.0 },
-  { kind: 'centipede', x: -10,  z:  3.0 },
-  { kind: 'beetle',    x:  -9,  z: -1.0 },
-  { kind: 'centipede', x:  -8,  z:  1.5 },
-  // Section 3  (X: -7…0)
-  { kind: 'centipede', x:  -6,  z: -2.5 },
-  { kind: 'beetle',    x:  -5,  z:  2.0 },
-  { kind: 'centipede', x:  -3,  z: -1.0 },
-  { kind: 'centipede', x:  -2,  z:  3.0 },
-  // Section 4  (X: 0…7)
-  { kind: 'centipede', x:   1,  z: -3.0 },
-  { kind: 'beetle',    x:   2,  z:  2.5 },
-  { kind: 'centipede', x:   3,  z: -1.5 },
-  { kind: 'beetle',    x:   5,  z:  1.0 },
-  { kind: 'centipede', x:   6,  z: -2.0 },
-  // Section 5  (X: 7…14)
-  { kind: 'centipede', x:   8,  z:  2.0 },
-  { kind: 'beetle',    x:   9,  z: -3.0 },
-  { kind: 'centipede', x:  11,  z:  1.5 },
-  { kind: 'centipede', x:  12,  z: -1.5 },
-  { kind: 'beetle',    x:  13,  z:  3.0 },
+const RESPAWN = 22
+const CULL_R  = 14
+
+// ── Dead-end rooms ─────────────────────────────────────────────────────────────
+// Alcoves that branch off the outer corridors (C0 / C4) in the Z direction,
+// and off lateral corridors (C1 / C3) mid-X.
+type RoomType = 'spike' | 'ambush' | 'loot'
+
+const DEAD_END_DATA: Array<{
+  x:     number
+  cz:    number   // center Z of source corridor
+  dz:    number   // alcove extends in this Z direction (±1.5wu beyond corridor edge)
+  type:  RoomType
+}> = [
+  // Off C0 (bottom corridor, extends further south)
+  { x: -16, cz: -10, dz: -1, type: 'spike'  },
+  { x:  -8, cz: -10, dz: -1, type: 'loot'   },
+  { x:   2, cz: -10, dz: -1, type: 'ambush' },
+  { x:  11, cz: -10, dz: -1, type: 'spike'  },
+  // Off C4 (top corridor, extends further north)
+  { x: -15, cz:  10, dz:  1, type: 'loot'   },
+  { x:  -4, cz:  10, dz:  1, type: 'ambush' },
+  { x:   5, cz:  10, dz:  1, type: 'spike'  },
+  { x:  15, cz:  10, dz:  1, type: 'loot'   },
+  // Off C1 (lateral, Z±)
+  { x: -10, cz:  -5, dz: -1, type: 'ambush' },
+  { x:   4, cz:  -5, dz: -1, type: 'loot'   },
+  // Off C3 (lateral, Z±)
+  { x: -10, cz:   5, dz:  1, type: 'loot'   },
+  { x:   4, cz:   5, dz:  1, type: 'ambush' },
+  // Off connecting passage (dead-end pocket at x=0 junction)
+  { x:   0, cz:  -5, dz: -1, type: 'spike'  },
+  { x:   0, cz:   5, dz:  1, type: 'spike'  },
 ]
 
-// ─── 14 chests (4 mimics ≈ 29%) ───────────────────────────────────────────────
-const CHEST_DATA: Array<{ x: number; z: number; isMimic: boolean }> = [
-  { x: -18, z:  1.8, isMimic: false },
-  { x: -18, z: -2.5, isMimic: false },
-  { x: -12, z:  2.8, isMimic: false },
-  { x: -11, z: -2.5, isMimic: true  },
-  { x:  -5, z:  3.0, isMimic: false },
-  { x:  -4, z: -3.0, isMimic: false },
-  { x:  -1, z:  2.5, isMimic: true  },
-  { x:   2, z: -3.0, isMimic: false },
-  { x:   4, z:  3.0, isMimic: false },
-  { x:   7, z: -3.0, isMimic: true  },
-  { x:  10, z:  2.5, isMimic: false },
-  { x:  11, z: -2.0, isMimic: true  },
-  { x:  17, z:  1.5, isMimic: false },
-  { x:  17, z: -2.5, isMimic: false },
+// ── Enemy spawns (45 total, 9 per corridor) ────────────────────────────────────
+const SPAWN_DATA: Array<{ kind: 'centipede' | 'beetle'; x: number; cz: number }> = [
+  // Corridor 0 (center z=-10)
+  { kind: 'centipede', x: -18, cz: -10 }, { kind: 'centipede', x: -15, cz: -10 },
+  { kind: 'beetle',    x: -12, cz: -10 }, { kind: 'centipede', x:  -7, cz: -10 },
+  { kind: 'centipede', x:  -3, cz: -10 }, { kind: 'beetle',    x:   1, cz: -10 },
+  { kind: 'centipede', x:   6, cz: -10 }, { kind: 'centipede', x:  11, cz: -10 },
+  { kind: 'beetle',    x:  16, cz: -10 },
+  // Corridor 1 (center z=-5)
+  { kind: 'centipede', x: -17, cz:  -5 }, { kind: 'beetle',    x: -13, cz:  -5 },
+  { kind: 'centipede', x:  -9, cz:  -5 }, { kind: 'centipede', x:  -5, cz:  -5 },
+  { kind: 'beetle',    x:  -1, cz:  -5 }, { kind: 'centipede', x:   3, cz:  -5 },
+  { kind: 'centipede', x:   8, cz:  -5 }, { kind: 'beetle',    x:  13, cz:  -5 },
+  { kind: 'centipede', x:  17, cz:  -5 },
+  // Corridor 2 (entry, center z=0)
+  { kind: 'centipede', x: -17, cz:   0 }, { kind: 'centipede', x: -12, cz:   0 },
+  { kind: 'beetle',    x:  -8, cz:   0 }, { kind: 'centipede', x:  -4, cz:   0 },
+  { kind: 'beetle',    x:   2, cz:   0 }, { kind: 'centipede', x:   6, cz:   0 },
+  { kind: 'centipede', x:  10, cz:   0 }, { kind: 'beetle',    x:  14, cz:   0 },
+  { kind: 'centipede', x:  17, cz:   0 },
+  // Corridor 3 (center z=+5)
+  { kind: 'centipede', x: -16, cz:   5 }, { kind: 'beetle',    x: -11, cz:   5 },
+  { kind: 'centipede', x:  -7, cz:   5 }, { kind: 'centipede', x:  -2, cz:   5 },
+  { kind: 'beetle',    x:   3, cz:   5 }, { kind: 'centipede', x:   7, cz:   5 },
+  { kind: 'centipede', x:  12, cz:   5 }, { kind: 'beetle',    x:  16, cz:   5 },
+  { kind: 'centipede', x:  18, cz:   5 },
+  // Corridor 4 (center z=+10)
+  { kind: 'centipede', x: -17, cz:  10 }, { kind: 'centipede', x: -13, cz:  10 },
+  { kind: 'beetle',    x:  -8, cz:  10 }, { kind: 'centipede', x:  -3, cz:  10 },
+  { kind: 'centipede', x:   2, cz:  10 }, { kind: 'beetle',    x:   8, cz:  10 },
+  { kind: 'centipede', x:  12, cz:  10 }, { kind: 'centipede', x:  15, cz:  10 },
+  { kind: 'beetle',    x:  18, cz:  10 },
 ]
 
-// Chest loot pool — one entry picked at random
+// ── 20 chests, 6 mimics ────────────────────────────────────────────────────────
+const CHEST_DATA: Array<{ x: number; cz: number; isMimic: boolean }> = [
+  // C0
+  { x: -17, cz: -10, isMimic: false }, { x:  -6, cz: -10, isMimic: true  },
+  { x:   5, cz: -10, isMimic: false }, { x:  14, cz: -10, isMimic: false },
+  // C1
+  { x: -14, cz:  -5, isMimic: false }, { x:  -3, cz:  -5, isMimic: true  },
+  { x:   8, cz:  -5, isMimic: false }, { x:  17, cz:  -5, isMimic: false },
+  // C2 (entry)
+  { x: -18, cz:   0, isMimic: false }, { x:  -9, cz:   0, isMimic: false },
+  { x:   3, cz:   0, isMimic: true  }, { x:  11, cz:   0, isMimic: false },
+  // C3
+  { x: -15, cz:   5, isMimic: false }, { x:  -5, cz:   5, isMimic: false },
+  { x:   4, cz:   5, isMimic: true  }, { x:  16, cz:   5, isMimic: false },
+  // C4
+  { x: -16, cz:  10, isMimic: false }, { x:  -4, cz:  10, isMimic: true  },
+  { x:   6, cz:  10, isMimic: false }, { x:  15, cz:  10, isMimic: true  },
+]
+
 const CHEST_LOOT = [
-  { mat: 'SilkThread',  qty: 3 },
-  { mat: 'ChitinShard', qty: 2 },
-  { mat: 'WebFluid',    qty: 2 },
-  { mat: 'BoneFragment',qty: 2 },
-  { mat: 'BugPartsAnt', qty: 3 },
-  { mat: 'DriedFungus', qty: 1 },
+  { mat: 'SilkThread',  qty: 3 }, { mat: 'ChitinShard', qty: 2 },
+  { mat: 'WebFluid',    qty: 2 }, { mat: 'BoneFragment', qty: 2 },
+  { mat: 'BugPartsAnt', qty: 3 }, { mat: 'DriedFungus', qty: 1 },
 ]
 
-// ─── 9 HP modules ─────────────────────────────────────────────────────────────
-const HP_MODULE_DATA: Array<{ x: number; z: number }> = [
-  { x: -19, z:  0.5 }, { x: -16, z: -0.5 },
-  { x: -12, z:  0.0 }, { x:  -5, z:  0.8 },
-  { x:   0, z: -0.5 }, { x:   4, z:  0.3 },
-  { x:   8, z: -0.5 }, { x:  15, z:  0.0 },
-  { x:  18, z:  1.0 },
+// ── HP modules (15) ────────────────────────────────────────────────────────────
+const HP_MODULE_DATA: Array<{ x: number; cz: number }> = [
+  { x: -19, cz: -10 }, { x: -10, cz: -10 }, { x:   6, cz: -10 },
+  { x: -16, cz:  -5 }, { x:   0, cz:  -5 }, { x:  12, cz:  -5 },
+  { x: -13, cz:   0 }, { x:   0, cz:   0 }, { x:  13, cz:   0 },
+  { x: -18, cz:   5 }, { x:  -4, cz:   5 }, { x:  10, cz:   5 },
+  { x: -12, cz:  10 }, { x:   4, cz:  10 }, { x:  17, cz:  10 },
 ]
 
-// ─── 12 material caches + 10 thistle seeds ────────────────────────────────────
-const CACHE_DATA: Array<{ x: number; z: number; mat: string; qty: number }> = [
-  { x: -18, z:  3.0, mat: 'SilkThread',  qty: 2 },
-  { x: -17, z: -1.0, mat: 'ChitinShard', qty: 2 },
-  { x: -13, z:  0.8, mat: 'BugPartsAnt', qty: 2 },
-  { x: -10, z:  1.5, mat: 'WebFluid',    qty: 2 },
-  { x:  -8, z: -3.0, mat: 'SilkThread',  qty: 2 },
-  { x:  -3, z:  2.0, mat: 'BoneFragment',qty: 1 },
-  { x:   1, z: -2.0, mat: 'ChitinShard', qty: 2 },
-  { x:   5, z:  3.0, mat: 'BugPartsAnt', qty: 2 },
-  { x:   9, z: -0.8, mat: 'DriedFungus', qty: 1 },
-  { x:  11, z:  3.0, mat: 'WebFluid',    qty: 2 },
-  { x:  15, z: -2.5, mat: 'SilkThread',  qty: 2 },
-  { x:  18, z:  3.0, mat: 'BoneFragment',qty: 1 },
+// ── Material caches (25) ───────────────────────────────────────────────────────
+const CACHE_DATA: Array<{ x: number; cz: number; mat: string; qty: number }> = [
+  { x: -17, cz: -10, mat: 'SilkThread',   qty: 2 }, { x:  -8, cz: -10, mat: 'ChitinShard', qty: 2 },
+  { x:   2, cz: -10, mat: 'BugPartsAnt',  qty: 2 }, { x:  11, cz: -10, mat: 'WebFluid',     qty: 2 },
+  { x:  16, cz: -10, mat: 'DriedFungus',  qty: 1 },
+  { x: -15, cz:  -5, mat: 'BoneFragment', qty: 2 }, { x:  -6, cz:  -5, mat: 'SilkThread',   qty: 2 },
+  { x:   4, cz:  -5, mat: 'ChitinShard',  qty: 2 }, { x:  14, cz:  -5, mat: 'WebFluid',     qty: 2 },
+  { x:  18, cz:  -5, mat: 'BugPartsAnt',  qty: 1 },
+  { x: -16, cz:   0, mat: 'SilkThread',   qty: 2 }, { x:  -7, cz:   0, mat: 'BoneFragment', qty: 2 },
+  { x:   5, cz:   0, mat: 'ChitinShard',  qty: 2 }, { x:  15, cz:   0, mat: 'DriedFungus',  qty: 1 },
+  { x: -14, cz:   5, mat: 'WebFluid',     qty: 2 }, { x:  -3, cz:   5, mat: 'SilkThread',   qty: 2 },
+  { x:   6, cz:   5, mat: 'BugPartsAnt',  qty: 2 }, { x:  13, cz:   5, mat: 'BoneFragment', qty: 2 },
+  { x:  18, cz:   5, mat: 'ChitinShard',  qty: 1 },
+  { x: -18, cz:  10, mat: 'SilkThread',   qty: 2 }, { x:  -9, cz:  10, mat: 'WebFluid',     qty: 2 },
+  { x:   1, cz:  10, mat: 'ChitinShard',  qty: 2 }, { x:   9, cz:  10, mat: 'DriedFungus',  qty: 1 },
+  { x:  14, cz:  10, mat: 'BugPartsAnt',  qty: 2 }, { x:  19, cz:  10, mat: 'BoneFragment', qty: 1 },
 ]
 
-const THISTLE_DATA: Array<{ x: number; z: number }> = [
-  { x: -19, z:  2.5 }, { x: -15, z: -2.0 },
-  { x: -11, z:  3.2 }, { x:  -6, z: -1.5 },
-  { x:  -2, z:  1.8 }, { x:   3, z: -2.8 },
-  { x:   6, z:  1.2 }, { x:  10, z: -2.5 },
-  { x:  14, z:  2.5 }, { x:  18, z: -1.5 },
+// ── Thistle seeds (20) ─────────────────────────────────────────────────────────
+const THISTLE_DATA: Array<{ x: number; cz: number }> = [
+  { x: -18, cz: -10 }, { x:  -4, cz: -10 }, { x:   9, cz: -10 }, { x:  17, cz: -10 },
+  { x: -11, cz:  -5 }, { x:   6, cz:  -5 }, { x:  16, cz:  -5 }, { x:  19, cz:  -5 },
+  { x: -14, cz:   0 }, { x:  -2, cz:   0 }, { x:   8, cz:   0 }, { x:  18, cz:   0 },
+  { x: -13, cz:   5 }, { x:   0, cz:   5 }, { x:   9, cz:   5 }, { x:  17, cz:   5 },
+  { x: -16, cz:  10 }, { x:  -5, cz:  10 }, { x:   7, cz:  10 }, { x:  15, cz:  10 },
 ]
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ── 32 fungus lanterns spread across all corridors ─────────────────────────────
+const LANTERN_DATA: Array<{ x: number; cz: number }> = [
+  // C0
+  { x: -18, cz: -10 }, { x: -13, cz: -10 }, { x:  -7, cz: -10 },
+  { x:  -1, cz: -10 }, { x:   5, cz: -10 }, { x:  12, cz: -10 }, { x:  17, cz: -10 },
+  // C1
+  { x: -16, cz:  -5 }, { x: -10, cz:  -5 }, { x:  -3, cz:  -5 },
+  { x:   3, cz:  -5 }, { x:   9, cz:  -5 }, { x:  15, cz:  -5 },
+  // C2 (entry corridor)
+  { x: -15, cz:   0 }, { x:  -8, cz:   0 }, { x:  -1, cz:   0 },
+  { x:   6, cz:   0 }, { x:  13, cz:   0 },
+  // C3
+  { x: -17, cz:   5 }, { x: -11, cz:   5 }, { x:  -4, cz:   5 },
+  { x:   2, cz:   5 }, { x:   8, cz:   5 }, { x:  16, cz:   5 },
+  // C4
+  { x: -19, cz:  10 }, { x: -14, cz:  10 }, { x:  -8, cz:  10 },
+  { x:  -2, cz:  10 }, { x:   4, cz:  10 }, { x:  10, cz:  10 }, { x:  18, cz:  10 },
+  // Passage junction markers
+  { x: -14, cz:  -2 }, { x:  14, cz:   2 },
+]
+
+// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface SpawnRecord {
-  kind:          'centipede' | 'beetle'
-  x:             number
-  z:             number
-  enemy:         Enemy3D | null
-  respawnTimer:  number   // seconds; 0 on init → spawn immediately
+  kind:         'centipede' | 'beetle'
+  x:            number
+  z:            number    // world Z (corridor center + small jitter)
+  enemy:        Enemy3D | null
+  respawnTimer: number
 }
 
 interface ChestRecord {
-  x:       number
-  z:       number
-  isMimic: boolean
-  opened:  boolean
-  mesh:    THREE.Group
+  x:            number
+  z:            number
+  isMimic:      boolean
+  opened:       boolean
+  mesh:         THREE.Group
+  wakeProgress: number   // 0→1 for mimic pre-burst animation
+  wakeActive:   boolean
 }
 
 interface PickupRecord {
@@ -138,40 +210,69 @@ interface PickupRecord {
   z:         number
   collected: boolean
   mesh:      THREE.Mesh | null
-  // for caches only:
   mat?:      string
   qty?:      number
 }
 
+interface DeadEndRecord {
+  x:          number
+  z:          number   // alcove center (outside corridor edge)
+  type:       RoomType
+  triggered:  boolean
+  mesh:       THREE.Group | null
+  spikeMeshes?: THREE.Mesh[]
+}
+
+export type DeadEndResult = { type: 'spike'; damage: number } | { type: 'ambush' } | { type: 'loot'; mat: string; qty: number } | null
+
+// ── Helper ─────────────────────────────────────────────────────────────────────
+
+function jitterZ(cz: number, range = 0.8): number {
+  return cz + (Math.random() - 0.5) * range
+}
+
 export class AntColonyScene3D {
   static readonly LEFT  = -W / 2          // -20
-  static readonly RIGHT =  W / 2          //  +20
-  static readonly BACK  = -D / 2          // -3.6
-  static readonly FRONT =  D / 2          // +3.6
+  static readonly RIGHT =  W / 2          // +20
+  static readonly BACK  = -D / 2          // -13
+  static readonly FRONT =  D / 2          // +13
 
   static readonly EXIT_RIGHT_X      =  19.0
   static readonly EXIT_LEFT_X       = -19.0
   static readonly SPAWN_FROM_HOME_X =  18.5
   static readonly SPAWN_FROM_BOSS_X = -18.5
   static readonly WORKBENCH_X       =  15.0
-  static readonly OBJ_Z             =  2.0
+  static readonly OBJ_Z             =  0.8   // inside entry corridor (C2, center z=0)
 
-  enemies: Enemy3D[] = []  // mutated in-place — weaponUseSystem holds this ref
+  enemies: Enemy3D[] = []
   fog:     FogOfWarSystem3D
 
-  private threeScene:    THREE.Scene
-  private gradientMap:   THREE.Texture
-  private tracked:       THREE.Object3D[] = []
-  private spawnRecords:  SpawnRecord[]    = []
-  private freeEnemies:   Enemy3D[]        = []  // mimics and one-off spawns
-  private chests:        ChestRecord[]    = []
-  private hpModules:     PickupRecord[]   = []
-  private caches:        PickupRecord[]   = []
-  private thistles:      PickupRecord[]   = []
+  private threeScene:   THREE.Scene
+  private gradientMap:  THREE.Texture
+  private tracked:      THREE.Object3D[] = []
+  private wallBodies:   CollisionBody[]  = []
+  private spawnRecords: SpawnRecord[]    = []
+  private freeEnemies:  Enemy3D[]        = []
+  private chests:       ChestRecord[]    = []
+  private hpModules:    PickupRecord[]   = []
+  private caches:       PickupRecord[]   = []
+  private thistles:     PickupRecord[]   = []
+  private deadEnds:     DeadEndRecord[]  = []
+  private bossPortalZ:  number           = 0   // randomized on construction
+  private orbMeshes:    THREE.Mesh[]     = []  // for bob animation
 
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
     this.threeScene  = threeScene
     this.gradientMap = gradientMap
+
+    // Randomize boss portal Z among corridor centers (persists for one colony visit)
+    const savedZ = registry.get<number | undefined>('bossPortalZ')
+    if (typeof savedZ === 'number') {
+      this.bossPortalZ = savedZ
+    } else {
+      this.bossPortalZ = CZ[Math.floor(Math.random() * CZ.length)]
+      registry.set('bossPortalZ', this.bossPortalZ)
+    }
 
     physicsWorld.bounds = {
       minX: AntColonyScene3D.LEFT  - 1,
@@ -182,13 +283,14 @@ export class AntColonyScene3D {
 
     this.buildGround()
     this.buildOuterWalls()
-    this.buildMazeWalls()
+    this.buildCorridorDividers()
     this.buildPortals()
     this.buildWorkbench()
     this.buildChests()
     this.buildHpModules()
     this.buildCaches()
     this.buildThistles()
+    this.buildDeadEnds()
     this.buildDecoration()
     this.buildLighting()
     this.initSpawns()
@@ -199,79 +301,128 @@ export class AntColonyScene3D {
       AntColonyScene3D.BACK,  AntColonyScene3D.FRONT,
       3.5,
     )
-    // Above-fog beacons for the 8 decorative fungus orbs — always visible through fog
-    for (const [bx, bz] of [[-17,0],[-11,-2.5],[-5,2],[-1,-1.5],[6,2.8],[12,-0.8],[18,1.5],[0,0]] as [number,number][]) {
-      this.fog.addBeacon(bx, bz)
+    for (const l of LANTERN_DATA) {
+      this.fog.addBeacon(l.x, l.cz)
     }
   }
 
-  // ── Ground ───────────────────────────────────────────────────────────────────
+  getBossPortalZ(): number { return this.bossPortalZ }
+
+  // ── Ground (5 corridor bands + connecting passages) ───────────────────────────
 
   private buildGround(): void {
-    const mat = new THREE.MeshToonMaterial({ color: 0x0e0a06, gradientMap: this.gradientMap })
-    this.add(new THREE.Mesh(new THREE.PlaneGeometry(W, D).rotateX(-Math.PI / 2), mat))
-
+    const mat     = new THREE.MeshToonMaterial({ color: 0x0e0a06, gradientMap: this.gradientMap })
     const patchMat = new THREE.MeshBasicMaterial({ color: 0x1c1208 })
-    for (const [px, pz] of [[-15,-1],[-8,1.5],[-2,-2],[3,0.8],[9,-1.8],[14,2.2],[-12,2.5],[6,-2.5],[0,1]] as [number,number][]) {
-      const r = 0.35 + Math.random() * 0.45
-      const p = new THREE.Mesh(new THREE.CircleGeometry(r, 10).rotateX(-Math.PI / 2), patchMat)
-      p.position.set(px, 0.006, pz)
-      this.add(p)
+
+    // Floor per corridor
+    for (const cz of CZ) {
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, CORR_HW * 2).rotateX(-Math.PI / 2), mat)
+      floor.position.set(0, 0, cz)
+      floor.receiveShadow = true
+      this.add(floor)
+    }
+
+    // Passage floors (connecting adjacent corridors)
+    for (let wi = 0; wi < DIV_WALLS.length; wi++) {
+      const dw   = DIV_WALLS[wi]
+      const passH = dw.hi - dw.lo
+      for (const gx of DIV_GAPS[wi]) {
+        const pass = new THREE.Mesh(
+          new THREE.PlaneGeometry(GAP_HALF * 2, passH).rotateX(-Math.PI / 2),
+          mat,
+        )
+        pass.position.set(gx, 0, (dw.lo + dw.hi) / 2)
+        this.add(pass)
+      }
+    }
+
+    // Dirt patches
+    for (let ci = 0; ci < CZ.length; ci++) {
+      const cz = CZ[ci]
+      for (let i = 0; i < 5; i++) {
+        const px = (Math.random() - 0.5) * W * 0.9
+        const r  = 0.3 + Math.random() * 0.45
+        const p  = new THREE.Mesh(new THREE.CircleGeometry(r, 10).rotateX(-Math.PI / 2), patchMat)
+        p.position.set(px, 0.006, jitterZ(cz, 1.4))
+        this.add(p)
+      }
     }
   }
 
-  // ── Outer walls ───────────────────────────────────────────────────────────────
+  // ── Outer walls (N + S perimeter) ─────────────────────────────────────────────
 
   private buildOuterWalls(): void {
     const wm = new THREE.MeshToonMaterial({ color: 0x1a1008, gradientMap: this.gradientMap })
     const cm = new THREE.MeshToonMaterial({ color: 0x2a1a0e, gradientMap: this.gradientMap })
 
-    this.addBox(W + 0.6, WALL_H, 0.4, 0, WALL_H / 2, AntColonyScene3D.BACK,  wm)
+    // Back wall (south)
+    this.addBox(W + 0.6, WALL_H, 0.4, 0, WALL_H / 2, AntColonyScene3D.BACK, wm)
+    this.addBox(W + 0.6, 0.12, 0.6, 0, WALL_H + 0.06, AntColonyScene3D.BACK, cm)
+    // Front wall (north)
+    this.addBox(W + 0.6, WALL_H * 0.4, 0.3, 0, WALL_H * 0.2, AntColonyScene3D.FRONT, wm)
+    // Side walls (E/W)
     this.addBox(0.4, WALL_H, D + 0.6, AntColonyScene3D.RIGHT, WALL_H / 2, 0, wm)
     this.addBox(0.4, WALL_H, D + 0.6, AntColonyScene3D.LEFT,  WALL_H / 2, 0, wm)
-    this.addBox(W + 0.6, WALL_H * 0.4, 0.3, 0, WALL_H * 0.2, AntColonyScene3D.FRONT, wm)
-    this.addBox(W + 0.6, 0.12, 0.6, 0, WALL_H + 0.06, AntColonyScene3D.BACK,  cm)
     this.addBox(0.6, 0.12, D + 0.6, AntColonyScene3D.RIGHT, WALL_H + 0.06, 0, cm)
     this.addBox(0.6, 0.12, D + 0.6, AntColonyScene3D.LEFT,  WALL_H + 0.06, 0, cm)
 
+    // Stalactites along south back wall
+    const stalMat = new THREE.MeshToonMaterial({ color: 0x1a0e04, gradientMap: this.gradientMap })
+    for (let sx = -18; sx <= 18; sx += 4) {
+      const h = 0.25 + Math.random() * 0.4
+      const s = new THREE.Mesh(new THREE.ConeGeometry(0.07, h, 6), stalMat)
+      s.position.set(sx, WALL_H - h / 2, AntColonyScene3D.BACK + 0.18)
+      s.castShadow = true; this.add(s)
+    }
+
+    // Stone bumps at wall base (both sides)
     const stoneMat = new THREE.MeshToonMaterial({ color: 0x1e1006, gradientMap: this.gradientMap })
     for (const sx of [-17, -13, -8, -3, 2, 7, 12, 17]) {
-      const h = 0.18 + Math.random() * 0.3
+      const h = 0.18 + Math.random() * 0.28
       const s = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.12), stoneMat)
       s.position.set(sx, h / 2 + 0.04, AntColonyScene3D.BACK + 0.12)
       s.castShadow = true; this.add(s)
     }
-
-    const stalMat = new THREE.MeshToonMaterial({ color: 0x1a0e04, gradientMap: this.gradientMap })
-    for (const [sx, sz] of [[-16,-2.5],[-10,-2.8],[-4,-2.6],[2,-2.9],[8,-2.4],[14,-2.7]] as [number,number][]) {
-      const h = 0.25 + Math.random() * 0.4
-      const s = new THREE.Mesh(new THREE.ConeGeometry(0.07, h, 6), stalMat)
-      s.position.set(sx, WALL_H - h / 2, sz)
-      s.castShadow = true; this.add(s)
-    }
   }
 
-  // ── Maze cross-walls ──────────────────────────────────────────────────────────
+  // ── Corridor dividers (horizontal walls between corridors) ────────────────────
 
-  private buildMazeWalls(): void {
+  private buildCorridorDividers(): void {
     const wallMat = new THREE.MeshToonMaterial({ color: 0x251a0e, gradientMap: this.gradientMap })
     const capMat  = new THREE.MeshToonMaterial({ color: 0x332211, gradientMap: this.gradientMap })
 
-    for (const wall of MAZE_WALLS) {
-      for (const seg of wall.segs) {
-        const depth = seg.z2 - seg.z1
-        const cz    = (seg.z1 + seg.z2) / 2
-        this.addBox(WALL_T, WALL_H,        depth, wall.x, WALL_H / 2,      cz, wallMat)
-        this.addBox(WALL_T + 0.08, 0.10, depth + 0.1, wall.x, WALL_H + 0.05, cz, capMat)
+    for (let wi = 0; wi < DIV_WALLS.length; wi++) {
+      const dw  = DIV_WALLS[wi]
+      const hz  = (dw.lo + dw.hi) / 2
+      const ht  = dw.hi - dw.lo
+      const gxs = DIV_GAPS[wi]
+
+      // Build wall segments — gap-free X stretches between passage openings
+      const breakpoints = [AntColonyScene3D.LEFT, ...gxs.flatMap(gx => [gx - GAP_HALF, gx + GAP_HALF]), AntColonyScene3D.RIGHT]
+      for (let bi = 0; bi < breakpoints.length - 1; bi += 2) {
+        const x0 = breakpoints[bi], x1 = breakpoints[bi + 1]
+        const cx = (x0 + x1) / 2, segW = x1 - x0
+        this.addBox(segW, WALL_H, ht, cx, WALL_H / 2, hz, wallMat)
+        this.addBox(segW + 0.08, 0.10, ht + 0.1, cx, WALL_H + 0.05, hz, capMat)
+
+        // Register AABB body for collision
+        const body = physicsWorld.add({
+          x: x0, z: dw.lo, radius: 0,
+          velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
+          aabb: { x: x0, z: dw.lo, w: segW, h: ht },
+        })
+        this.wallBodies.push(body)
       }
     }
   }
 
-  // ── Portals ───────────────────────────────────────────────────────────────────
+  // ── Portals ────────────────────────────────────────────────────────────────────
 
   private buildPortals(): void {
+    // Entry from home: right side, z=0 (C2)
     this.buildPortalArch(AntColonyScene3D.RIGHT - 0.25, 0, 0x44ddff, 0x006688)
-    this.buildPortalArch(AntColonyScene3D.LEFT  + 0.25, 0, 0xff4422, 0x881100)
+    // Boss portal: left side, boss portal Z (randomized)
+    this.buildPortalArch(AntColonyScene3D.LEFT + 0.25, this.bossPortalZ, 0xff4422, 0x881100)
   }
 
   private buildPortalArch(px: number, pz: number, color: number, emissive: number): void {
@@ -295,7 +446,7 @@ export class AntColonyScene3D {
     this.add(light)
   }
 
-  // ── Workbench ─────────────────────────────────────────────────────────────────
+  // ── Workbench ──────────────────────────────────────────────────────────────────
 
   private buildWorkbench(): void {
     const woodMat = new THREE.MeshToonMaterial({ color: 0x5c3d1e, gradientMap: this.gradientMap })
@@ -314,12 +465,11 @@ export class AntColonyScene3D {
       new THREE.MeshBasicMaterial({ color: 0x66ffaa, transparent: true, opacity: 0.2, side: THREE.DoubleSide }),
     )
     glow.position.set(bx, 0.01, bz); this.add(glow)
-    this.add(new THREE.PointLight(0x66ffaa, 0.5, 2.5) as unknown as THREE.Object3D)
     const wbl = new THREE.PointLight(0x66ffaa, 0.5, 2.5)
     wbl.position.set(bx, 0.9, bz); this.add(wbl)
   }
 
-  // ── Chests ────────────────────────────────────────────────────────────────────
+  // ── Chests ─────────────────────────────────────────────────────────────────────
 
   private buildChests(): void {
     const bodyMat = new THREE.MeshToonMaterial({ color: 0x5c3d1e, gradientMap: this.gradientMap })
@@ -327,101 +477,180 @@ export class AntColonyScene3D {
     const bandMat = new THREE.MeshToonMaterial({ color: 0x888844, gradientMap: this.gradientMap })
 
     for (const d of CHEST_DATA) {
+      const z = jitterZ(d.cz, 1.2)
       const g = new THREE.Group()
-      g.position.set(d.x, 0, d.z)
+      g.position.set(d.x, 0, z)
 
       const body = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.30, 0.36), bodyMat.clone())
       body.position.y = 0.15; body.castShadow = true; g.add(body)
-
       const lid = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.14, 0.36), lidMat.clone())
       lid.position.y = 0.37; lid.castShadow = true; g.add(lid)
-
       const band = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.06, 0.06), bandMat.clone())
       band.position.set(0, 0.18, 0.19); g.add(band)
 
+      const glowColor = d.isMimic ? 0xff4422 : 0xffcc44
       const glow = new THREE.Mesh(
         new THREE.RingGeometry(0.22, 0.30, 16).rotateX(-Math.PI / 2),
-        new THREE.MeshBasicMaterial({ color: d.isMimic ? 0xff4422 : 0xffcc44, transparent: true, opacity: 0.25, side: THREE.DoubleSide }),
+        new THREE.MeshBasicMaterial({ color: glowColor, transparent: true, opacity: 0.25, side: THREE.DoubleSide }),
       )
       glow.position.y = 0.01; g.add(glow)
 
       this.threeScene.add(g)
       this.tracked.push(g)
-      this.chests.push({ x: d.x, z: d.z, isMimic: d.isMimic, opened: false, mesh: g })
+      this.chests.push({ x: d.x, z, isMimic: d.isMimic, opened: false, mesh: g, wakeProgress: 0, wakeActive: false })
     }
   }
 
-  // ── HP modules ────────────────────────────────────────────────────────────────
+  // ── HP modules ─────────────────────────────────────────────────────────────────
 
   private buildHpModules(): void {
     for (const d of HP_MODULE_DATA) {
+      const z   = jitterZ(d.cz, 1.0)
       const mat = new THREE.MeshStandardMaterial({ color: 0xff3344, emissive: 0xcc1122, emissiveIntensity: 0.7 })
       const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), mat)
-      mesh.position.set(d.x, 0.22, d.z)
+      mesh.position.set(d.x, 0.22, z)
       const glow = new THREE.Mesh(
         new THREE.RingGeometry(0.16, 0.22, 16).rotateX(-Math.PI / 2),
         new THREE.MeshBasicMaterial({ color: 0xff4455, transparent: true, opacity: 0.40, side: THREE.DoubleSide }),
       )
-      glow.position.set(d.x, 0.01, d.z)
+      glow.position.set(d.x, 0.01, z)
       this.threeScene.add(mesh, glow)
       this.tracked.push(mesh, glow)
-      this.hpModules.push({ x: d.x, z: d.z, collected: false, mesh })
+      this.hpModules.push({ x: d.x, z, collected: false, mesh })
     }
   }
 
-  // ── Material caches ───────────────────────────────────────────────────────────
+  // ── Material caches ────────────────────────────────────────────────────────────
 
   private buildCaches(): void {
     const colors: Record<string, number> = {
-      SilkThread: 0xddeeff, ChitinShard: 0x88aa44, WebFluid:    0x44aaff,
+      SilkThread: 0xddeeff, ChitinShard: 0x88aa44, WebFluid: 0x44aaff,
       BoneFragment: 0xccbbaa, BugPartsAnt: 0xaa8855, DriedFungus: 0x88cc44,
     }
     for (const d of CACHE_DATA) {
+      const z     = jitterZ(d.cz, 1.0)
       const color = colors[d.mat] ?? 0xaaaaaa
       const mat   = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4 })
       const mesh  = new THREE.Mesh(new THREE.SphereGeometry(0.10, 7, 5), mat)
-      mesh.position.set(d.x, 0.18, d.z)
+      mesh.position.set(d.x, 0.18, z)
       this.threeScene.add(mesh); this.tracked.push(mesh)
-      this.caches.push({ x: d.x, z: d.z, collected: false, mesh, mat: d.mat, qty: d.qty })
+      this.caches.push({ x: d.x, z, collected: false, mesh, mat: d.mat, qty: d.qty })
     }
   }
 
-  // ── Thistle seeds ─────────────────────────────────────────────────────────────
+  // ── Thistle seeds ──────────────────────────────────────────────────────────────
 
   private buildThistles(): void {
     const mat = new THREE.MeshToonMaterial({ color: 0xcc99ff, gradientMap: this.gradientMap })
     for (const d of THISTLE_DATA) {
+      const z    = jitterZ(d.cz, 1.2)
       const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 5), mat.clone())
-      mesh.position.set(d.x, 0.09, d.z)
+      mesh.position.set(d.x, 0.09, z)
       mesh.rotation.z = 0.3
       this.threeScene.add(mesh); this.tracked.push(mesh)
-      this.thistles.push({ x: d.x, z: d.z, collected: false, mesh })
+      this.thistles.push({ x: d.x, z, collected: false, mesh })
     }
   }
 
-  // ── Environmental decoration ──────────────────────────────────────────────────
+  // ── Dead-end rooms ─────────────────────────────────────────────────────────────
+
+  private buildDeadEnds(): void {
+    const floorMat = new THREE.MeshToonMaterial({ color: 0x0a0805, gradientMap: this.gradientMap })
+    const wallMat  = new THREE.MeshToonMaterial({ color: 0x1a1208, gradientMap: this.gradientMap })
+    const spikeMat = new THREE.MeshToonMaterial({ color: 0x3a1a08, gradientMap: this.gradientMap })
+    const lootMat  = new THREE.MeshBasicMaterial({ color: 0x44ffaa, transparent: true, opacity: 0.3 })
+
+    for (const d of DEAD_END_DATA) {
+      const roomDepth = 3.0
+      const roomW     = 3.0
+      // Alcove center: extend dz * roomDepth from corridor edge
+      const corrEdge  = d.cz + d.dz * CORR_HW
+      const roomCZ    = corrEdge + d.dz * (roomDepth / 2)
+
+      const g = new THREE.Group()
+      g.position.set(d.x, 0, roomCZ)
+
+      // Floor
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomW, roomDepth).rotateX(-Math.PI / 2), floorMat)
+      g.add(floor)
+
+      // Back wall
+      const back = new THREE.Mesh(new THREE.BoxGeometry(roomW, WALL_H, 0.25), wallMat)
+      back.position.set(0, WALL_H / 2, d.dz * roomDepth / 2)
+      back.castShadow = true; g.add(back)
+
+      // Side walls
+      for (const side of [-1, 1]) {
+        const sw = new THREE.Mesh(new THREE.BoxGeometry(0.25, WALL_H, roomDepth), wallMat)
+        sw.position.set(side * roomW / 2, WALL_H / 2, 0)
+        sw.castShadow = true; g.add(sw)
+      }
+
+      // Type-specific decorations
+      const spikes: THREE.Mesh[] = []
+      if (d.type === 'spike') {
+        for (let i = -1; i <= 1; i++) {
+          const spike = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.35, 5), spikeMat)
+          spike.position.set(i * 0.7, 0.175, 0)
+          g.add(spike); spikes.push(spike)
+        }
+      } else if (d.type === 'loot') {
+        const glow = new THREE.Mesh(new THREE.SphereGeometry(0.15, 7, 5), lootMat)
+        glow.position.set(0, 0.25, 0); g.add(glow)
+        const light = new THREE.PointLight(0x44ffaa, 0.4, 1.5)
+        light.position.set(0, 0.4, 0); g.add(light)
+      }
+
+      this.threeScene.add(g); this.tracked.push(g)
+      this.deadEnds.push({
+        x: d.x, z: roomCZ, type: d.type, triggered: false, mesh: g,
+        spikeMeshes: spikes.length > 0 ? spikes : undefined,
+      })
+    }
+  }
+
+  // ── Environmental decoration ────────────────────────────────────────────────────
 
   private buildDecoration(): void {
-    const boneMat  = new THREE.MeshToonMaterial({ color: 0xb8a882, gradientMap: this.gradientMap })
-    for (const [bx, bz, r] of [[-14,-1.5,0.3],[-6,1.8,0.25],[1,-2.2,0.28],[5,2.5,0.22],[11,-1,0.3]] as [number,number,number][]) {
+    const boneMat = new THREE.MeshToonMaterial({ color: 0xb8a882, gradientMap: this.gradientMap })
+
+    // Bone piles scattered through corridors
+    for (const [bx, cz, r] of [
+      [-16,-10,0.28],[-7,-10,0.22],[3,-10,0.30],[12,-10,0.25],
+      [-14,-5,0.26],[-3,-5,0.20],[8,-5,0.28],
+      [-11,0,0.22],[4,0,0.26],[14,0,0.24],
+      [-13,5,0.28],[-2,5,0.22],[9,5,0.26],
+      [-16,10,0.25],[1,10,0.30],[13,10,0.22],
+    ] as [number,number,number][]) {
       const bone = new THREE.Mesh(new THREE.CapsuleGeometry(r*0.3, r*1.2, 4, 6), boneMat)
-      bone.position.set(bx, r*0.2, bz); bone.rotation.y = Math.random() * Math.PI; this.add(bone)
+      bone.position.set(bx, r*0.2, jitterZ(cz, 0.8)); bone.rotation.y = Math.random() * Math.PI; this.add(bone)
     }
-    for (const [lx, lz] of [[-17,0],[-11,-2.5],[-5,2],[-1,-1.5],[6,2.8],[12,-0.8],[18,1.5],[0,0]] as [number,number][]) {
-      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 5), new THREE.MeshBasicMaterial({ color: 0x66ffaa }))
-      orb.position.set(lx, 0.12, lz); this.add(orb)
+
+    // Fungus lanterns (32 orbs — positions from LANTERN_DATA)
+    for (const l of LANTERN_DATA) {
+      const orb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 6, 5),
+        new THREE.MeshBasicMaterial({ color: 0x66ffaa }),
+      )
+      const jz = jitterZ(l.cz, 0.5)
+      orb.position.set(l.x, 0.12, jz); this.add(orb)
+      this.orbMeshes.push(orb)
       const gl = new THREE.PointLight(0x44ff88, 0.35, 2.0)
-      gl.position.set(lx, 0.2, lz); this.add(gl)
+      gl.position.set(l.x, 0.2, jz); this.add(gl)
     }
+
+    // Ant trail dots across all corridors
     const trailMat = new THREE.MeshBasicMaterial({ color: 0x060402 })
-    for (let i = -18; i < 18; i += 1.2) {
-      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.04, 5).rotateX(-Math.PI / 2), trailMat)
-      dot.position.set(i + Math.sin(i * 1.5) * 0.4, 0.007, Math.cos(i * 1.3) * 0.3)
-      this.add(dot)
+    for (const cz of CZ) {
+      for (let i = -18; i < 18; i += 1.2) {
+        const dot = new THREE.Mesh(new THREE.CircleGeometry(0.04, 5).rotateX(-Math.PI / 2), trailMat)
+        dot.position.set(i + Math.sin(i * 1.5) * 0.35, 0.007, cz + Math.cos(i * 1.3) * 0.3)
+        this.add(dot)
+      }
     }
   }
 
-  // ── Lighting ──────────────────────────────────────────────────────────────────
+  // ── Lighting ────────────────────────────────────────────────────────────────────
 
   private buildLighting(): void {
     this.add(new THREE.AmbientLight(0x0a1206, 0.25))
@@ -429,19 +658,20 @@ export class AntColonyScene3D {
     fill.position.set(-10, 8, -5); this.add(fill)
   }
 
-  // ── Enemy spawns ──────────────────────────────────────────────────────────────
+  // ── Enemy spawns ────────────────────────────────────────────────────────────────
 
   private initSpawns(): void {
     for (const d of SPAWN_DATA) {
+      const z = jitterZ(d.cz, 1.1)
       const enemy = d.kind === 'centipede'
-        ? new CentipedeAmbusher3D(this.threeScene, d.x, d.z, this.gradientMap)
-        : new BeetleTank3D(this.threeScene, d.x, d.z, this.gradientMap)
-      this.spawnRecords.push({ kind: d.kind, x: d.x, z: d.z, enemy, respawnTimer: 0 })
+        ? new CentipedeAmbusher3D(this.threeScene, d.x, z, this.gradientMap)
+        : new BeetleTank3D(this.threeScene, d.x, z, this.gradientMap)
+      this.spawnRecords.push({ kind: d.kind, x: d.x, z, enemy, respawnTimer: 0 })
       this.enemies.push(enemy)
     }
   }
 
-  // ── Public API ────────────────────────────────────────────────────────────────
+  // ── Public API ──────────────────────────────────────────────────────────────────
 
   checkExitRight(playerX: number): boolean { return playerX > AntColonyScene3D.EXIT_RIGHT_X }
   checkExitLeft(playerX:  number): boolean { return playerX < AntColonyScene3D.EXIT_LEFT_X  }
@@ -451,12 +681,17 @@ export class AntColonyScene3D {
         x >= AntColonyScene3D.RIGHT - 0.5 ||
         z <= AntColonyScene3D.BACK  + 0.3 ||
         z >= AntColonyScene3D.FRONT - 0.3) return true
-    // Interior maze walls
-    for (const wall of MAZE_WALLS) {
-      if (Math.abs(x - wall.x) > 0.4) continue
-      for (const seg of wall.segs) {
-        if (z >= seg.z1 - 0.2 && z <= seg.z2 + 0.2) return true
+    // Check corridor dividing walls
+    for (let wi = 0; wi < DIV_WALLS.length; wi++) {
+      const dw = DIV_WALLS[wi]
+      if (z < dw.lo - 0.1 || z > dw.hi + 0.1) continue
+      // Check if (x,z) is inside a gap
+      const gxs = DIV_GAPS[wi]
+      let inGap = false
+      for (const gx of gxs) {
+        if (Math.abs(x - gx) < GAP_HALF + 0.15) { inGap = true; break }
       }
+      if (!inGap) return true
     }
     return false
   }
@@ -480,7 +715,7 @@ export class AntColonyScene3D {
     const chest = this.chests[idx]
     if (!chest || chest.opened) return { kind: 'loot', mat: 'SilkThread', qty: 0 }
     chest.opened = true
-    // Tilt lid open
+    chest.wakeActive = false
     const lid = chest.mesh.children[1] as THREE.Mesh
     if (lid) lid.rotation.x = -Math.PI / 2.2
 
@@ -509,7 +744,6 @@ export class AntColonyScene3D {
     if (m.mesh) { this.threeScene.remove(m.mesh); m.mesh = null }
   }
 
-  // Returns the first nearby cache that hasn't been collected, or null.
   nearMaterialCache(px: number, pz: number): PickupRecord | null {
     for (const c of this.caches) {
       if (c.collected) continue
@@ -540,19 +774,94 @@ export class AntColonyScene3D {
     if (t.mesh) { this.threeScene.remove(t.mesh); t.mesh = null }
   }
 
-  // ── Enemy update (respawn + off-screen culling) ───────────────────────────────
+  // Dead-end room trigger. Returns result info for main.ts to handle (HUD, damage).
+  checkDeadEndTriggers(px: number, pz: number): DeadEndResult {
+    for (const room of this.deadEnds) {
+      if (room.triggered) continue
+      const dx = px - room.x, dz = pz - room.z
+      if (dx * dx + dz * dz > 1.2 * 1.2) continue
+      room.triggered = true
+      switch (room.type) {
+        case 'spike':
+          return { type: 'spike', damage: 15 }
+        case 'ambush': {
+          for (let i = 0; i < 2; i++) {
+            const e = new CentipedeAmbusher3D(
+              this.threeScene,
+              room.x + (i * 0.6 - 0.3),
+              room.z + (Math.random() - 0.5) * 0.5,
+              this.gradientMap,
+            )
+            this.freeEnemies.push(e)
+          }
+          return { type: 'ambush' }
+        }
+        case 'loot': {
+          const loot = CHEST_LOOT[Math.floor(Math.random() * CHEST_LOOT.length)]
+          return { type: 'loot', ...loot }
+        }
+      }
+    }
+    return null
+  }
+
+  // Per-frame visual updates: mimic wake animation + orb bob
+  tickVisuals(delta: number, px: number, pz: number): void {
+    const t = Date.now() * 0.001
+
+    // Orb bob
+    for (let i = 0; i < this.orbMeshes.length; i++) {
+      this.orbMeshes[i].position.y = 0.10 + Math.sin(t * 1.8 + i * 0.7) * 0.04
+    }
+
+    // Mimic wake
+    for (const chest of this.chests) {
+      if (chest.opened || !chest.isMimic) continue
+      const dx = px - chest.x, dz = pz - chest.z
+      const near = dx * dx + dz * dz < 1.2 * 1.2
+
+      if (near && !chest.wakeActive) {
+        chest.wakeActive = true
+      }
+      if (!near && chest.wakeActive) {
+        chest.wakeActive   = false
+        chest.wakeProgress = 0
+        this.setMimicWakeVisual(chest, 0)
+      }
+
+      if (chest.wakeActive) {
+        chest.wakeProgress = Math.min(1, chest.wakeProgress + delta / 1.5)
+        this.setMimicWakeVisual(chest, chest.wakeProgress)
+        // Chest jitter
+        const jitter = chest.wakeProgress * 0.015
+        chest.mesh.position.x = chest.x + (Math.random() - 0.5) * jitter
+        chest.mesh.position.z = chest.z + (Math.random() - 0.5) * jitter
+      }
+    }
+  }
+
+  private setMimicWakeVisual(chest: ChestRecord, t: number): void {
+    // Glow ring (child[3]) pulses from orange to red
+    const glow = chest.mesh.children[3] as THREE.Mesh | undefined
+    if (glow) {
+      const mat = glow.material as THREE.MeshBasicMaterial
+      mat.color.setRGB(1, 0.27 * (1 - t), 0.13 * (1 - t) * 0.5)  // orange→red
+      mat.opacity = 0.25 + t * 0.4
+    }
+  }
+
+  // ── Enemy update ────────────────────────────────────────────────────────────────
 
   updateEnemies(delta: number, px: number, pz: number): void {
-    // Tick spawn records
     for (const s of this.spawnRecords) {
       if (s.enemy !== null) {
-        const offscreen = Math.abs(s.x - px) > CULL_R
+        const offscreen = Math.abs(s.x - px) > CULL_R && Math.abs(s.z - pz) > CULL_R * 0.3
         s.enemy.group.visible = !offscreen
         if (!offscreen) { s.enemy.update(delta, px, pz); s.enemy.syncPosition() }
         if (s.enemy.isExpired()) {
           s.enemy.cleanup()
-          s.enemy         = null
-          s.respawnTimer  = RESPAWN
+          s.enemy        = null
+          s.respawnTimer = RESPAWN
         }
       } else {
         s.respawnTimer = Math.max(0, s.respawnTimer - delta)
@@ -564,7 +873,6 @@ export class AntColonyScene3D {
       }
     }
 
-    // Tick free enemies (mimics)
     for (const e of this.freeEnemies) { e.update(delta, px, pz); e.syncPosition() }
     for (let i = this.freeEnemies.length - 1; i >= 0; i--) {
       if (this.freeEnemies[i].isExpired()) {
@@ -573,7 +881,6 @@ export class AntColonyScene3D {
       }
     }
 
-    // Rebuild enemies array in-place so weaponUseSystem reference stays valid
     this.enemies.length = 0
     for (const s of this.spawnRecords) {
       if (s.enemy !== null && !s.enemy.isDead()) this.enemies.push(s.enemy)
@@ -583,15 +890,17 @@ export class AntColonyScene3D {
     }
   }
 
-  // ── Destroy ───────────────────────────────────────────────────────────────────
+  // ── Destroy ─────────────────────────────────────────────────────────────────────
 
   destroy(): void {
     this.fog.destroy(this.threeScene)
     for (const s of this.spawnRecords) { if (s.enemy) s.enemy.cleanup() }
     for (const e of this.freeEnemies) e.cleanup()
+    for (const b of this.wallBodies) physicsWorld.remove(b)
     this.enemies      = []
     this.spawnRecords = []
     this.freeEnemies  = []
+    this.wallBodies   = []
     for (const obj of this.tracked) {
       this.threeScene.remove(obj)
       if ((obj as THREE.Mesh).isMesh) (obj as THREE.Mesh).geometry.dispose()
@@ -600,7 +909,7 @@ export class AntColonyScene3D {
     physicsWorld.bounds = null
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────────────────
 
   private addBox(w: number, h: number, d: number, x: number, y: number, z: number, mat: THREE.Material): void {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)

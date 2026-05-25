@@ -81,6 +81,9 @@ export class BeetleTank3D extends Enemy3D {
     }
   }
 
+  isCharging(): boolean { return this.state === 'CHARGING' }
+  getChargeFacing(): { x: number; z: number } { return { x: this.chargeDir.x, z: this.chargeDir.y } }
+
   protected setFlashColor(on: boolean): void {
     if (this.shellMesh) {
       ;(this.shellMesh.material as THREE.MeshToonMaterial).color.setHex(on ? 0xff4422 : 0x2d4a1a)
