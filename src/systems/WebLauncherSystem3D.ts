@@ -28,11 +28,12 @@ type Target3D =
 
 interface WebState3D {
   projectile?: {
-    mesh:      THREE.Mesh
-    vx:        number
-    vz:        number
-    traveled:  number
-    recalling: boolean
+    mesh:          THREE.Mesh
+    vx:            number
+    vz:            number
+    traveled:      number
+    recalling:     boolean
+    homingTarget?: Enemy3D | null   // nearest enemy in 60° cone at fire time
   }
   attached?:   Target3D
   line:        THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>
@@ -151,6 +152,20 @@ export class WebLauncherSystem3D {
       return
     }
 
+    // Homing: steer toward locked-on target (75/25 blend, renormalized)
+    if (p.homingTarget && !p.homingTarget.isDead()) {
+      const hdx = p.homingTarget.collisionBody.x - p.mesh.position.x
+      const hdz = p.homingTarget.collisionBody.z - p.mesh.position.z
+      const hlen = Math.hypot(hdx, hdz) || 1
+      const curX = p.vx / PROJECTILE_SPEED
+      const curZ = p.vz / PROJECTILE_SPEED
+      const blendX = curX * 0.75 + (hdx / hlen) * 0.25
+      const blendZ = curZ * 0.75 + (hdz / hlen) * 0.25
+      const blen   = Math.hypot(blendX, blendZ) || 1
+      p.vx = (blendX / blen) * PROJECTILE_SPEED
+      p.vz = (blendZ / blen) * PROJECTILE_SPEED
+    }
+
     const px = p.mesh.position.x
     const pz = p.mesh.position.z
 
@@ -169,7 +184,7 @@ export class WebLauncherSystem3D {
       if (e.isDead()) continue
       const dx = px - e.collisionBody.x
       const dz = pz - e.collisionBody.z
-      if (Math.hypot(dx, dz) < 0.28) {
+      if (Math.hypot(dx, dz) < 0.40) {
         e.staggerTimer = Math.max(e.staggerTimer, STUN_DURATION)
         this.addSilkWrap(e)
         this.state.attached = { kind: 'enemy', ref: e }
@@ -207,6 +222,28 @@ export class WebLauncherSystem3D {
       dz = aim.dz / len
     }
 
+    // Find closest enemy in 60° forward cone within 4.0wu for soft homing
+    const fireAngle    = Math.atan2(dx, dz)
+    const HOMING_RANGE = 4.0
+    const HOMING_HALF  = Math.PI / 6   // 30° — 60° total cone
+    let   homingTarget: Enemy3D | null = null
+    let   minDist      = HOMING_RANGE + 1
+
+    for (const e of this.enemies) {
+      if (e.isDead()) continue
+      const edx  = e.collisionBody.x - webbs.collisionBody.x
+      const edz  = e.collisionBody.z - webbs.collisionBody.z
+      const dist = Math.hypot(edx, edz)
+      if (dist > HOMING_RANGE) continue
+      let diff = Math.atan2(edx, edz) - fireAngle
+      while (diff >  Math.PI) diff -= Math.PI * 2
+      while (diff < -Math.PI) diff += Math.PI * 2
+      if (Math.abs(diff) <= HOMING_HALF && dist < minDist) {
+        minDist      = dist
+        homingTarget = e
+      }
+    }
+
     const geo = new THREE.SphereGeometry(0.05, 6, 4)
     const mat = new THREE.MeshBasicMaterial({ color: 0xeeeeff })
     const mesh = new THREE.Mesh(geo, mat)
@@ -223,7 +260,7 @@ export class WebLauncherSystem3D {
     this.threeScene.add(line)
 
     this.state = {
-      projectile:  { mesh, vx: dx * PROJECTILE_SPEED, vz: dz * PROJECTILE_SPEED, traveled: 0, recalling: false },
+      projectile:  { mesh, vx: dx * PROJECTILE_SPEED, vz: dz * PROJECTILE_SPEED, traveled: 0, recalling: false, homingTarget },
       line,
       age:         0,
       pulling:     false,

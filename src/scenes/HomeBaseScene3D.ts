@@ -5,7 +5,7 @@ import type { Enemy3D } from '../entities/Enemy3D'
 
 const W      = 22    // world width  (x: -11 … +11)
 const D      = 22    // world depth  (z: -11 … +11)
-const WALL_H = 2.0
+const WALL_H = 1.2
 
 // 11 material pickups distributed across the chamber interior.  Persistent via registry.
 // All positions are within radius 7.5 of center so the player can always reach them.
@@ -65,6 +65,7 @@ export class HomeBaseScene3D {
       minZ: HomeBaseScene3D.BACK  + 0.3,
       maxZ: HomeBaseScene3D.FRONT - 0.3,
     }
+    physicsWorld.circularBound = 10.0   // HomeBase chamber radius — keeps bodies in the circle
 
     this.buildGround()
     this.buildWalls()
@@ -447,16 +448,23 @@ export class HomeBaseScene3D {
       g.position.set(p.x, 0, p.z)
 
       const orb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.12, 8, 6),
-        new THREE.MeshStandardMaterial({ color: p.color, emissive: p.color, emissiveIntensity: 0.5 }),
+        new THREE.SphereGeometry(0.22, 8, 6),
+        new THREE.MeshStandardMaterial({ color: p.color, emissive: p.color, emissiveIntensity: 1.2 }),
       )
-      orb.position.y = 0.20; g.add(orb)
+      orb.position.y = 0.30; g.add(orb)
 
       const glow = new THREE.Mesh(
-        new THREE.RingGeometry(0.14, 0.20, 16).rotateX(-Math.PI / 2),
-        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+        new THREE.RingGeometry(0.22, 0.36, 16).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
       )
       glow.position.y = 0.01; g.add(glow)
+
+      // Light beam rising from orb — draws the eye from across the room
+      const beam = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.05, 1.5, 6, 1, true),
+        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.25, side: THREE.DoubleSide }),
+      )
+      beam.position.y = 0.85; g.add(beam)
 
       this.threeScene.add(g)
       this.tracked.push(g)
@@ -620,7 +628,8 @@ export class HomeBaseScene3D {
     }
     this.tracked = []
     this.toothpickGroup = null
-    physicsWorld.bounds = null
+    physicsWorld.bounds         = null
+    physicsWorld.circularBound  = null
   }
 
   // ── Helper ────────────────────────────────────────────────────────────────────

@@ -805,9 +805,28 @@ function initNewGame(el: HTMLElement): void {
   registry.set('tutorialToothpickSeen', false)
   registry.set('tutorialWebLauncherSeen', false)
   registry.set('antColonyFirstVisit', false)
+  registry.set('pickupsCollected_HomeBaseScene', [])   // Bug 13: clear collected pickups
   webbs.hasWebLauncher = false
   for (let i = 0; i < 8; i++) webbs.weaponSystem.unequip(i)
   webbs.resetHp()
+
+  // Bug 1: destroy the stale scene (built at page-load against old registry state)
+  // and rebuild a fresh HomeBaseScene3D so all pickups and objects appear correctly.
+  webLauncher.release()
+  webLauncher.clearWraps()
+  weaponUseSystem.stopFlame()
+  activeScene.destroy()
+  const freshHbs = new HomeBaseScene3D(scene, gradientMap)
+  activeScene  = freshHbs
+  currentZone  = 'homeBase'
+  weaponUseSystem.setEnemies(freshHbs.enemies)
+  webLauncher.setEnemies(freshHbs.enemies)
+  webLauncher.setWallHitTest((x, z) => freshHbs.webWallHitTest(x, z))
+  webbs.collisionBody.x = HomeBaseScene3D.SPAWN_X
+  webbs.collisionBody.z = 0
+  webbs.collisionBody.velocity.x = 0
+  webbs.collisionBody.velocity.z = 0
+  camera.position.set(HomeBaseScene3D.SPAWN_X + CAM_OFFSET.x, CAM_OFFSET.y, CAM_OFFSET.z)
 
   dismissTitleMenu(el)
   registry.set('openingCutsceneSeen', true)

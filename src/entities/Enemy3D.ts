@@ -28,9 +28,12 @@ export abstract class Enemy3D {
   hp: number
   hpMax: number
   readonly config: EnemyConfig3D
-  staggerTimer   = 0
+  staggerTimer    = 0
   contactCooldown = 0
-  stuckThistles  = 0
+  stuckThistles   = 0
+  knockbackTimer  = 0   // seconds remaining in forced-velocity knockback window
+  knockbackVx     = 0   // initial knockback velocity stored for decay
+  knockbackVz     = 0
 
   protected threeScene:   THREE.Scene
   protected gradientMap:  THREE.Texture
@@ -95,8 +98,11 @@ export abstract class Enemy3D {
   applyKnockback(vx: number, vz: number): void {
     if (this._dying) return
     const s = 1 - this.config.knockbackResist
-    this.collisionBody.velocity.x += vx * s
-    this.collisionBody.velocity.z += vz * s
+    this.knockbackVx    = vx * s
+    this.knockbackVz    = vz * s
+    this.knockbackTimer = 0.25
+    this.collisionBody.velocity.x = this.knockbackVx
+    this.collisionBody.velocity.z = this.knockbackVz
   }
 
   addStuckThistle(): void { this.stuckThistles++ }
@@ -118,6 +124,16 @@ export abstract class Enemy3D {
     if (this._flashTimer > 0) {
       this._flashTimer -= delta
       this.setFlashColor(this._flashTimer > 0)
+    }
+
+    // ── Knockback window: force decaying velocity, skip AI ─────────────────
+    if (this.knockbackTimer > 0) {
+      this.knockbackTimer = Math.max(0, this.knockbackTimer - delta)
+      const frac = this.knockbackTimer / 0.25   // 1 → 0
+      this.collisionBody.velocity.x = this.knockbackVx * frac
+      this.collisionBody.velocity.z = this.knockbackVz * frac
+      this.staggerTimer = Math.max(0, this.staggerTimer - delta)
+      return
     }
 
     this.staggerTimer = Math.max(0, this.staggerTimer - delta)

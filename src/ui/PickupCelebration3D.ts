@@ -25,7 +25,7 @@ export class PickupCelebration3D {
   isOpen     = false
   onClose?: () => void
 
-  private animTimer = 0
+  private openedAt = 0   // performance.now() timestamp when panel was shown
 
   constructor(menuOverlay: HTMLElement, textDisplay: TextDisplay3D) {
     this.overlay     = menuOverlay
@@ -66,7 +66,7 @@ export class PickupCelebration3D {
     this.tutorialPages  = tutorialPages ?? []
     this.tutorialTitle  = tutorialTitle
     this.tutorialAccent = tutorialAccent
-    this.animTimer      = 0
+    this.openedAt       = performance.now()
 
     const colorNum = WEAPON_COLORS[weaponType]
     const colorHex = `#${colorNum.toString(16).padStart(6, '0')}`
@@ -137,10 +137,9 @@ export class PickupCelebration3D {
     this.isOpen = true
   }
 
-  update(_input: InputManager, delta: number): void {
+  update(_input: InputManager, _delta: number): void {
     if (!this.isOpen) return
-    this.animTimer += delta
-    if (this.animTimer >= 2.5) this.dismiss()
+    if ((performance.now() - this.openedAt) / 1000 >= 2.5) this.dismiss()
   }
 
   close(): void {

@@ -14,6 +14,8 @@ export class PhysicsWorld {
   bodies: CollisionBody[] = []
   // World bounds (set per scene)
   bounds: { minX: number; minZ: number; maxX: number; maxZ: number } | null = null
+  // Circular bound radius (HomeBase chamber) — clamps bodies inside a circle at origin
+  circularBound: number | null = null
 
   add(body: CollisionBody): CollisionBody {
     this.bodies.push(body)
@@ -62,6 +64,20 @@ export class PhysicsWorld {
         b.z = Math.max(this.bounds.minZ + b.radius, Math.min(this.bounds.maxZ - b.radius, b.z))
       }
     }
+
+    // Circular bound clamp (HomeBase chamber — keeps bodies inside a circle at origin)
+    if (this.circularBound !== null) {
+      for (const b of this.bodies) {
+        if (b.isStatic || !b.enabled || b.aabb) continue
+        const dist = Math.sqrt(b.x * b.x + b.z * b.z)
+        const max  = this.circularBound - b.radius
+        if (dist > max && dist > 0) {
+          const scale = max / dist
+          b.x = b.x * scale
+          b.z = b.z * scale
+        }
+      }
+    }
   }
 
   private resolveCircleCircle(a: CollisionBody, b: CollisionBody): void {
@@ -102,7 +118,8 @@ export class PhysicsWorld {
   }
 
   clear(): void {
-    this.bodies = []
+    this.bodies        = []
+    this.circularBound = null
   }
 }
 

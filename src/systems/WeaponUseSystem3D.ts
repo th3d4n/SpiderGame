@@ -8,17 +8,17 @@ import { RollerBoss3D } from '../entities/RollerBoss3D'
 
 // ── Weapon constants (pixel values × 0.01 = world units) ────────────────────
 const SWORD_RADIUS    = 0.70;  const SWORD_SWEEP  = 90;  const SWORD_DMG  = 18
-const SWORD_STAMINA   = 10;    const SWORD_CD     = 280; const SWORD_KB   = 1.8
+const SWORD_STAMINA   = 10;    const SWORD_CD     = 280; const SWORD_KB   = 4.0
 // Visual reach from body centre — how far the weapon tip extends at peak thrust.
 // Larger than the hit radius so the weapon extends past the enemy when it connects.
 const SWORD_REACH     = 1.00
 
 const AXE_RADIUS      = 0.88;  const AXE_SWEEP    = 170; const AXE_DMG    = 44
-const AXE_STAMINA     = 22;    const AXE_CD       = 760; const AXE_KB     = 5.2
+const AXE_STAMINA     = 22;    const AXE_CD       = 760; const AXE_KB     = 10.0
 const AXE_REACH       = 1.10
 
 const GLOVES_RADIUS   = 0.90;  const GLOVES_CONE  = 28;  const GLOVES_DMG = 14
-const GLOVES_STAMINA  = 15;    const GLOVES_CD    = 220; const GLOVES_KB  = 2.0
+const GLOVES_STAMINA  = 15;    const GLOVES_CD    = 220; const GLOVES_KB  = 4.5
 const GLOVES_REACH    = 1.30   // long thin stab — tip extends further than any other weapon
 
 const BOW_SPEED_WU    = 3.20;  const BOW_DMG      = 22;  const BOW_STAMINA = 12
@@ -54,6 +54,27 @@ interface HitEffect {
   fadeOnly?: boolean   // if true: only fade opacity, don't scale
 }
 
+// ── Active melee swing — hit detection runs every frame for swing duration ───
+interface ActiveSwing {
+  px:         number      // player position snapshot at swing start
+  pz:         number
+  facingX:    number
+  facingZ:    number
+  radius:     number
+  sweepDeg:   number
+  damage:     number
+  knockback:  number
+  remaining:  number      // seconds left in swing window
+  hitEnemies: Set<Enemy3D>  // each enemy hit at most once per swing
+  // VFX deferred until first hit
+  ringMaxR:   number
+  ringDur:    number
+  ringColor:  number
+  shakeI:     number
+  shakeD:     number
+  ringFired:  boolean
+}
+
 // ── Projectile ────────────────────────────────────────────────────────────────
 interface Projectile3D {
   mesh: THREE.Mesh
@@ -70,11 +91,12 @@ function wrapAngle(a: number): number {
 }
 
 export class WeaponUseSystem3D {
-  private enemies:     Enemy3D[] = []
-  private cooldowns:   number[]  = Array(8).fill(0)
-  private projectiles: Projectile3D[] = []
-  private hitEffects:  HitEffect[] = []
-  private threeScene:  THREE.Scene
+  private enemies:      Enemy3D[] = []
+  private cooldowns:    number[]  = Array(8).fill(0)
+  private projectiles:  Projectile3D[] = []
+  private hitEffects:   HitEffect[] = []
+  private activeSwings: ActiveSwing[] = []
+  private threeScene:   THREE.Scene
 
   staminaDrainMult    = 1
   lastHitFrame        = false
@@ -170,6 +192,7 @@ export class WeaponUseSystem3D {
     for (let i = 0; i < 8; i++) {
       if (this.cooldowns[i] > 0) this.cooldowns[i] -= delta * 1000 // stored in ms
     }
+    this.checkSwingHits(delta)
     this.tickProjectiles(delta)
     this.tickHitEffects(delta)
   }
@@ -214,14 +237,18 @@ export class WeaponUseSystem3D {
     webbs.stamina = Math.max(0, webbs.stamina - SWORD_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = SWORD_CD
     webbs.legs.triggerAnim(slot, ANIM_SWORD, webbs.facingX, webbs.facingZ, SWORD_REACH)
-
     this.spawnSwingFan(webbs, SWORD_RADIUS, SWORD_SWEEP, 0xaaaaff, ANIM_SWORD)
-    const hit = this.hitsInArc(webbs, SWORD_RADIUS, SWORD_SWEEP, SWORD_DMG, SWORD_KB)
-    if (hit) {
-      this.spawnHitRing(webbs.group.position, 0.8, 0.55, 0xaaaaff)
-      this.lastShakeIntensity = SHAKE_SWORD.i
-      this.lastShakeDuration  = SHAKE_SWORD.d
-    }
+    this.activeSwings.push({
+      px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
+      facingX: webbs.facingX,    facingZ: webbs.facingZ,
+      radius: SWORD_RADIUS, sweepDeg: SWORD_SWEEP,
+      damage: SWORD_DMG,    knockback: SWORD_KB,
+      remaining: ANIM_SWORD,
+      hitEnemies: new Set(),
+      ringMaxR: 0.8, ringDur: 0.55, ringColor: 0xaaaaff,
+      shakeI: SHAKE_SWORD.i, shakeD: SHAKE_SWORD.d,
+      ringFired: false,
+    })
   }
 
   // ── Axe ────────────────────────────────────────────────────────────────────
@@ -231,14 +258,18 @@ export class WeaponUseSystem3D {
     webbs.stamina = Math.max(0, webbs.stamina - AXE_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = AXE_CD
     webbs.legs.triggerAnim(slot, ANIM_AXE, webbs.facingX, webbs.facingZ, AXE_REACH)
-
     this.spawnSwingFan(webbs, AXE_RADIUS, AXE_SWEEP, 0xaa6633, ANIM_AXE)
-    const hit = this.hitsInArc(webbs, AXE_RADIUS, AXE_SWEEP, AXE_DMG, AXE_KB)
-    if (hit) {
-      this.spawnHitRing(webbs.group.position, 1.0, 0.45, 0xaa6633)
-      this.lastShakeIntensity = SHAKE_AXE.i
-      this.lastShakeDuration  = SHAKE_AXE.d
-    }
+    this.activeSwings.push({
+      px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
+      facingX: webbs.facingX,    facingZ: webbs.facingZ,
+      radius: AXE_RADIUS, sweepDeg: AXE_SWEEP,
+      damage: AXE_DMG,    knockback: AXE_KB,
+      remaining: ANIM_AXE,
+      hitEnemies: new Set(),
+      ringMaxR: 1.0, ringDur: 0.45, ringColor: 0xaa6633,
+      shakeI: SHAKE_AXE.i, shakeD: SHAKE_AXE.d,
+      ringFired: false,
+    })
   }
 
   // ── Toothpick (BoxingGloves) ───────────────────────────────────────────────
@@ -248,34 +279,18 @@ export class WeaponUseSystem3D {
     webbs.stamina = Math.max(0, webbs.stamina - GLOVES_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = GLOVES_CD
     webbs.legs.triggerAnim(slot, ANIM_GLOVES, webbs.facingX, webbs.facingZ, GLOVES_REACH)
-
     this.spawnSwingFan(webbs, GLOVES_RADIUS, GLOVES_CONE, 0xeeddaa, ANIM_GLOVES)
-
-    const wx = webbs.collisionBody.x
-    const wz = webbs.collisionBody.z
-    const facingAngle = Math.atan2(webbs.facingX, webbs.facingZ)
-    const halfCone = GLOVES_CONE / 2 * DEG
-    let hit = false
-
-    for (const enemy of this.enemies) {
-      if (enemy.isDead()) continue
-      const dx = enemy.collisionBody.x - wx
-      const dz = enemy.collisionBody.z - wz
-      const dist = Math.sqrt(dx * dx + dz * dz)
-      if (dist - enemy.config.bodyRadius > GLOVES_RADIUS) continue
-      const toEnemy = Math.atan2(dx, dz)
-      if (Math.abs(wrapAngle(toEnemy - facingAngle)) <= halfCone) {
-        enemy.takeDamage(GLOVES_DMG, this.resolveZone(enemy, wx, wz))
-        enemy.applyKnockback(webbs.facingX * GLOVES_KB, webbs.facingZ * GLOVES_KB)
-        this.lastHitFrame = true
-        hit = true
-      }
-    }
-    if (hit) {
-      this.spawnHitRing(webbs.group.position, 0.9, 0.35, 0xeeddaa)
-      this.lastShakeIntensity = SHAKE_GLOVES.i
-      this.lastShakeDuration  = SHAKE_GLOVES.d
-    }
+    this.activeSwings.push({
+      px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
+      facingX: webbs.facingX,    facingZ: webbs.facingZ,
+      radius: GLOVES_RADIUS, sweepDeg: GLOVES_CONE,
+      damage: GLOVES_DMG,    knockback: GLOVES_KB,
+      remaining: ANIM_GLOVES,
+      hitEnemies: new Set(),
+      ringMaxR: 0.9, ringDur: 0.35, ringColor: 0xeeddaa,
+      shakeI: SHAKE_GLOVES.i, shakeD: SHAKE_GLOVES.d,
+      ringFired: false,
+    })
   }
 
   // ── Bow ────────────────────────────────────────────────────────────────────
@@ -342,38 +357,44 @@ export class WeaponUseSystem3D {
     this.hitEffects.push({ mesh, elapsed: 0, duration, maxRadius: 1, fadeOnly: true })
   }
 
-  // ── Arc hit detection (Sword + Axe) ───────────────────────────────────────
+  // ── Per-frame swing hit detection ─────────────────────────────────────────
+  // Runs every frame for the full animation window so partial-range hits land.
 
-  private hitsInArc(
-    webbs:     Webbs3D,
-    radius:    number,
-    sweepDeg:  number,
-    damage:    number,
-    knockback: number,
-  ): boolean {
-    const wx = webbs.collisionBody.x
-    const wz = webbs.collisionBody.z
-    const facingAngle = Math.atan2(webbs.facingX, webbs.facingZ)
-    const halfRad = sweepDeg / 2 * DEG
-    let anyHit = false
+  private checkSwingHits(delta: number): void {
+    const keep: ActiveSwing[] = []
+    for (const sw of this.activeSwings) {
+      sw.remaining -= delta
+      const facingAngle = Math.atan2(sw.facingX, sw.facingZ)
+      const halfRad     = (sw.sweepDeg / 2) * DEG
 
-    for (const enemy of this.enemies) {
-      if (enemy.isDead()) continue
-      const dx = enemy.collisionBody.x - wx
-      const dz = enemy.collisionBody.z - wz
-      const dist = Math.sqrt(dx * dx + dz * dz)
-      if (dist - enemy.config.bodyRadius > radius) continue
-      const toEnemy = Math.atan2(dx, dz)
-      if (Math.abs(wrapAngle(toEnemy - facingAngle)) <= halfRad) {
-        enemy.takeDamage(damage, this.resolveZone(enemy, wx, wz))
-        const kx = Math.sin(toEnemy) * knockback
-        const kz = Math.cos(toEnemy) * knockback
-        enemy.applyKnockback(kx, kz)
-        this.lastHitFrame = true
-        anyHit = true
+      for (const enemy of this.enemies) {
+        if (enemy.isDead() || sw.hitEnemies.has(enemy)) continue
+        const dx = enemy.collisionBody.x - sw.px
+        const dz = enemy.collisionBody.z - sw.pz
+        const dist = Math.sqrt(dx * dx + dz * dz)
+        if (dist - enemy.config.bodyRadius > sw.radius) continue
+        const toEnemy = Math.atan2(dx, dz)
+        if (Math.abs(wrapAngle(toEnemy - facingAngle)) <= halfRad) {
+          sw.hitEnemies.add(enemy)
+          enemy.takeDamage(sw.damage, this.resolveZone(enemy, sw.px, sw.pz))
+          const kx = Math.sin(toEnemy) * sw.knockback
+          const kz = Math.cos(toEnemy) * sw.knockback
+          enemy.applyKnockback(kx, kz)
+          this.lastHitFrame = true
+
+          if (!sw.ringFired) {
+            sw.ringFired = true
+            const pos = new THREE.Vector3(sw.px, 0, sw.pz)
+            this.spawnHitRing(pos, sw.ringMaxR, sw.ringDur, sw.ringColor)
+            this.lastShakeIntensity = sw.shakeI
+            this.lastShakeDuration  = sw.shakeD
+          }
+        }
       }
+
+      if (sw.remaining > 0) keep.push(sw)
     }
-    return anyHit
+    this.activeSwings = keep
   }
 
   // ── Projectile tick ────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ import { registry } from '../core/Registry'
 // ── World dimensions ───────────────────────────────────────────────────────────
 const W      = 40    // X: -20 … +20
 const D      = 26    // Z: -13 … +13
-const WALL_H = 2.0
+const WALL_H = 1.2
 
 // ── 5 parallel corridors ───────────────────────────────────────────────────────
 // Each corridor: 3wu wide, running the full X extent.
@@ -436,17 +436,23 @@ export class AntColonyScene3D {
   }
 
   // Camera-to-player THREE.Raycaster: lerp occluding walls to 0.15 opacity.
+  // Casts 3 rays at different heights for reliable detection of lower 1.2wu walls.
   updateWallOcclusion(camera: THREE.Camera, playerPos: THREE.Vector3): void {
-    const meshes    = this.dividerWalls.map(dw => dw.mesh)
-    const targetPos = playerPos.clone()
-    targetPos.y    += 0.4
-    const dir  = new THREE.Vector3().subVectors(targetPos, camera.position).normalize()
-    const dist = camera.position.distanceTo(targetPos)
+    const meshes = this.dividerWalls.map(dw => dw.mesh)
+    const occluding = new Set<THREE.Object3D>()
+    const RAY_HEIGHTS = [0.1, 0.45, 1.0]   // floor sweep, mid, near-top of 1.2wu wall
 
-    this._occRaycaster.set(camera.position, dir)
-    this._occRaycaster.far = dist
-    const hits      = this._occRaycaster.intersectObjects(meshes, false)
-    const occluding = new Set(hits.map(h => h.object))
+    for (const yOff of RAY_HEIGHTS) {
+      const targetPos = playerPos.clone()
+      targetPos.y     = yOff
+      const dir  = new THREE.Vector3().subVectors(targetPos, camera.position).normalize()
+      const dist = camera.position.distanceTo(targetPos)
+      this._occRaycaster.set(camera.position, dir)
+      this._occRaycaster.far = dist
+      for (const hit of this._occRaycaster.intersectObjects(meshes, false)) {
+        occluding.add(hit.object)
+      }
+    }
 
     for (const dw of this.dividerWalls) {
       const target = occluding.has(dw.mesh) ? 0.15 : 1.0
