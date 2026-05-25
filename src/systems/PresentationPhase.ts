@@ -3,45 +3,75 @@ import type { ParticleBurstSystem3D } from './ParticleBurstSystem3D'
 import { WeaponType } from './WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
 
-// Round 6 Issue 1 — three-phase pickup presentation:
-//   1. webbsPose      — Webbs lifts the item, 2.5s, NO HTML overlay
-//   2. discoveryCard  — HTML card with item icon + name + desc (player-dismissed)
-//   3. tutorialCard   — TextDisplay3D tutorial pages (player-dismissed)
-// main.ts owns the UI components; this class drives transitions via hooks.
+// Round 7 Issue 1 — pickup presentation timeline:
+//   T=0.0s : pause + hide HTML overlay + Webbs starts rotating toward camera (0.3s)
+//   T=0.3s : rotation done, legs start lifting (0.4s)
+//   T=0.7s : particle burst BEHIND Webbs + secondary burst at item position
+//   T=2.5s : pose ends, Webbs settles back (200ms beat)
+//   T=2.7s : discovery card fades in (player dismisses with Space/M)
+//   ...    : tutorial card (player dismisses)
+//   done   : game unpauses
 
 type Phase = 'idle' | 'webbsPose' | 'discoveryCard' | 'tutorialCard' | 'done'
 
-const WEBBS_POSE_DURATION_MS = 2500
+const POSE_DURATION_MS    = 2500
+const BURST_DELAY_MS      = 700
+const SETTLE_BEAT_MS      = 200
 
 export class PresentationPhase {
   private phase: Phase = 'idle'
   private phaseStartMs = 0
-  pendingWeapon: WeaponType | null = null
+  private burstFired   = false
 
   onShowDiscoveryCard: ((wt: WeaponType) => void) | null = null
   onShowTutorialCard:  ((wt: WeaponType) => void) | null = null
   onComplete:          (() => void) | null = null
+  // Hook for hiding the HTML menu overlay so the player sees pure 3D during Phase 1
+  hideOverlay:         (() => void) | null = null
 
-  start(weapon: WeaponType, webbs: Webbs3D, particles: ParticleBurstSystem3D): void {
+  pendingWeapon: WeaponType | null = null
+
+  start(weapon: WeaponType, webbs: Webbs3D, _particles: ParticleBurstSystem3D): void {
     this.pendingWeapon = weapon
     this.phase         = 'webbsPose'
     this.phaseStartMs  = performance.now()
+    this.burstFired    = false
 
+    // CRITICAL — hide the HTML overlay so nothing renders over the 3D Webbs pose.
+    this.hideOverlay?.()
+
+    // Webbs handles its own rotation + leg lift via startCelebrationPose()
     webbs.startCelebrationPose()
-
-    const burstPos = webbs.group.position.clone()
-    burstPos.y = 0.6
-    particles.burst(burstPos, WEAPON_COLORS[weapon], 24, 4.5, 0.08)
   }
 
-  // Drive Phase 1 → Phase 2 transition.  Called every frame from the game loop.
-  update(webbs: Webbs3D): void {
+  update(webbs: Webbs3D, particles: ParticleBurstSystem3D): void {
     if (this.phase !== 'webbsPose') return
     const elapsed = performance.now() - this.phaseStartMs
-    if (elapsed >= WEBBS_POSE_DURATION_MS) {
+
+    // T=0.7s — fire particle bursts AFTER the lift completes.
+    if (!this.burstFired && elapsed >= BURST_DELAY_MS) {
+      this.burstFired = true
+      const color = WEAPON_COLORS[this.pendingWeapon!]
+      // Camera sits at (+18, _, +18) — "behind" Webbs is the (-X, -Z) direction.
+      const behind = webbs.group.position.clone()
+      behind.y = 0.7
+      behind.x -= 0.4
+      behind.z -= 0.4
+      particles.burst(behind, color, 32, 5.5, 0.10)
+      // Secondary smaller burst at the lifted-item position (in front, toward camera).
+      const itemPos = webbs.group.position.clone()
+      itemPos.y = 0.9
+      itemPos.x += 0.3
+      itemPos.z += 0.3
+      particles.burst(itemPos, color, 18, 3.5, 0.08)
+    }
+
+    // T=2.5s — end the pose, beat for 200ms, then show discovery card.
+    if (elapsed >= POSE_DURATION_MS) {
       webbs.endCelebrationPose()
       this.phase = 'discoveryCard'
-      this.onShowDiscoveryCard?.(this.pendingWeapon!)
+      const wt = this.pendingWeapon!
+      setTimeout(() => { this.onShowDiscoveryCard?.(wt) }, SETTLE_BEAT_MS)
     }
   }
 
@@ -53,11 +83,10 @@ export class PresentationPhase {
 
   onTutorialCardClosed(): void {
     if (this.phase !== 'tutorialCard') return
-    this.phase = 'done'
+    this.phase         = 'done'
     this.onComplete?.()
     this.pendingWeapon = null
-    // Reset for the next pickup
-    this.phase = 'idle'
+    this.phase         = 'idle'   // ready for next pickup
   }
 
   isActive(): boolean {

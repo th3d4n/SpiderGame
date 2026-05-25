@@ -16,18 +16,18 @@ const OVERSHOOT      = 0.18   // anticipatory plant ahead of anchor
 // back immediately rather than waiting for the gait machine.
 const SNAP_THRESHOLD = 0.85
 
-// ─── Leg anchor data (body-local space) ──────────────────────────────────────
+// ─── Leg anchor data (body-local space) — Round 7 Issue 4: scaled ~0.75 ─────
 // Group A: R1, L2, R3, L4 (diagonal cross)
 // Group B: L1, R2, L3, R4 (other diagonal)
 const ANCHOR_DATA = [
-  { i: 0, side: 'left',  group: 'B', root: [-0.25, 0.2,  0.3], anchor: [-0.9, 0,  0.7] },
-  { i: 1, side: 'right', group: 'A', root: [ 0.25, 0.2,  0.3], anchor: [ 0.9, 0,  0.7] },
-  { i: 2, side: 'left',  group: 'A', root: [-0.28, 0.15, 0.1], anchor: [-1.0, 0,  0.2] },
-  { i: 3, side: 'right', group: 'B', root: [ 0.28, 0.15, 0.1], anchor: [ 1.0, 0,  0.2] },
-  { i: 4, side: 'left',  group: 'B', root: [-0.28, 0.15,-0.1], anchor: [-1.0, 0, -0.2] },
-  { i: 5, side: 'right', group: 'A', root: [ 0.28, 0.15,-0.1], anchor: [ 1.0, 0, -0.2] },
-  { i: 6, side: 'left',  group: 'A', root: [-0.25, 0.2, -0.3], anchor: [-0.9, 0, -0.7] },
-  { i: 7, side: 'right', group: 'B', root: [ 0.25, 0.2, -0.3], anchor: [ 0.9, 0, -0.7] },
+  { i: 0, side: 'left',  group: 'B', root: [-0.19, 0.16,  0.22], anchor: [-0.68, 0,  0.52] },
+  { i: 1, side: 'right', group: 'A', root: [ 0.19, 0.16,  0.22], anchor: [ 0.68, 0,  0.52] },
+  { i: 2, side: 'left',  group: 'A', root: [-0.21, 0.12,  0.08], anchor: [-0.75, 0,  0.15] },
+  { i: 3, side: 'right', group: 'B', root: [ 0.21, 0.12,  0.08], anchor: [ 0.75, 0,  0.15] },
+  { i: 4, side: 'left',  group: 'B', root: [-0.21, 0.12, -0.08], anchor: [-0.75, 0, -0.15] },
+  { i: 5, side: 'right', group: 'A', root: [ 0.21, 0.12, -0.08], anchor: [ 0.75, 0, -0.15] },
+  { i: 6, side: 'left',  group: 'A', root: [-0.19, 0.16, -0.22], anchor: [-0.68, 0, -0.52] },
+  { i: 7, side: 'right', group: 'B', root: [ 0.19, 0.16, -0.22], anchor: [ 0.68, 0, -0.52] },
 ] as const
 
 // ─── Leg tier materials ───────────────────────────────────────────────────────
@@ -324,30 +324,44 @@ export class SpiderLegs {
     }
   }
 
-  // Celebration pose — front two legs lift and reach forward while the rest stay planted.
-  // Call in place of update() when Webbs3D.celebratingPose is true.
-  //
-  // Round 6 Issue 1 spec: 2-arg signature, body rotation is assumed snapped to face
-  // the camera (Webbs3D.startCelebrationPose snaps rotation.y).
+  // Round 7 Issue 1 — three-phase celebration pose:
+  //   T=0.0–0.3s : body rotates toward camera (handled by Webbs3D)
+  //   T=0.3–0.7s : front two legs lift from ground to peak height
+  //   T=0.7s+    : legs hold raised position with gentle bob
+  // Camera is at world (+X, +Y, +Z), so "toward camera" in XZ is +X +Z.  Once
+  // Webbs has rotated to face the camera, the front anatomical legs (i=6,7) sit
+  // on the camera-facing side and lift to display the item.
   updateCelebrationPose(bodyPos: THREE.Vector3, elapsedMs: number): void {
-    // Compute root/anchor world positions using the body's current rotation.
-    // We read the rotation indirectly via the legs' own root meshes; safer to
-    // require the caller has updated the group rotation before this call.
-    this.updateWorldVecs(bodyPos, 0)   // assume bodyRotY=0 (camera-facing snap)
+    // Anchor positions for the 6 planted legs must follow the rotating body.
+    // We re-derive the current rotation from the group via the legs' anchors —
+    // but since Webbs3D writes this.group.rotation.y each frame, we pass the
+    // same camera-facing rotation here.
+    const CAM_X = 18, CAM_Z = 18
+    const camLen  = Math.hypot(CAM_X, CAM_Z)
+    const camDirX = CAM_X / camLen
+    const camDirZ = CAM_Z / camLen
+    const targetRot = Math.atan2(-camDirX, -camDirZ)
+    const rotT      = Math.min(elapsedMs / 300, 1)
+    // For planted legs we only need the rotated anchors; lerp from 0 → targetRot to match Webbs3D.
+    const bodyRotY = targetRot * rotT
+    this.updateWorldVecs(bodyPos, bodyRotY)
 
-    const tSec  = elapsedMs / 1000
-    const bobY  = Math.sin(tSec * Math.PI * 2) * 0.08
-    const liftY = 0.55 + bobY              // raised foot height
-    const reachZ = bodyPos.z - 0.5         // forward in world -Z (toward camera view)
-    const spread = 0.35
+    // Leg lift gate: starts after the rotation completes (300ms), peaks at 700ms.
+    const liftT  = Math.max(0, Math.min((elapsedMs - 300) / 400, 1))
+    const liftY  = 0.05 + liftT * 0.55 + Math.sin(elapsedMs / 1000 * 2) * 0.04
+    const reachX = bodyPos.x + liftT * 0.45 * camDirX
+    const reachZ = bodyPos.z + liftT * 0.45 * camDirZ
+    const spread = 0.3
 
     for (const leg of this.legs) {
-      if (leg.index === 6 || leg.index === 7) {
-        // Anatomical front legs lifted and extended forward
-        const side = (leg.index === 6) ? -1 : 1
-        leg.footPos.set(bodyPos.x + side * spread, liftY, reachZ)
+      if (leg.index === 6) {
+        // Front-left (body local -X, -Z) — in world after rotation, sits more in +Z direction
+        leg.footPos.set(reachX - spread * camDirZ, liftY, reachZ + spread * camDirX)
+      } else if (leg.index === 7) {
+        // Front-right (body local +X, -Z) — sits more in +X direction
+        leg.footPos.set(reachX + spread * camDirZ, liftY, reachZ - spread * camDirX)
       } else {
-        // Other six legs planted at their world-space rest position
+        // All other legs planted at their rotated anchor positions
         leg.footPos.copy(leg.anchorWorld)
         leg.footPos.y = 0
       }
@@ -387,10 +401,10 @@ export class SpiderLegs {
         bodyPos.z + a.x * sin + a.z * cos
       )
 
-      // Root: body-local, elevated by body mesh height (0.4) above group Y
+      // Root: body-local, elevated by body mesh height (Round 7 Issue 4: 0.4 → 0.32)
       leg.rootWorld.set(
         bodyPos.x + r.x * cos - r.z * sin,
-        bodyPos.y + r.y + 0.4,
+        bodyPos.y + r.y + 0.32,
         bodyPos.z + r.x * sin + r.z * cos
       )
 

@@ -11,13 +11,13 @@ import { registry } from '../core/Registry'
 // ── World dimensions ───────────────────────────────────────────────────────────
 const W      = 40    // X: -20 … +20
 const D      = 26    // Z: -13 … +13
-const WALL_H = 1.2
+const WALL_H = 1.0   // Round 7 Issue 4: shorter walls for better visibility
 
 // ── 5 parallel corridors ───────────────────────────────────────────────────────
 // Each corridor: 3wu wide, running the full X extent.
 // CZ[i] is the center Z of corridor i (0=bottom, 4=top).
 const CZ      = [-10, -5, 0, 5, 10] as const   // 5 corridor center Z values
-const CORR_HW = 1.5                              // corridor half-width
+const CORR_HW = 2.0                              // Round 7 Issue 4: wider corridors (was 1.5)
 
 // Dividing wall Z ranges  (between adjacent corridors)
 const DIV_WALLS = [
@@ -38,8 +38,8 @@ const DIV_GAPS: ReadonlyArray<ReadonlyArray<number>> = [
 
 const CULL_R = 14
 
-const SPAWN_DELAY:  Record<'entry' | 'mid' | 'deep', number> = { entry: 15, mid: 8, deep: 2 }
-const RESPAWN_TIME: Record<'entry' | 'mid' | 'deep', number> = { entry: 45, mid: 25, deep: 15 }
+// Round 7 Issue 3: zone-based delay tables are gone — each entry in SPAWN_PLAN
+// now carries its own absolute delay (seconds since colony load).
 
 // ── Dead-end rooms ─────────────────────────────────────────────────────────────
 // Alcoves that branch off the outer corridors (C0 / C4) in the Z direction,
@@ -73,34 +73,24 @@ const DEAD_END_DATA: Array<{
   { x:   0, cz:   5, dz:  1, type: 'spike'  },
 ]
 
-// ── Enemy spawns — sparse near home portal (x≈+18), dense near boss (x≈-18) ──
-// No spawn point with x > 13.5 (must be 5wu clear of entry portal at x=18.5).
-const SPAWN_DATA: Array<{ kind: 'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'; x: number; cz: number }> = [
-  // Corridor 0 (z=-10)
-  { kind: 'centipede',      x: -18, cz: -10 }, { kind: 'beetle',         x: -14, cz: -10 },
-  { kind: 'ant_worker',     x: -10, cz: -10 }, { kind: 'ant_worker',     x:  -6, cz: -10 },
-  { kind: 'beetle',         x:  -2, cz: -10 }, { kind: 'jumping_spider', x:   3, cz: -10 },
-  { kind: 'centipede',      x:   8, cz: -10 },
-  // Corridor 1 (z=-5)
-  { kind: 'centipede',      x: -17, cz:  -5 }, { kind: 'beetle',         x: -13, cz:  -5 },
-  { kind: 'ant_worker',     x:  -9, cz:  -5 }, { kind: 'beetle',         x:  -5, cz:  -5 },
-  { kind: 'ant_worker',     x:  -1, cz:  -5 }, { kind: 'jumping_spider', x:   4, cz:  -5 },
-  { kind: 'beetle',         x:   9, cz:  -5 },
-  // Corridor 2 (entry, z=0)
-  { kind: 'centipede',      x: -18, cz:   0 }, { kind: 'beetle',         x: -13, cz:   0 },
-  { kind: 'ant_worker',     x:  -8, cz:   0 }, { kind: 'ant_worker',     x:  -4, cz:   0 },
-  { kind: 'beetle',         x:   1, cz:   0 }, { kind: 'jumping_spider', x:   5, cz:   0 },
-  { kind: 'centipede',      x:  10, cz:   0 },
-  // Corridor 3 (z=+5)
-  { kind: 'centipede',      x: -17, cz:   5 }, { kind: 'beetle',         x: -12, cz:   5 },
-  { kind: 'ant_worker',     x:  -8, cz:   5 }, { kind: 'ant_worker',     x:  -3, cz:   5 },
-  { kind: 'beetle',         x:   2, cz:   5 }, { kind: 'jumping_spider', x:   6, cz:   5 },
-  { kind: 'centipede',      x:  11, cz:   5 },
-  // Corridor 4 (z=+10)
-  { kind: 'centipede',      x: -17, cz:  10 }, { kind: 'beetle',         x: -13, cz:  10 },
-  { kind: 'ant_worker',     x:  -9, cz:  10 }, { kind: 'ant_worker',     x:  -4, cz:  10 },
-  { kind: 'beetle',         x:   1, cz:  10 }, { kind: 'jumping_spider', x:   7, cz:  10 },
-  { kind: 'centipede',      x:  12, cz:  10 },
+// ── Enemy spawns (Round 7 Issue 3) ────────────────────────────────────────────
+// 6 enemies total, delay-paced so the entry corridor stays safe long enough for
+// the player to orient.  Pacing rules:
+//   - NO spawn with x > 13 (entry portal at x=18.5 must stay safe)
+//   - Deep zone (x < -8): immediate
+//   - Mid zone (-8 to 8): 8-12s delay
+//   - Entry zone (8 to 13): 18-25s delay
+type SpawnKind = 'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'
+const SPAWN_PLAN: Array<{ kind: SpawnKind; x: number; z: number; delay: number }> = [
+  // Deep zone — active immediately
+  { kind: 'centipede', x: -16, z:  0.5, delay: 0  },
+  { kind: 'beetle',    x: -12, z: -1.5, delay: 0  },
+  // Mid zone — appear as the player moves in
+  { kind: 'centipede', x:  -4, z:  1.0, delay: 8  },
+  { kind: 'beetle',    x:   2, z: -1.0, delay: 12 },
+  // Entry zone — player gets ~18s safe exploration first
+  { kind: 'centipede', x:   8, z:  1.2, delay: 18 },
+  { kind: 'beetle',    x:  12, z: -1.0, delay: 25 },
 ]
 
 // ── 20 chests, 6 mimics ────────────────────────────────────────────────────────
@@ -187,14 +177,11 @@ const LANTERN_DATA: Array<{ x: number; cz: number }> = [
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface SpawnRecord {
-  kind:             'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'
-  zone:             'entry' | 'mid' | 'deep'
-  x:                number
-  z:                number    // world Z (corridor center + small jitter)
-  enemy:            Enemy3D | null
-  spawnDelayTimer:  number   // counts down from initial delay; spawns when reaches 0
-  respawnTimer:     number   // counts down after death before respawn
+interface PendingSpawn {
+  kind:  SpawnKind
+  x:     number
+  z:     number
+  delay: number   // seconds since colony load
 }
 
 interface ChestRecord {
@@ -233,11 +220,6 @@ function jitterZ(cz: number, range = 0.8): number {
   return cz + (Math.random() - 0.5) * range
 }
 
-function zoneOf(x: number): 'entry' | 'mid' | 'deep' {
-  if (x > 8)  return 'entry'
-  if (x < -8) return 'deep'
-  return 'mid'
-}
 
 export class AntColonyScene3D {
   static readonly LEFT  = -W / 2          // -20
@@ -260,7 +242,9 @@ export class AntColonyScene3D {
   private tracked:       THREE.Object3D[] = []
   private wallBodies:    CollisionBody[]  = []
   private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; capMat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
-  private spawnRecords:  SpawnRecord[]    = []
+  // Round 7 Issue 3: time-delayed spawn queue
+  private pendingSpawns:    PendingSpawn[] = []
+  private elapsedSinceLoad  = 0
   private readonly _occRaycaster = new THREE.Raycaster()
   private freeEnemies:  Enemy3D[]        = []
   private chests:       ChestRecord[]    = []
@@ -716,26 +700,30 @@ export class AntColonyScene3D {
     fill.position.set(-10, 8, -5); this.add(fill)
   }
 
-  // ── Enemy spawns ────────────────────────────────────────────────────────────────
+  // ── Enemy spawns (Round 7 Issue 3) ──────────────────────────────────────────
 
   private initSpawns(): void {
-    for (const d of SPAWN_DATA) {
-      const z    = jitterZ(d.cz, 1.1)
-      const zone = zoneOf(d.x)
-      this.spawnRecords.push({
-        kind: d.kind, zone, x: d.x, z,
-        enemy: null,
-        spawnDelayTimer: SPAWN_DELAY[zone],
-        respawnTimer: 0,
-      })
+    this.pendingSpawns   = SPAWN_PLAN.map(s => ({ ...s }))   // clone
+    this.elapsedSinceLoad = 0
+  }
+
+  private processPendingSpawns(delta: number): void {
+    this.elapsedSinceLoad += delta
+    for (let i = this.pendingSpawns.length - 1; i >= 0; i--) {
+      const s = this.pendingSpawns[i]
+      if (this.elapsedSinceLoad >= s.delay) {
+        const e = this.spawnEnemy(s.kind, s.x, s.z)
+        this.freeEnemies.push(e)
+        this.pendingSpawns.splice(i, 1)
+      }
     }
   }
 
-  private spawnEnemy(kind: SpawnRecord['kind'], x: number, z: number): Enemy3D {
+  private spawnEnemy(kind: SpawnKind, x: number, z: number): Enemy3D {
     switch (kind) {
-      case 'centipede':     return new CentipedeAmbusher3D(this.threeScene, x, z, this.gradientMap)
-      case 'beetle':        return new BeetleTank3D(this.threeScene, x, z, this.gradientMap)
-      case 'ant_worker':    return new AntWorker3D(this.threeScene, x, z, this.gradientMap)
+      case 'centipede':      return new CentipedeAmbusher3D(this.threeScene, x, z, this.gradientMap)
+      case 'beetle':         return new BeetleTank3D(this.threeScene, x, z, this.gradientMap)
+      case 'ant_worker':     return new AntWorker3D(this.threeScene, x, z, this.gradientMap)
       case 'jumping_spider': return new JumpingSpider3D(this.threeScene, x, z, this.gradientMap)
     }
   }
@@ -922,27 +910,16 @@ export class AntColonyScene3D {
   // ── Enemy update ────────────────────────────────────────────────────────────────
 
   updateEnemies(delta: number, px: number, pz: number): void {
-    for (const s of this.spawnRecords) {
-      if (s.enemy !== null) {
-        const offscreen = Math.abs(s.x - px) > CULL_R && Math.abs(s.z - pz) > CULL_R * 0.3
-        s.enemy.group.visible = !offscreen
-        if (!offscreen) { s.enemy.update(delta, px, pz); s.enemy.syncPosition() }
-        if (s.enemy.isExpired()) {
-          s.enemy.cleanup()
-          s.enemy        = null
-          s.respawnTimer = RESPAWN_TIME[s.zone]
-        }
-      } else if (s.spawnDelayTimer > 0) {
-        s.spawnDelayTimer = Math.max(0, s.spawnDelayTimer - delta)
-      } else {
-        s.respawnTimer = Math.max(0, s.respawnTimer - delta)
-        if (s.respawnTimer <= 0) {
-          s.enemy = this.spawnEnemy(s.kind, s.x, s.z)
-        }
-      }
-    }
+    // Round 7 Issue 3: drain the pending queue first so newly-spawned enemies
+    // tick immediately on the same frame they appear.
+    this.processPendingSpawns(delta)
 
-    for (const e of this.freeEnemies) { e.update(delta, px, pz); e.syncPosition() }
+    for (const e of this.freeEnemies) {
+      const offscreen = Math.abs(e.collisionBody.x - px) > CULL_R &&
+                        Math.abs(e.collisionBody.z - pz) > CULL_R * 0.3
+      e.group.visible = !offscreen
+      if (!offscreen) { e.update(delta, px, pz); e.syncPosition() }
+    }
     for (let i = this.freeEnemies.length - 1; i >= 0; i--) {
       if (this.freeEnemies[i].isExpired()) {
         this.freeEnemies[i].cleanup()
@@ -951,9 +928,6 @@ export class AntColonyScene3D {
     }
 
     this.enemies.length = 0
-    for (const s of this.spawnRecords) {
-      if (s.enemy !== null && !s.enemy.isDead()) this.enemies.push(s.enemy)
-    }
     for (const e of this.freeEnemies) {
       if (!e.isDead()) this.enemies.push(e)
     }
@@ -967,13 +941,12 @@ export class AntColonyScene3D {
     const fogSnapshot = this.fog.serialize()
     if (fogSnapshot) registry.set('fogReveal_antColony', fogSnapshot)
     this.fog.destroy(this.threeScene)
-    for (const s of this.spawnRecords) { if (s.enemy) s.enemy.cleanup() }
     for (const e of this.freeEnemies) e.cleanup()
     for (const b of this.wallBodies) physicsWorld.remove(b)
-    this.enemies      = []
-    this.spawnRecords = []
-    this.freeEnemies  = []
-    this.wallBodies   = []
+    this.enemies        = []
+    this.pendingSpawns  = []
+    this.freeEnemies    = []
+    this.wallBodies     = []
     for (const obj of this.tracked) {
       this.threeScene.remove(obj)
       if ((obj as THREE.Mesh).isMesh) (obj as THREE.Mesh).geometry.dispose()

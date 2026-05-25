@@ -161,6 +161,8 @@ const textDisplay    = new TextDisplay3D(menuOverlay)
 const pickupCelebration = new PickupCelebration3D(menuOverlay, textDisplay)
 const pickupNotify   = new PickupNotification3D()
 const presentation   = new PresentationPhase()
+// Round 7 Issue 1: hide the HTML overlay during Phase 1 so the player sees pure 3D.
+presentation.hideOverlay = () => { menuOverlay.style.display = 'none' }
 
 let gamePaused     = true   // stays true until main menu is dismissed
 let mainMenuActive = true
@@ -453,10 +455,11 @@ function gameLoop() {
   }
 
   // ── Presentation phase tick (runs even when paused) ─────────────────────
-  // Round 6 Issue 1: drive the Webbs-lifts-item phase timer + transition to UI.
-  presentation.update(webbs)
+  // Round 7 Issue 1: drive the Webbs-lifts-item phase timer + transition to UI.
+  presentation.update(webbs, particles)
   if (webbs.celebratingPose) {
-    webbs.updateLegs(0)   // tick the celebration pose every frame while paused
+    webbs.updateLegs(0)        // celebration pose every frame while paused
+    particles.update(delta)    // particle burst must animate through pause
   }
   // Camera zoom lerp must run even when paused so celebration zoom is visible
   tickZoom()

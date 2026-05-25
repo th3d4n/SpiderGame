@@ -89,7 +89,15 @@ export class PhysicsWorld {
     const dz = b.z - a.z
     const distSq = dx * dx + dz * dz
     const minDist = a.radius + b.radius
-    if (distSq >= minDist * minDist || distSq === 0) return
+    if (distSq >= minDist * minDist) return
+
+    // Round 7 Issue 2: handle exact co-location (e.g. enemy spawned on player).
+    // Without this, distSq=0 falls through and the bodies stay overlapped.
+    if (distSq < 0.0001) {
+      if (!a.isStatic) a.x -= 0.05
+      else if (!b.isStatic) b.x += 0.05
+      return
+    }
 
     const dist = Math.sqrt(distSq)
     const overlap = (minDist - dist) / dist

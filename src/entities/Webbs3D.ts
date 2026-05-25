@@ -11,7 +11,9 @@ export const SCALE = 0.01
 
 // ─── Gameplay constants (same values as Webbs.ts) ─────────────────────────────
 const SPEED_WU            = 300 * SCALE   // 3.0 world units/s
-export const BODY_R_NORMAL  = 22 * SCALE  // 0.22 — collision radius
+// Round 7 Issue 2: bumped from 0.22 → 0.28 so enemies are pushed out of Webbs'
+// silhouette and stay in striking range instead of standing inside him.
+export const BODY_R_NORMAL  = 28 * SCALE  // 0.28 — collision radius
 export const BODY_R_SQUEEZE = 14 * SCALE  // 0.14 — narrow-gap mode
 export const PLAYER_MAX_HP  = 100
 
@@ -50,9 +52,14 @@ export class Webbs3D {
   legs: SpiderLegs
   moveDir = new THREE.Vector2(0, 0)   // last normalized movement direction for gait
 
-  // Celebration pose — set true while pickup celebration is showing
-  celebratingPose      = false
+  // Celebration pose — set true while pickup celebration is showing (Round 7 Issue 1)
+  celebratingPose          = false
   private celebPoseStartMs = 0
+  private preCelebRotation = 0   // saved rotation to restore after celebration
+
+  // Camera offset constants must match main.ts CAM_OFFSET so we can rotate Webbs to face the camera
+  private readonly CAM_OFFSET_X = 18
+  private readonly CAM_OFFSET_Z = 18
 
   private bodyMat:          THREE.MeshToonMaterial
   private gradientMap:      THREE.Texture
@@ -65,16 +72,16 @@ export class Webbs3D {
     this.group.position.set(x, 0, z)
     this.weaponSystem = new WeaponSystem(WEAPON_DATA)
 
-    // Body — flattened sphere
-    const bodyGeo = new THREE.SphereGeometry(0.3, 16, 12)
+    // Body — flattened sphere (Round 7 Issue 4: shrunk from 0.3 → 0.22)
+    const bodyGeo = new THREE.SphereGeometry(0.22, 16, 12)
     bodyGeo.scale(1, 0.6, 1)
     this.bodyMat = new THREE.MeshToonMaterial({ color: 0x554488, gradientMap })
     this.bodyMesh = new THREE.Mesh(bodyGeo, this.bodyMat)
     this.bodyMesh.castShadow = true
-    this.bodyMesh.position.y = 0.4
+    this.bodyMesh.position.y = 0.32   // was 0.4
     this.group.add(this.bodyMesh)
 
-    // Eyes — emissive so they read through shadow
+    // Eyes — emissive so they read through shadow (positions scaled to smaller body)
     const eyeGeo = new THREE.SphereGeometry(0.06, 8, 6)
     const eyeMat = new THREE.MeshStandardMaterial({
       color: 0xaaaaff,
@@ -83,12 +90,12 @@ export class Webbs3D {
     })
     const eyeL = new THREE.Mesh(eyeGeo, eyeMat)
     const eyeR = new THREE.Mesh(eyeGeo, eyeMat)
-    eyeL.position.set(-0.1, 0.5, -0.22)
-    eyeR.position.set( 0.1, 0.5, -0.22)
+    eyeL.position.set(-0.075, 0.40, -0.16)
+    eyeR.position.set( 0.075, 0.40, -0.16)
     this.group.add(eyeL, eyeR)
 
-    // Ground shadow disc
-    const shadowGeo = new THREE.CircleGeometry(0.28, 16)
+    // Ground shadow disc (smaller to match new body silhouette)
+    const shadowGeo = new THREE.CircleGeometry(0.22, 16)
     shadowGeo.rotateX(-Math.PI / 2)
     const shadowMat = new THREE.MeshBasicMaterial({
       color: 0x000000,
@@ -169,10 +176,21 @@ export class Webbs3D {
   // ── Call after syncPosition() — advances gait and solves IK ──────────────
   updateLegs(delta: number): void {
     if (this.celebratingPose) {
-      this.legs.updateCelebrationPose(
-        this.group.position,
-        performance.now() - this.celebPoseStartMs,
-      )
+      // Round 7 Issue 1: animate rotation toward camera over 300ms, then call leg pose.
+      const elapsedMs = performance.now() - this.celebPoseStartMs
+
+      const camLen  = Math.hypot(this.CAM_OFFSET_X, this.CAM_OFFSET_Z)
+      const camDirX = this.CAM_OFFSET_X / camLen
+      const camDirZ = this.CAM_OFFSET_Z / camLen
+      const targetRotation = Math.atan2(-camDirX, -camDirZ)   // makes body forward point to camera
+
+      const rotT = Math.min(elapsedMs / 300, 1)
+      let deltaA = targetRotation - this.preCelebRotation
+      while (deltaA >  Math.PI) deltaA -= Math.PI * 2
+      while (deltaA < -Math.PI) deltaA += Math.PI * 2
+      this.group.rotation.y = this.preCelebRotation + deltaA * rotT
+
+      this.legs.updateCelebrationPose(this.group.position, elapsedMs)
     } else {
       this.legs.update(
         delta,
@@ -185,13 +203,9 @@ export class Webbs3D {
   }
 
   startCelebrationPose(): void {
-    this.celebratingPose  = true
-    this.celebPoseStartMs = performance.now()
-    // Snap to face -Z (default forward) so the celebration pose's world-space
-    // foot positions line up with the spider's anatomy.
-    this.group.rotation.y = 0
-    this.facingX = 0
-    this.facingZ = -1
+    this.celebratingPose   = true
+    this.celebPoseStartMs  = performance.now()
+    this.preCelebRotation  = this.group.rotation.y
     // Stop any residual movement so the spider stays put for the pose
     this.collisionBody.velocity.x = 0
     this.collisionBody.velocity.z = 0
@@ -199,7 +213,8 @@ export class Webbs3D {
   }
 
   endCelebrationPose(): void {
-    this.celebratingPose = false
+    this.celebratingPose  = false
+    this.group.rotation.y = this.preCelebRotation
   }
 
   // ── Hit feedback — body flashes red, resets after 140 ms ─────────────────
