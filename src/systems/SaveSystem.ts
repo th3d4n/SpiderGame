@@ -1,4 +1,4 @@
-import Phaser from 'phaser'
+import { registry } from '../core/Registry'
 
 export interface SaveData {
   health:                         number
@@ -33,26 +33,20 @@ const SAVE_FIELDS: (keyof SaveData)[] = [
 ]
 
 export class SaveSystem {
-  saveFromRegistry(registry: Phaser.Data.DataManager): void {
+  // Snapshot the registry into localStorage.
+  save(): void {
     const data: Record<string, unknown> = {}
     for (const key of SAVE_FIELDS) {
       const val = registry.get(key)
       if (val !== undefined && val !== null) data[key] = val
     }
-    try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify(data))
-    } catch {
-      // localStorage unavailable (private browsing quota exceeded, etc.)
-    }
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)) } catch { /* quota / private mode */ }
   }
 
-  loadIntoRegistry(registry: Phaser.Data.DataManager): void {
+  // Restore saved data into the registry.  Call once at boot before scene construction.
+  load(): void {
     let raw: string | null
-    try {
-      raw = localStorage.getItem(SAVE_KEY)
-    } catch {
-      return
-    }
+    try { raw = localStorage.getItem(SAVE_KEY) } catch { return }
     if (!raw) return
     try {
       const data = JSON.parse(raw) as Record<string, unknown>
@@ -61,25 +55,19 @@ export class SaveSystem {
           registry.set(key, data[key])
         }
       }
-    } catch {
-      // corrupt save — leave registry untouched, player starts fresh
-    }
+    } catch { /* corrupt save — leave registry untouched */ }
   }
 
+  // Legacy shims for Phaser scene files — delegate to the new methods.
+  saveFromRegistry(_reg?: unknown): void { this.save() }
+  loadIntoRegistry(_reg?: unknown): void { this.load() }
+
   hasSave(): boolean {
-    try {
-      return localStorage.getItem(SAVE_KEY) !== null
-    } catch {
-      return false
-    }
+    try { return localStorage.getItem(SAVE_KEY) !== null } catch { return false }
   }
 
   deleteSave(): void {
-    try {
-      localStorage.removeItem(SAVE_KEY)
-    } catch {
-      // ignore
-    }
+    try { localStorage.removeItem(SAVE_KEY) } catch { }
   }
 }
 
