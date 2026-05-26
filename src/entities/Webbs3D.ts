@@ -1,9 +1,9 @@
 import * as THREE from 'three'
-import { WeaponSystem } from '../systems/WeaponSystem'
-import { WEAPON_DATA } from '../config/WeaponData'
+import { WeaponSystem, WeaponType } from '../systems/WeaponSystem'
+import { WEAPON_DATA, WEAPON_COLORS } from '../config/WeaponData'
 import { type CollisionBody, physicsWorld } from '../core/PhysicsWorld'
 import { InputManager } from '../core/InputManager'
-import { SpiderLegs } from './SpiderLegs'
+import { SpiderLegs, createFuzzyBodyTexture } from './SpiderLegs'
 
 // ─── Scale factor ─────────────────────────────────────────────────────────────
 // 100 Phaser pixels = 1 Three.js world unit
@@ -32,7 +32,21 @@ export const LEG_COLORS = [
 export class Webbs3D {
   group: THREE.Group
   bodyMesh: THREE.Mesh
+  abdMesh!: THREE.Mesh                       // Round 8 Issue 1: abdomen mesh for shudder
   collisionBody: CollisionBody
+
+  // Round 8 Issue 3: combat-feel state
+  recoilVx            = 0
+  recoilVz            = 0
+  recoilTimer         = 0
+  shudderTimer        = 0
+  halfHpLeapTriggered = false
+  private dodgeTimer  = 0
+  private dodgeVx     = 0
+  private dodgeVz     = 0
+
+  // Round 8 Issue 6: presented item visual during celebration
+  private presentedItemMesh: THREE.Object3D | null = null
 
   // ── Gameplay fields (all carried over from Webbs.ts) ──────────────────────
   hp             = PLAYER_MAX_HP
@@ -61,7 +75,7 @@ export class Webbs3D {
   private readonly CAM_OFFSET_X = 18
   private readonly CAM_OFFSET_Z = 18
 
-  private bodyMat:          THREE.MeshToonMaterial
+  private bodyMat:          THREE.MeshStandardMaterial | THREE.MeshToonMaterial
   private gradientMap:      THREE.Texture
   private webLauncherMount: THREE.Group | null = null
   private timeSinceDamage   = 9999
@@ -72,36 +86,76 @@ export class Webbs3D {
     this.group.position.set(x, 0, z)
     this.weaponSystem = new WeaponSystem(WEAPON_DATA)
 
-    // Body — flattened sphere (Round 7 Issue 4: shrunk from 0.3 → 0.22)
-    const bodyGeo = new THREE.SphereGeometry(0.22, 16, 12)
-    bodyGeo.scale(1, 0.6, 1)
-    this.bodyMat = new THREE.MeshToonMaterial({ color: 0x554488, gradientMap })
-    this.bodyMesh = new THREE.Mesh(bodyGeo, this.bodyMat)
-    this.bodyMesh.castShadow = true
-    this.bodyMesh.position.y = 0.32   // was 0.4
-    this.group.add(this.bodyMesh)
-
-    // Eyes — emissive so they read through shadow (positions scaled to smaller body)
-    const eyeGeo = new THREE.SphereGeometry(0.06, 8, 6)
-    const eyeMat = new THREE.MeshStandardMaterial({
-      color: 0xaaaaff,
-      emissive: 0x4444ff,
-      emissiveIntensity: 0.8,
+    // ─── Body — taller, fuzzier, layered (Round 8 Issue 1) ─────────────────
+    // Cephalothorax (front part with eyes) + abdomen (rear bulb)
+    const fuzzyTex = createFuzzyBodyTexture()
+    this.bodyMat = new THREE.MeshStandardMaterial({
+      color: 0x6a4d8a,
+      roughness: 0.95,
+      map: fuzzyTex,
+      bumpMap: fuzzyTex,
+      bumpScale: 0.04,
     })
-    const eyeL = new THREE.Mesh(eyeGeo, eyeMat)
-    const eyeR = new THREE.Mesh(eyeGeo, eyeMat)
-    eyeL.position.set(-0.075, 0.40, -0.16)
-    eyeR.position.set( 0.075, 0.40, -0.16)
-    this.group.add(eyeL, eyeR)
 
-    // Ground shadow disc (smaller to match new body silhouette)
-    const shadowGeo = new THREE.CircleGeometry(0.22, 16)
-    shadowGeo.rotateX(-Math.PI / 2)
-    const shadowMat = new THREE.MeshBasicMaterial({
-      color: 0x000000,
-      transparent: true,
-      opacity: 0.4,
+    const cephGeo = new THREE.SphereGeometry(0.20, 16, 12)
+    cephGeo.scale(1, 0.7, 1)
+    const cephMesh = new THREE.Mesh(cephGeo, this.bodyMat)
+    cephMesh.castShadow = true
+    cephMesh.position.set(0, 0.42, 0.16)        // RAISED so legs visible underneath
+    this.group.add(cephMesh)
+    this.bodyMesh = cephMesh
+
+    const abdGeo = new THREE.SphereGeometry(0.26, 16, 14)
+    abdGeo.scale(1, 0.75, 1.15)
+    const abdMesh = new THREE.Mesh(abdGeo, this.bodyMat)
+    abdMesh.castShadow = true
+    abdMesh.position.set(0, 0.40, -0.18)
+    this.group.add(abdMesh)
+    this.abdMesh = abdMesh
+
+    // ─── Eyes — 8 total in classic spider pattern ──────────────────────────
+    const primaryEyeMat = new THREE.MeshStandardMaterial({
+      color: 0x111122, emissive: 0x4466aa, emissiveIntensity: 0.6,
     })
+    const pupilMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
+    const secondaryEyeMat = new THREE.MeshStandardMaterial({
+      color: 0x000000, emissive: 0x223355, emissiveIntensity: 0.4,
+    })
+    // Two large primary eyes with white pupils — face direction = +Z (forward)
+    const primaryR = 0.04
+    const eyeY     = 0.52
+    const eyeZ     = 0.32
+    for (const x of [-0.07, 0.07]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(primaryR, 10, 8), primaryEyeMat)
+      eye.position.set(x, eyeY, eyeZ)
+      this.group.add(eye)
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(primaryR * 0.5, 8, 6), pupilMat)
+      pupil.position.set(x, eyeY + 0.005, eyeZ + 0.03)
+      this.group.add(pupil)
+    }
+    // Six secondary eyes
+    const secondaryR = 0.022
+    for (const [x, y, z] of [
+      [-0.13, 0.55, 0.27], [-0.05, 0.57, 0.30], [ 0.05, 0.57, 0.30], [ 0.13, 0.55, 0.27],
+      [-0.10, 0.49, 0.34], [ 0.10, 0.49, 0.34],
+    ] as [number, number, number][]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(secondaryR, 8, 6), secondaryEyeMat)
+      eye.position.set(x, y, z)
+      this.group.add(eye)
+    }
+
+    // ─── Mandibles ─────────────────────────────────────────────────────────
+    const mandMat = new THREE.MeshStandardMaterial({ color: 0x2a1830, roughness: 0.8 })
+    for (const x of [-0.06, 0.06]) {
+      const mand = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.08, 6), mandMat)
+      mand.position.set(x, 0.34, 0.33)
+      mand.rotation.x = Math.PI / 4
+      this.group.add(mand)
+    }
+
+    // ─── Ground shadow disc ────────────────────────────────────────────────
+    const shadowGeo = new THREE.CircleGeometry(0.30, 16).rotateX(-Math.PI / 2)
+    const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4 })
     const shadowDisc = new THREE.Mesh(shadowGeo, shadowMat)
     shadowDisc.position.y = 0.01
     this.group.add(shadowDisc)
@@ -141,8 +195,38 @@ export class Webbs3D {
 
     if (dx !== 0 && dz !== 0) { dx *= 0.707; dz *= 0.707 }
 
-    this.collisionBody.velocity.x = dx * speed
-    this.collisionBody.velocity.z = dz * speed
+    // Round 8 Issue 3: recoil overrides input velocity briefly when hit
+    if (this.dodgeTimer > 0) {
+      this.dodgeTimer -= delta
+      this.collisionBody.velocity.x = this.dodgeVx
+      this.collisionBody.velocity.z = this.dodgeVz
+      this.dodgeVx *= 0.93
+      this.dodgeVz *= 0.93
+    } else if (this.recoilTimer > 0) {
+      this.recoilTimer -= delta
+      const k = Math.max(0, this.recoilTimer / 0.18)
+      this.collisionBody.velocity.x = dx * speed * (1 - k) + this.recoilVx * k
+      this.collisionBody.velocity.z = dz * speed * (1 - k) + this.recoilVz * k
+    } else {
+      this.collisionBody.velocity.x = dx * speed
+      this.collisionBody.velocity.z = dz * speed
+    }
+
+    // Round 8 Issue 3: shudder — small random offset on body meshes (NOT physics)
+    if (this.shudderTimer > 0) {
+      this.shudderTimer -= delta
+      const i = Math.max(0, this.shudderTimer / 0.20)
+      this.bodyMesh.position.x = (Math.random() - 0.5) * 0.04 * i
+      this.bodyMesh.position.z = 0.16 + (Math.random() - 0.5) * 0.04 * i
+      this.abdMesh.position.x  = (Math.random() - 0.5) * 0.04 * i
+      this.abdMesh.position.z  = -0.18 + (Math.random() - 0.5) * 0.04 * i
+    } else {
+      this.bodyMesh.position.x = 0
+      this.bodyMesh.position.z = 0.16
+      this.abdMesh.position.x  = 0
+      this.abdMesh.position.z  = -0.18
+    }
+
     this.moveDir.set(dx, dz) // normalized (0.707 diagonal already applied above)
 
     if (dx !== 0 || dz !== 0) {
@@ -191,6 +275,7 @@ export class Webbs3D {
       this.group.rotation.y = this.preCelebRotation + deltaA * rotT
 
       this.legs.updateCelebrationPose(this.group.position, elapsedMs)
+      this.updatePresentedItem(elapsedMs)
     } else {
       this.legs.update(
         delta,
@@ -202,7 +287,7 @@ export class Webbs3D {
     }
   }
 
-  startCelebrationPose(): void {
+  startCelebrationPose(weapon?: WeaponType): void {
     this.celebratingPose   = true
     this.celebPoseStartMs  = performance.now()
     this.preCelebRotation  = this.group.rotation.y
@@ -210,20 +295,45 @@ export class Webbs3D {
     this.collisionBody.velocity.x = 0
     this.collisionBody.velocity.z = 0
     this.moveDir.set(0, 0)
+    if (weapon !== undefined) this.showPresentedItem(weapon)
   }
 
   endCelebrationPose(): void {
     this.celebratingPose  = false
     this.group.rotation.y = this.preCelebRotation
+    this.hidePresentedItem()
   }
 
-  // ── Hit feedback — body flashes red, resets after 140 ms ─────────────────
+  // ── Hit feedback — body flash + recoil + shudder + half-HP leap ─────────
   damage(amount: number): void {
     if (amount <= 0 || this.maxProtectionActive) return
     this.hp = Math.max(0, this.hp - amount)
     this.timeSinceDamage = 0
+
+    // Red flash on body (new color base = 0x6a4d8a)
     this.bodyMat.color.setHex(0xff3344)
-    setTimeout(() => { this.bodyMat.color.setHex(0x554488) }, 140)
+    setTimeout(() => { this.bodyMat.color.setHex(0x6a4d8a) }, 140)
+
+    // Round 8 Issue 3: recoil + shudder
+    this.recoilVx    = -this.facingX * 1.6
+    this.recoilVz    = -this.facingZ * 1.6
+    this.recoilTimer = 0.18
+    this.shudderTimer = 0.20
+
+    // One-time 50% HP leap back
+    const hpFrac = this.hp / this.hpMax
+    if (!this.halfHpLeapTriggered && hpFrac <= 0.5 && hpFrac > 0) {
+      this.halfHpLeapTriggered = true
+      this.startDodgeLeap()
+    }
+  }
+
+  // Round 8 Issue 3: backward dodge leap (spacebar + half-HP trigger)
+  startDodgeLeap(): void {
+    const leapSpeed = 11.0
+    this.dodgeVx    = -this.facingX * leapSpeed
+    this.dodgeVz    = -this.facingZ * leapSpeed
+    this.dodgeTimer = 0.25
   }
 
   // Build a web-launcher mount parented to this.group (body-local space).
@@ -275,6 +385,109 @@ export class Webbs3D {
   resetHp(amount?: number): void {
     this.hp = amount ?? this.hpMax
     this.timeSinceDamage = 9999
+    this.halfHpLeapTriggered = false   // Round 8 Issue 3: allow re-triggering
+  }
+
+  // ─── Round 8 Issue 6: presented item during celebration pose ──────────────
+  showPresentedItem(weapon: WeaponType): void {
+    this.hidePresentedItem()
+    // Build a scaled-up version of the equipped-weapon visual
+    const gm  = this.gradientMap
+    const tip = this.buildPresentedTip(weapon, gm)
+    tip.scale.set(3.5, 3.5, 3.5)
+
+    const color = WEAPON_COLORS[weapon] ?? 0xffffff
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 16, 12),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending }),
+    )
+
+    const wrap = new THREE.Group()
+    wrap.add(glow)
+    wrap.add(tip)
+    wrap.position.set(0.3, 1.1, 0.3)
+    this.group.add(wrap)
+    this.presentedItemMesh = wrap
+  }
+
+  hidePresentedItem(): void {
+    if (!this.presentedItemMesh) return
+    this.group.remove(this.presentedItemMesh)
+    this.presentedItemMesh.traverse(obj => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose()
+        ;(obj.material as THREE.Material).dispose()
+      }
+    })
+    this.presentedItemMesh = null
+  }
+
+  updatePresentedItem(elapsedMs: number): void {
+    if (!this.presentedItemMesh) return
+    const bobY = Math.sin(elapsedMs / 1000 * 3) * 0.05
+    this.presentedItemMesh.position.y = 1.1 + bobY
+    this.presentedItemMesh.rotation.y = elapsedMs / 1000 * 1.5
+    const glow = this.presentedItemMesh.children[0] as THREE.Mesh
+    const glowMat = glow.material as THREE.MeshBasicMaterial
+    glowMat.opacity = 0.4 + Math.sin(elapsedMs / 1000 * 4) * 0.2
+  }
+
+  // Simple weapon tip for the celebration — separate from SpiderLegs' mesh
+  // factory so we don't need to reach into private state there.
+  private buildPresentedTip(weapon: WeaponType, gm: THREE.Texture): THREE.Group {
+    const g = new THREE.Group()
+    const color = WEAPON_COLORS[weapon] ?? 0xcccccc
+    switch (weapon) {
+      case WeaponType.BoxingGloves: {
+        const shaft = new THREE.Mesh(
+          new THREE.ConeGeometry(0.025, 0.22, 6),
+          new THREE.MeshToonMaterial({ color: 0xddccaa, gradientMap: gm }),
+        )
+        shaft.rotation.x = Math.PI / 2
+        shaft.position.z = 0.11
+        g.add(shaft)
+        break
+      }
+      case WeaponType.Sword: {
+        const blade = new THREE.Mesh(
+          new THREE.BoxGeometry(0.045, 0.045, 0.42),
+          new THREE.MeshToonMaterial({ color: 0xd8d8d8, gradientMap: gm }),
+        )
+        blade.position.z = 0.23
+        const guard = new THREE.Mesh(
+          new THREE.BoxGeometry(0.22, 0.05, 0.05),
+          new THREE.MeshToonMaterial({ color: 0x999999, gradientMap: gm }),
+        )
+        guard.position.z = 0.05
+        g.add(blade, guard)
+        break
+      }
+      case WeaponType.Axe: {
+        const head = new THREE.Mesh(
+          new THREE.BoxGeometry(0.12, 0.10, 0.04),
+          new THREE.MeshToonMaterial({ color: 0x888888, gradientMap: gm }),
+        )
+        g.add(head)
+        break
+      }
+      case WeaponType.WebLauncher: {
+        const bead = new THREE.Mesh(
+          new THREE.SphereGeometry(0.10, 12, 8),
+          new THREE.MeshStandardMaterial({ color: 0xddeeff, emissive: 0x99bbff, emissiveIntensity: 0.6 }),
+        )
+        g.add(bead)
+        break
+      }
+      default: {
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(0.08, 8, 6),
+          new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4 }),
+        )
+        g.add(sphere)
+        break
+      }
+    }
+    return g
   }
 
   setBodyRadius(r: number): void {

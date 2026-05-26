@@ -106,6 +106,10 @@ export class WeaponUseSystem3D {
   // Callback fired when bow has no ammo — wire to HUD in main.ts
   onOutOfAmmo: (() => void) | null = null
 
+  // Round 8 Issue 5: per-weapon animation FX
+  private swordSlashFx: Array<{ mesh: THREE.Mesh; elapsed: number; duration: number; startY: number; endY: number }> = []
+  private axeSweepFx:   Array<{ mesh: THREE.Mesh; elapsed: number; duration: number; initialRotY: number; sweepRange: number }> = []
+
   // FlameBreather state
   private flameActive    = false
   private flameMesh:     THREE.Mesh | null = null
@@ -195,6 +199,81 @@ export class WeaponUseSystem3D {
     this.checkSwingHits(delta)
     this.tickProjectiles(delta)
     this.tickHitEffects(delta)
+    this.tickSwordSlashFx(delta)
+    this.tickAxeSweepFx(delta)
+  }
+
+  // ── Round 8 Issue 5: vertical sword slash + horizontal axe sweep ─────────
+
+  private spawnSwordSlash(webbs: Webbs3D): void {
+    const trailGeo = new THREE.PlaneGeometry(0.06, 0.8)
+    const trailMat = new THREE.MeshBasicMaterial({
+      color: 0xddddff, transparent: true, opacity: 0.85, side: THREE.DoubleSide,
+    })
+    const trail = new THREE.Mesh(trailGeo, trailMat)
+    const fx = webbs.facingX, fz = webbs.facingZ
+    const offsetDist = 0.45
+    trail.position.set(
+      webbs.collisionBody.x + fx * offsetDist,
+      1.0,
+      webbs.collisionBody.z + fz * offsetDist,
+    )
+    trail.rotation.y = Math.atan2(fx, fz) + Math.PI / 2
+    this.threeScene.add(trail)
+    this.swordSlashFx.push({ mesh: trail, elapsed: 0, duration: 0.22, startY: 1.0, endY: 0.05 })
+  }
+
+  private tickSwordSlashFx(delta: number): void {
+    const keep: typeof this.swordSlashFx = []
+    for (const fx of this.swordSlashFx) {
+      fx.elapsed += delta
+      const t = fx.elapsed / fx.duration
+      if (t >= 1) {
+        fx.mesh.removeFromParent()
+        fx.mesh.geometry.dispose()
+        ;(fx.mesh.material as THREE.Material).dispose()
+        continue
+      }
+      fx.mesh.position.y = fx.startY + (fx.endY - fx.startY) * t
+      ;(fx.mesh.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - t * 0.6)
+      keep.push(fx)
+    }
+    this.swordSlashFx = keep
+  }
+
+  private spawnAxeSweep(webbs: Webbs3D): void {
+    const radius = AXE_RADIUS
+    const geo = new THREE.RingGeometry(radius * 0.4, radius, 32, 1, 0, Math.PI)
+    geo.rotateX(-Math.PI / 2)
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xff8844, transparent: true, opacity: 0.5, side: THREE.DoubleSide,
+    })
+    const sweep = new THREE.Mesh(geo, mat)
+    sweep.position.set(webbs.collisionBody.x, 0.10, webbs.collisionBody.z)
+    sweep.rotation.y = Math.atan2(webbs.facingX, webbs.facingZ) - Math.PI / 2
+    this.threeScene.add(sweep)
+    this.axeSweepFx.push({
+      mesh: sweep, elapsed: 0, duration: 0.36,
+      initialRotY: sweep.rotation.y, sweepRange: Math.PI,
+    })
+  }
+
+  private tickAxeSweepFx(delta: number): void {
+    const keep: typeof this.axeSweepFx = []
+    for (const fx of this.axeSweepFx) {
+      fx.elapsed += delta
+      const t = fx.elapsed / fx.duration
+      if (t >= 1) {
+        fx.mesh.removeFromParent()
+        fx.mesh.geometry.dispose()
+        ;(fx.mesh.material as THREE.Material).dispose()
+        continue
+      }
+      fx.mesh.rotation.y = fx.initialRotY + fx.sweepRange * t
+      ;(fx.mesh.material as THREE.MeshBasicMaterial).opacity = 0.5 * (1 - t)
+      keep.push(fx)
+    }
+    this.axeSweepFx = keep
   }
 
   // ── Weapon activation ─────────────────────────────────────────────────────
@@ -237,7 +316,7 @@ export class WeaponUseSystem3D {
     webbs.stamina = Math.max(0, webbs.stamina - SWORD_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = SWORD_CD
     webbs.legs.triggerAnim(slot, ANIM_SWORD, webbs.facingX, webbs.facingZ, SWORD_REACH)
-    this.spawnSwingFan(webbs, SWORD_RADIUS, SWORD_SWEEP, 0xaaaaff, ANIM_SWORD)
+    this.spawnSwordSlash(webbs)   // Round 8 Issue 5: vertical overhead slash
     this.activeSwings.push({
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
       facingX: webbs.facingX,    facingZ: webbs.facingZ,
@@ -258,7 +337,7 @@ export class WeaponUseSystem3D {
     webbs.stamina = Math.max(0, webbs.stamina - AXE_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = AXE_CD
     webbs.legs.triggerAnim(slot, ANIM_AXE, webbs.facingX, webbs.facingZ, AXE_REACH)
-    this.spawnSwingFan(webbs, AXE_RADIUS, AXE_SWEEP, 0xaa6633, ANIM_AXE)
+    this.spawnAxeSweep(webbs)   // Round 8 Issue 5: horizontal 180° sweep
     this.activeSwings.push({
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
       facingX: webbs.facingX,    facingZ: webbs.facingZ,

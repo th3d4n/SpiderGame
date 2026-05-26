@@ -33,6 +33,24 @@ const ANCHOR_DATA = [
 // ─── Leg tier materials ───────────────────────────────────────────────────────
 const TIER_COLORS = [0x8B6914, 0x777777, 0x505050, 0xC0C0C0] // wood, stone, iron, metal
 
+// Round 8 Issue 1 — fuzzy spider hair texture, shared with body for upper legs
+export function createFuzzyBodyTexture(): THREE.DataTexture {
+  const size = 64
+  const data = new Uint8Array(size * size * 4)
+  for (let i = 0; i < size * size; i++) {
+    const noise = (Math.random() - 0.5) * 0.4
+    data[i * 4 + 0] = Math.max(0, Math.min(255, 106 + noise * 80))   // 0x6a base
+    data[i * 4 + 1] = Math.max(0, Math.min(255,  77 + noise * 50))   // 0x4d base
+    data[i * 4 + 2] = Math.max(0, Math.min(255, 138 + noise * 60))   // 0x8a base
+    data[i * 4 + 3] = 255
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.repeat.set(2, 2)
+  tex.needsUpdate = true
+  return tex
+}
+
 // ─── Module-level scratch vectors (avoid per-frame allocations) ───────────────
 const _sv1 = new THREE.Vector3()
 const _sv2 = new THREE.Vector3()
@@ -124,6 +142,12 @@ interface LegAnim {
   attackRange: number
 }
 
+function wrapAngle(a: number): number {
+  while (a >  Math.PI) a -= Math.PI * 2
+  while (a < -Math.PI) a += Math.PI * 2
+  return a
+}
+
 export class SpiderLegs {
   private legs:         Leg[]   = []
   private animStates:   Array<LegAnim | null> = Array(8).fill(null)
@@ -133,6 +157,9 @@ export class SpiderLegs {
   private currentTier   = 0
   private slotWeapons:  WeaponType[]              = Array(8).fill(WeaponType.Empty)
   private weaponMeshes: Array<THREE.Group | null> = Array(8).fill(null)
+  // Round 8 Issue 2: detect large rotation deltas → snap feet to anchors so legs
+  // can't reach across the body when Webbs spins fast.
+  private lastBodyRotation = 0
   threeScene: THREE.Scene
 
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
@@ -144,10 +171,14 @@ export class SpiderLegs {
   private buildLegs(): void {
     const gm = this.gradientMap
     for (const d of ANCHOR_DATA) {
-      // Three-part leg: organic upper (body color) → hinge sphere → bionic lower (tier/weapon)
+      // Three-part leg: fuzzy organic upper (body color) → hinge → bionic lower (tier/weapon)
       const upper = new THREE.Mesh(
         new THREE.CylinderGeometry(1, 1, 2, 8),
-        new THREE.MeshToonMaterial({ color: 0x554488, gradientMap: gm }),  // body purple
+        new THREE.MeshStandardMaterial({
+          color: 0x6a4d8a,
+          roughness: 0.95,
+          map: createFuzzyBodyTexture(),
+        }),
       )
       const lower = new THREE.Mesh(
         new THREE.CylinderGeometry(1, 1, 2, 8),
@@ -212,6 +243,17 @@ export class SpiderLegs {
     weaponSystem: WeaponSystem
   ): void {
     this.updateWorldVecs(bodyPos, bodyRotY)
+
+    // Round 8 Issue 2: hard-turn snap — if the body rotated > 45° in one frame,
+    // every foot snaps to its (newly rotated) anchor so legs can't cross over.
+    const rotDelta = Math.abs(wrapAngle(bodyRotY - this.lastBodyRotation))
+    if (rotDelta > Math.PI / 4) {
+      for (const leg of this.legs) {
+        leg.footPos.copy(leg.anchorWorld)
+        leg.isStepping = false
+      }
+    }
+    this.lastBodyRotation = bodyRotY
 
     // Animated legs are fully excluded from the gait machine this frame
     const activeAnims = this.animStates.map((s, i) => s !== null ? i : -1).filter(i => i >= 0)
@@ -317,10 +359,30 @@ export class SpiderLegs {
         : TIER_COLORS[this.currentTier]
       ;(leg.lower.material as THREE.MeshToonMaterial).color.setHex(lowerColor)
 
-      // Sync weapon mesh when slot contents change; hide if not currently animating
+      // Round 8 Issue 4: weapon mesh stays visible at the foot at rest, not just
+      // during attack animation.  Orient the weapon to point outward from body.
       this.syncWeaponMesh(leg.index, weaponType)
       const wm = this.weaponMeshes[leg.index]
-      if (wm && !this.animStates[leg.index]) wm.visible = false
+      if (wm && !this.animStates[leg.index]) {
+        if (weaponType !== WeaponType.Empty) {
+          wm.visible = true
+          wm.position.copy(leg.footPos)
+          wm.position.y = Math.max(leg.footPos.y + 0.04, 0.04)
+          const dxw = leg.footPos.x - bodyPos.x
+          const dzw = leg.footPos.z - bodyPos.z
+          const lw  = Math.hypot(dxw, dzw)
+          if (lw > 0.001) {
+            _sv1.set(dxw / lw, 0, dzw / lw)
+            _quat.setFromUnitVectors(_forwardZ, _sv1)
+            wm.quaternion.copy(_quat)
+          }
+          // Tip sphere hidden when weapon is shown
+          leg.tip.visible = false
+        } else {
+          wm.visible = false
+          leg.tip.visible = true
+        }
+      }
     }
   }
 
@@ -542,6 +604,53 @@ export class SpiderLegs {
         head.rotation.x = Math.PI / 2  // tip points in +Z
         head.position.z = 0.47
         g.add(shaft, head)
+        return g
+      }
+      case WeaponType.FlameBreather: {
+        // Nozzle: dark cylinder + glowing tip
+        const g = new THREE.Group()
+        const barrel = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.04, 0.04, 0.20, 8),
+          new THREE.MeshToonMaterial({ color: 0x333333, gradientMap: gm }),
+        )
+        barrel.rotation.x = Math.PI / 2
+        barrel.position.z = 0.10
+        const tipMesh = new THREE.Mesh(
+          new THREE.ConeGeometry(0.05, 0.08, 6),
+          new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff6600, emissiveIntensity: 0.6 }),
+        )
+        tipMesh.rotation.x = Math.PI / 2
+        tipMesh.position.z = 0.24
+        g.add(barrel, tipMesh)
+        return g
+      }
+      case WeaponType.Glider: {
+        // Folded wing flap
+        const g = new THREE.Group()
+        const wing = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.18, 0.10),
+          new THREE.MeshToonMaterial({ color: 0x87ceeb, gradientMap: gm, transparent: true, opacity: 0.75, side: THREE.DoubleSide }),
+        )
+        wing.rotation.x = Math.PI / 6
+        wing.position.z = 0.08
+        g.add(wing)
+        return g
+      }
+      case WeaponType.WebLauncher: {
+        // Compact silk dispenser
+        const g = new THREE.Group()
+        const housing = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.05, 0.05, 0.10, 8),
+          new THREE.MeshToonMaterial({ color: 0x777777, gradientMap: gm }),
+        )
+        housing.rotation.x = Math.PI / 2
+        housing.position.z = 0.06
+        const bead = new THREE.Mesh(
+          new THREE.SphereGeometry(0.04, 8, 6),
+          new THREE.MeshStandardMaterial({ color: 0xddeeff, emissive: 0x99bbff, emissiveIntensity: 0.5 }),
+        )
+        bead.position.z = 0.14
+        g.add(housing, bead)
         return g
       }
       default:

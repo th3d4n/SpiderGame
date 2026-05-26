@@ -41,7 +41,8 @@ export class PresentationPhase {
     this.hideOverlay?.()
 
     // Webbs handles its own rotation + leg lift via startCelebrationPose()
-    webbs.startCelebrationPose()
+    // Round 8 Issue 6: pass weapon so the presented item visual is built
+    webbs.startCelebrationPose(weapon)
   }
 
   update(webbs: Webbs3D, particles: ParticleBurstSystem3D): void {

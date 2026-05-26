@@ -13,6 +13,7 @@ import { WebLauncherSystem3D } from './systems/WebLauncherSystem3D'
 import { ZoneTransitionSystem3D } from './systems/ZoneTransitionSystem3D'
 import { ParticleBurstSystem3D } from './systems/ParticleBurstSystem3D'
 import { PresentationPhase } from './systems/PresentationPhase'
+import { XPSystem } from './systems/XPSystem'
 import { WeaponType } from './systems/WeaponSystem'
 import { registry } from './core/Registry'
 import { HudSystem } from './ui/HudSystem'
@@ -211,12 +212,14 @@ presentation.onComplete = () => {
   celebZoom  = false
 }
 
+// Round 8 Issue 7: first-time crafting closes the menu and routes through the
+// full presentation phase (Webbs lift pose → discovery card → tutorial).
 craftingMenu.onFirstDiscover = (wt) => {
   craftingMenu.close()
-  pickupCelebration.show(wt)
   gamePaused  = true
   celebZoom   = true
-  particles.burst(webbs.group.position, 0xddeeff, 18, 4.5, 0.07)
+  presentation.start(wt, webbs, particles)
+  xpSystem.award('craft')
 }
 
 // ─── Narrative text ───────────────────────────────────────────────────────────
@@ -325,6 +328,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
   registry.set('health', webbs.hp)
   registry.set('weaponSlots', webbs.weaponSystem.getAllSlots())
   registry.set('consumableInventory', consumables.getInventorySnapshot())
+  registry.set('totalXp', xpSystem.total)   // Round 8 Issue 8: persist XP
   saveSystem.save()
 
   webLauncher.release()
@@ -417,13 +421,26 @@ function isMeleeWeapon(wt: WeaponType): boolean {
   return wt === WeaponType.Sword || wt === WeaponType.Axe || wt === WeaponType.BoxingGloves
 }
 
-// Round 6 Issue 8: smooth zoom lerp toward celebration override or userZoom.
+// Round 6 Issue 8 / Round 8 Issue 6: smooth zoom lerp toward celebration override.
+// Celebration zoom bumped 2.8 → 4.2 so the presented item is clearly readable.
 function tickZoom(): void {
-  const target = celebZoom ? 2.8 : userZoom
+  const target = celebZoom ? 4.2 : userZoom
   if (Math.abs(camera.zoom - target) > 0.002) {
     camera.zoom += (target - camera.zoom) * 0.08
     camera.updateProjectionMatrix()
   }
+}
+
+// ─── Round 8 Issue 8: XP system + HUD counter ────────────────────────────────
+const xpSystem  = new XPSystem()
+const xpValueEl = document.getElementById('xp-value')!
+xpSystem.total = registry.get<number>('totalXp') ?? 0
+xpValueEl.textContent = String(xpSystem.total)
+xpSystem.onGain = (amount, source) => {
+  xpValueEl.textContent = String(xpSystem.total)
+  xpValueEl.style.color = '#ffff88'
+  setTimeout(() => { xpValueEl.style.color = '#aaffaa' }, 300)
+  pickupNotify.notify(`+${amount} XP`, source, '#aaffaa')
 }
 
 // ─── Combat callbacks ─────────────────────────────────────────────────────────
@@ -511,6 +528,7 @@ function gameLoop() {
         const hbs = activeScene as HomeBaseScene3D
         if (hbs.nearToothpick(px, pz)) {
           hbs.pickupToothpick()
+          xpSystem.award('rare_pickup')
           registry.set('toothpickCollected', true)
           const inv = registry.get<WeaponType[]>('weaponInventory') ?? []
           if (!inv.includes(WeaponType.BoxingGloves)) inv.push(WeaponType.BoxingGloves)
@@ -530,6 +548,7 @@ function gameLoop() {
           gamePaused = true
         } else if (hbs.nearGift(px, pz) && hbs.giftAvailable) {
           hbs.collectGift()
+          xpSystem.award('rare_pickup')
           webbs.hasWebLauncher = true
           registry.set('webThrowerFound', true)
           if (!registry.get<boolean>('tutorialWebLauncherSeen')) {
@@ -558,6 +577,7 @@ function gameLoop() {
               inv[result.mat] = (inv[result.mat] ?? 0) + result.qty
               registry.set('craftingInventory', inv)
               pickupNotify.notify(result.mat, `×${result.qty}`, '#88aa44')
+              xpSystem.award('pickup')
             } else {
               hud.flashBossMessage("IT'S A MIMIC!")
             }
@@ -567,6 +587,7 @@ function gameLoop() {
               acs.collectHpModule(hpIdx)
               webbs.hp = Math.min(webbs.hpMax, webbs.hp + 25)
               pickupNotify.notify('HP Module', '+25 HP', '#ff4455')
+              xpSystem.award('pickup')
             }
           }
         }
@@ -574,6 +595,11 @@ function gameLoop() {
         craftingMenu.show()
         gamePaused = true
       }
+    }
+
+    // ── Round 8 Issue 3: SPACE — backward dodge leap ────────────────────
+    if (input.justDown('Space')) {
+      webbs.startDodgeLeap()
     }
 
     // ── Consumable hotkeys ───────────────────────────────────────────────
@@ -647,6 +673,7 @@ function gameLoop() {
         registry.set('craftingInventory', inv)
         ;(activeScene as HomeBaseScene3D).collectMaterialPickup(pick.id)
         pickupNotify.notify(pick.mat, `×${pick.qty}`, '#aabbcc')
+        xpSystem.award('pickup')
       }
     } else if (currentZone === 'antColony') {
       const acs = activeScene as AntColonyScene3D
@@ -658,6 +685,7 @@ function gameLoop() {
           inv[cache.mat] = (inv[cache.mat] ?? 0) + cache.qty
           registry.set('craftingInventory', inv)
           pickupNotify.notify(cache.mat, `×${cache.qty}`, '#88aa44')
+          xpSystem.award('pickup')
         }
       }
       const tIdx = acs.nearThistle(px, pz)
@@ -667,6 +695,7 @@ function gameLoop() {
         inv['Thistle'] = (inv['Thistle'] ?? 0) + 1
         registry.set('craftingInventory', inv)
         pickupNotify.notify('Thistle seed', '+1', '#cc99ff')
+        xpSystem.award('pickup')
       }
     }
   }
@@ -730,7 +759,16 @@ function gameLoop() {
   // ── Enemy / scene update ─────────────────────────────────────────────────
 
   if (currentZone !== 'bossRoller') {
+    // Round 8 Issue 8: snapshot which enemies were alive before the scene tick
+    // so we can detect new kills and award XP.
+    const enemiesBefore = (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies.filter(e => !e.isDead())
+
     activeScene.updateEnemies(delta, webbs.collisionBody.x, webbs.collisionBody.z)
+
+    // Detect kills (alive previously, now dead) and award XP
+    for (const e of enemiesBefore) {
+      if (e.isDead()) xpSystem.award('kill')
+    }
 
     for (const enemy of (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies) {
       if (enemy.isDead() || enemy.contactCooldown > 0) continue
@@ -757,6 +795,7 @@ function gameLoop() {
     const result = bs.update(delta, webbs, weaponUseSystem, hud, webLauncher.isAttachedToWall())
 
     if (result === 'victory' && !transitioning) {
+      xpSystem.award('boss_kill')
       if (bs.pendingLoot) {
         const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
         for (const [mat, qty] of Object.entries(bs.pendingLoot)) {
@@ -878,6 +917,9 @@ function initNewGame(el: HTMLElement): void {
   registry.set('tutorialWebLauncherSeen', false)
   registry.set('antColonyFirstVisit', false)
   registry.set('pickupsCollected_HomeBaseScene', [])   // Bug 13: clear collected pickups
+  registry.set('totalXp', 0)                            // Round 8 Issue 8: reset XP
+  xpSystem.reset()
+  xpValueEl.textContent = '0'
   webbs.hasWebLauncher = false
   for (let i = 0; i < 8; i++) webbs.weaponSystem.unequip(i)
   webbs.resetHp()

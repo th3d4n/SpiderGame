@@ -355,11 +355,18 @@ export class AntColonyScene3D {
     const wm = new THREE.MeshToonMaterial({ color: 0x1a1008, gradientMap: this.gradientMap })
     const cm = new THREE.MeshToonMaterial({ color: 0x2a1a0e, gradientMap: this.gradientMap })
 
-    // Back wall (south)
-    this.addBox(W + 0.6, WALL_H, 0.4, 0, WALL_H / 2, AntColonyScene3D.BACK, wm)
+    // Round 8 Issue 9: crooked back + front walls
+    this.addCrookedWallSegment(
+      AntColonyScene3D.LEFT, AntColonyScene3D.BACK,
+      AntColonyScene3D.RIGHT, AntColonyScene3D.BACK,
+      0.5, WALL_H, wm,
+    )
     this.addBox(W + 0.6, 0.12, 0.6, 0, WALL_H + 0.06, AntColonyScene3D.BACK, cm)
-    // Front wall (north)
-    this.addBox(W + 0.6, WALL_H * 0.4, 0.3, 0, WALL_H * 0.2, AntColonyScene3D.FRONT, wm)
+    this.addCrookedWallSegment(
+      AntColonyScene3D.LEFT, AntColonyScene3D.FRONT,
+      AntColonyScene3D.RIGHT, AntColonyScene3D.FRONT,
+      0.35, WALL_H * 0.4, wm,
+    )
     // Side walls (E/W)
     this.addBox(0.4, WALL_H, D + 0.6, AntColonyScene3D.RIGHT, WALL_H / 2, 0, wm)
     this.addBox(0.4, WALL_H, D + 0.6, AntColonyScene3D.LEFT,  WALL_H / 2, 0, wm)
@@ -695,9 +702,47 @@ export class AntColonyScene3D {
   // ── Lighting ────────────────────────────────────────────────────────────────────
 
   private buildLighting(): void {
-    this.add(new THREE.AmbientLight(0x0a1206, 0.25))
-    const fill = new THREE.DirectionalLight(0x1a2810, 0.18)
-    fill.position.set(-10, 8, -5); this.add(fill)
+    // Round 8 Issue 9: brighter ambient + extra warm entry light
+    this.add(new THREE.AmbientLight(0x223315, 0.55))
+    const fill = new THREE.DirectionalLight(0x445533, 0.35)
+    fill.position.set(-10, 12, -5); this.add(fill)
+    const entryLight = new THREE.DirectionalLight(0xddcc88, 0.20)
+    entryLight.position.set(18, 8, 0); this.add(entryLight)
+  }
+
+  // Round 8 Issue 9: build a single wall as a chain of jittered, slightly
+  // rotated short boxes so it reads as natural dirt rather than a flat block.
+  private addCrookedWallSegment(
+    startX: number, startZ: number, endX: number, endZ: number,
+    thickness: number, height: number, mat: THREE.Material,
+  ): void {
+    const dx = endX - startX
+    const dz = endZ - startZ
+    const length = Math.sqrt(dx * dx + dz * dz)
+    if (length < 0.01) return
+    const segments = Math.max(4, Math.floor(length * 1.5))
+    const stepDx = dx / segments
+    const stepDz = dz / segments
+    const baseAngle = Math.atan2(dz, dx)
+
+    for (let i = 0; i < segments; i++) {
+      const cx = startX + stepDx * (i + 0.5)
+      const cz = startZ + stepDz * (i + 0.5)
+      const perpX = -Math.sin(baseAngle)
+      const perpZ =  Math.cos(baseAngle)
+      const jitter      = (Math.random() - 0.5) * 0.3
+      const angleJitter = (Math.random() - 0.5) * 0.25
+      const segLength   = Math.hypot(stepDx, stepDz) * 1.1
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(segLength, height + (Math.random() - 0.5) * 0.2, thickness),
+        mat,
+      )
+      box.position.set(cx + perpX * jitter, height / 2, cz + perpZ * jitter)
+      box.rotation.y = baseAngle + angleJitter
+      box.castShadow = true
+      box.receiveShadow = true
+      this.add(box)
+    }
   }
 
   // ── Enemy spawns (Round 7 Issue 3) ──────────────────────────────────────────
