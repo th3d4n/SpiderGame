@@ -232,7 +232,7 @@ export class Webbs3D {
     if (dx !== 0 || dz !== 0) {
       this.facingX = dx
       this.facingZ = dz
-      this.group.rotation.y = Math.atan2(-dx, -dz)
+      this.group.rotation.y = Math.atan2(dx, dz)
     }
 
     // Stamina + energy regen
@@ -266,7 +266,7 @@ export class Webbs3D {
       const camLen  = Math.hypot(this.CAM_OFFSET_X, this.CAM_OFFSET_Z)
       const camDirX = this.CAM_OFFSET_X / camLen
       const camDirZ = this.CAM_OFFSET_Z / camLen
-      const targetRotation = Math.atan2(-camDirX, -camDirZ)   // makes body forward point to camera
+      const targetRotation = Math.atan2(camDirX, camDirZ)   // makes body forward point to camera
 
       const rotT = Math.min(elapsedMs / 300, 1)
       let deltaA = targetRotation - this.preCelebRotation

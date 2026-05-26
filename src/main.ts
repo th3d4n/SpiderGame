@@ -33,7 +33,7 @@ const CANVAS_H = 720
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setSize(CANVAS_W, CANVAS_H)
 renderer.setPixelRatio(window.devicePixelRatio)
-renderer.setClearColor(0x1a1a2e)
+renderer.setClearColor(0x000000)
 renderer.shadowMap.enabled = true
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -47,7 +47,7 @@ const composer = new EffectComposer(renderer)
 // ─── Scene ────────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene()
-scene.fog = new THREE.FogExp2(0x1a1a2e, 0.008)
+scene.fog = new THREE.FogExp2(0x000000, 0.008)
 
 // ─── Isometric Camera ─────────────────────────────────────────────────────────
 

@@ -54,6 +54,20 @@ interface HitEffect {
   fadeOnly?: boolean   // if true: only fade opacity, don't scale
 }
 
+// ── Sword overhead arc slam ───────────────────────────────────────────────────
+interface SwordSlashFx {
+  pivot:         THREE.Object3D  // rotates around local X to arc the blade
+  blade:         THREE.Mesh      // child of pivot — the bright sword blade
+  fanMesh:       THREE.Mesh      // scene-level fan showing full swept arc path
+  elapsed:       number
+  duration:      number
+  startRX:       number          // pivot.rotation.x start (behind/above)
+  endRX:         number          // pivot.rotation.x end   (front/below)
+  impactSpawned: boolean
+  ipx:           number          // ground impact world X
+  ipz:           number          // ground impact world Z
+}
+
 // ── Active melee swing — hit detection runs every frame for swing duration ───
 interface ActiveSwing {
   px:         number      // player position snapshot at swing start
@@ -107,7 +121,7 @@ export class WeaponUseSystem3D {
   onOutOfAmmo: (() => void) | null = null
 
   // Round 8 Issue 5: per-weapon animation FX
-  private swordSlashFx: Array<{ mesh: THREE.Mesh; elapsed: number; duration: number; startY: number; endY: number }> = []
+  private swordSlashFx: SwordSlashFx[] = []
   private axeSweepFx:   Array<{ mesh: THREE.Mesh; elapsed: number; duration: number; initialRotY: number; sweepRange: number }> = []
 
   // FlameBreather state
@@ -205,38 +219,129 @@ export class WeaponUseSystem3D {
 
   // ── Round 8 Issue 5: vertical sword slash + horizontal axe sweep ─────────
 
+  // ── Sword overhead arc slam ───────────────────────────────────────────────
+  // The blade pivots around the body centre, swinging from behind+above all the
+  // way over the top and slamming into the ground in front of Webbs.
+  // A pre-baked world-space fan shows the full swept arc as a translucent trail.
+
   private spawnSwordSlash(webbs: Webbs3D): void {
-    const trailGeo = new THREE.PlaneGeometry(0.06, 0.8)
-    const trailMat = new THREE.MeshBasicMaterial({
-      color: 0xddddff, transparent: true, opacity: 0.85, side: THREE.DoubleSide,
-    })
-    const trail = new THREE.Mesh(trailGeo, trailMat)
-    const fx = webbs.facingX, fz = webbs.facingZ
-    const offsetDist = 0.45
-    trail.position.set(
-      webbs.collisionBody.x + fx * offsetDist,
-      1.0,
-      webbs.collisionBody.z + fz * offsetDist,
+    const fAngle   = Math.atan2(webbs.facingX, webbs.facingZ)
+    const bladeLen = 0.76
+    const startRX  = -Math.PI * 0.68   // ~122° back: behind head, pointing up+back
+    const endRX    =  Math.PI * 0.44   // ~79° past horizontal: slamming into ground
+
+    // ── Pivot at body height, facing direction baked into rotation.y ─────────
+    const pivot = new THREE.Object3D()
+    pivot.position.set(webbs.collisionBody.x, 0.40, webbs.collisionBody.z)
+    pivot.rotation.y = fAngle
+    pivot.rotation.x = startRX
+
+    // Blade — narrow bright box extending forward from pivot centre
+    const blade = new THREE.Mesh(
+      new THREE.BoxGeometry(0.055, 0.055, bladeLen),
+      new THREE.MeshBasicMaterial({ color: 0xddeeff, transparent: true, opacity: 0.95 }),
     )
-    trail.rotation.y = Math.atan2(fx, fz) + Math.PI / 2
-    this.threeScene.add(trail)
-    this.swordSlashFx.push({ mesh: trail, elapsed: 0, duration: 0.22, startY: 1.0, endY: 0.05 })
+    blade.position.z = bladeLen * 0.5
+    pivot.add(blade)
+
+    this.threeScene.add(pivot)
+
+    // ── Arc-sweep fan: a static sector in world space showing the full path ──
+    // Built in world space so it doesn't rotate when the pivot animates.
+    // For pivot.rotation.x = a:
+    //   local tip = (0, -sin(a)*L, cos(a)*L)
+    //   world tip = pivot.pos + rotY(fAngle) * local tip
+    //             = (px - sin(fAngle)*cos(a)*L,  0.40 - sin(a)*L,  pz + cos(fAngle)*cos(a)*L)
+    const px = webbs.collisionBody.x, pz = webbs.collisionBody.z
+    const fanSegs  = 18
+    const sweepAng = endRX - startRX
+    const fanVerts: number[] = [px, 0.40, pz]   // fan centre
+    for (let i = 0; i <= fanSegs; i++) {
+      const a    = startRX + (sweepAng / fanSegs) * i
+      const ly   = -Math.sin(a) * bladeLen
+      const lz   =  Math.cos(a) * bladeLen
+      fanVerts.push(
+        px - Math.sin(fAngle) * lz,
+        0.40 + ly,
+        pz + Math.cos(fAngle) * lz,
+      )
+    }
+    const fanTris: number[] = []
+    for (let i = 0; i < fanSegs; i++) fanTris.push(0, i + 1, i + 2)
+    const fanGeo = new THREE.BufferGeometry()
+    fanGeo.setAttribute('position', new THREE.Float32BufferAttribute(fanVerts, 3))
+    fanGeo.setIndex(fanTris)
+    const fanMesh = new THREE.Mesh(fanGeo, new THREE.MeshBasicMaterial({
+      color: 0x99bbff, transparent: true, opacity: 0.18,
+      side: THREE.DoubleSide, depthWrite: false,
+    }))
+    this.threeScene.add(fanMesh)
+
+    // Impact position: where blade tip meets the ground at endRX
+    // forward reach = cos(endRX)*L projected along facing
+    const fwdReach = Math.max(Math.cos(endRX) * bladeLen, 0.30)
+    const ipx = px + webbs.facingX * fwdReach
+    const ipz = pz + webbs.facingZ * fwdReach
+
+    this.swordSlashFx.push({
+      pivot, blade, fanMesh,
+      elapsed: 0, duration: ANIM_SWORD,
+      startRX, endRX,
+      impactSpawned: false,
+      ipx, ipz,
+    })
   }
 
   private tickSwordSlashFx(delta: number): void {
-    const keep: typeof this.swordSlashFx = []
+    const keep: SwordSlashFx[] = []
     for (const fx of this.swordSlashFx) {
       fx.elapsed += delta
-      const t = fx.elapsed / fx.duration
-      if (t >= 1) {
-        fx.mesh.removeFromParent()
-        fx.mesh.geometry.dispose()
-        ;(fx.mesh.material as THREE.Material).dispose()
-        continue
+      const t = Math.min(fx.elapsed / fx.duration, 1.0)
+
+      // Ease-in² — slow wind-up, fast slam at the end
+      const tEased = t * t
+      fx.pivot.rotation.x = fx.startRX + (fx.endRX - fx.startRX) * tEased
+
+      // Fan fades as the swing completes
+      ;(fx.fanMesh.material as THREE.MeshBasicMaterial).opacity = 0.18 * (1 - t * 0.8)
+
+      // Blade: bright during swing, flash-then-fade on impact
+      const bm = fx.blade.material as THREE.MeshBasicMaterial
+      if (t < 0.78) {
+        bm.opacity = 0.95
+      } else {
+        const ti = (t - 0.78) / 0.22
+        bm.opacity = ti < 0.25 ? 1.0 : 0.95 * (1 - (ti - 0.25) / 0.75)
       }
-      fx.mesh.position.y = fx.startY + (fx.endY - fx.startY) * t
-      ;(fx.mesh.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - t * 0.6)
-      keep.push(fx)
+
+      // Ground impact VFX at ~80% through the swing
+      if (!fx.impactSpawned && t >= 0.80) {
+        fx.impactSpawned = true
+        const pos = new THREE.Vector3(fx.ipx, 0.02, fx.ipz)
+        this.spawnHitRing(pos, 0.65, 0.40, 0x88bbff)
+
+        // Shockwave disc — expands on the ground at impact point
+        const shockGeo = new THREE.CircleGeometry(0.20, 16)
+        shockGeo.rotateX(-Math.PI / 2)
+        const shock = new THREE.Mesh(shockGeo, new THREE.MeshBasicMaterial({
+          color: 0xaaddff, transparent: true, opacity: 0.70,
+          side: THREE.DoubleSide, depthWrite: false,
+        }))
+        shock.position.set(fx.ipx, 0.03, fx.ipz)
+        this.threeScene.add(shock)
+        this.hitEffects.push({ mesh: shock, elapsed: 0, duration: 0.28, maxRadius: 2.2 })
+      }
+
+      if (t < 1.0) {
+        keep.push(fx)
+      } else {
+        fx.pivot.removeFromParent()
+        fx.blade.geometry.dispose()
+        ;(fx.blade.material as THREE.Material).dispose()
+        fx.fanMesh.removeFromParent()
+        fx.fanMesh.geometry.dispose()
+        ;(fx.fanMesh.material as THREE.Material).dispose()
+      }
     }
     this.swordSlashFx = keep
   }
