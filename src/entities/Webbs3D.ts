@@ -186,14 +186,25 @@ export class Webbs3D {
     }
 
     const speed = this.winded ? SPEED_WU * WINDED_SPEED_MULT : SPEED_WU
-    let dx = 0, dz = 0
 
-    if (input.isDown('KeyW') || input.isDown('ArrowUp'))    dz = -1
-    if (input.isDown('KeyS') || input.isDown('ArrowDown'))  dz =  1
-    if (input.isDown('KeyA') || input.isDown('ArrowLeft'))  dx = -1
-    if (input.isDown('KeyD') || input.isDown('ArrowRight')) dx =  1
+    // Round 9 Issue 2 — camera-aligned WASD.
+    // The camera sits at world offset (18, 18, 18) — rotated 45° around Y from
+    // the world axes — so a press of W along world -Z appears as down-left on
+    // screen. Rotate the raw input vector by the camera Y-angle so screen-up
+    // (away from camera) maps to W, screen-down to S, etc.
+    let inputX = 0, inputZ = 0
+    if (input.isDown('KeyW') || input.isDown('ArrowUp'))    inputZ = -1
+    if (input.isDown('KeyS') || input.isDown('ArrowDown'))  inputZ =  1
+    if (input.isDown('KeyA') || input.isDown('ArrowLeft'))  inputX = -1
+    if (input.isDown('KeyD') || input.isDown('ArrowRight')) inputX =  1
+    if (inputX !== 0 && inputZ !== 0) { inputX *= 0.707; inputZ *= 0.707 }
 
-    if (dx !== 0 && dz !== 0) { dx *= 0.707; dz *= 0.707 }
+    // Camera offset must match main.ts CAM_OFFSET. atan2(18,18) = π/4.
+    const camAngle = Math.atan2(this.CAM_OFFSET_X, this.CAM_OFFSET_Z)
+    const camCos   = Math.cos(camAngle)
+    const camSin   = Math.sin(camAngle)
+    const dx =  inputX * camCos + inputZ * camSin
+    const dz = -inputX * camSin + inputZ * camCos
 
     // Round 8 Issue 3: recoil overrides input velocity briefly when hit
     if (this.dodgeTimer > 0) {

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { Enemy3D } from '../entities/Enemy3D'
 import type { Webbs3D } from '../entities/Webbs3D'
+import { WeaponType } from './WeaponSystem'
 
 // Converted from WebLauncherSystem.ts (Phaser px → Three.js world units × 0.01)
 const PROJECTILE_SPEED      = 7.0   // wu/s   (700px/s)
@@ -186,6 +187,9 @@ export class WebLauncherSystem3D {
       const dz = pz - e.collisionBody.z
       if (Math.hypot(dx, dz) < 0.40) {
         e.staggerTimer = Math.max(e.staggerTimer, STUN_DURATION)
+        e.startHitReaction('medium')   // Round 9 Issue 4 — visible recoil on web hit
+        // Round 9b — minor damage so a web at low HP can trigger a web-death animation.
+        e.takeDamage(5, undefined, WeaponType.WebLauncher)
         this.addSilkWrap(e)
         this.state.attached = { kind: 'enemy', ref: e }
         this.landProjectile()

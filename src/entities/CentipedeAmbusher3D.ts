@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D, WeakPointZone } from './Enemy3D'
+import { WeaponType } from '../systems/WeaponSystem'
 
 // ── Stats (pixel values × 0.01 = world units) ────────────────────────────────
 const CONFIG: EnemyConfig3D = {
@@ -239,6 +240,239 @@ export class CentipedeAmbusher3D extends Enemy3D {
     for (let i = 0; i < this.mandibleMeshes.length; i++) {
       this.mandibleMeshes[i].rotation.y = this.mandibleSides[i] * t * 0.55
     }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Round 9b — weapon-specific death animations.
+  // The centipede has 3 segmented body meshes (head/mid/tail).  Each death
+  // exploits that articulated structure differently.
+  // ───────────────────────────────────────────────────────────────────────────
+  private deathParts: Array<{
+    mesh: THREE.Mesh; vx: number; vy: number; vz: number; rotVx: number; rotVz: number
+  }> = []
+  private frontFlipAngle = 0
+
+  override startDeath(weapon: WeaponType): void {
+    if (this.deathState) return
+    const durations: Partial<Record<WeaponType, number>> = {
+      [WeaponType.Sword]:         0.95,
+      [WeaponType.Axe]:           1.25,
+      [WeaponType.BoxingGloves]:  0.80,
+      [WeaponType.Bow]:           0.90,
+      [WeaponType.FlameBreather]: 1.40,
+      [WeaponType.WebLauncher]:   0.70,
+      [WeaponType.Empty]:         0.80,
+    }
+    this.collisionBody.enabled = false
+    this.collisionBody.velocity.x = 0
+    this.collisionBody.velocity.z = 0
+    this.deathState = {
+      weapon,
+      elapsed:  0,
+      duration: durations[weapon] ?? 0.80,
+      phase:    'initial',
+    }
+    switch (weapon) {
+      case WeaponType.Sword:         this.setupSwordDeath(); break
+      case WeaponType.Axe:           this.setupAxeDeath();   break
+      case WeaponType.BoxingGloves:  this.setupStabDeath();  break
+      case WeaponType.Bow:           this.setupBowDeath();   break
+      case WeaponType.FlameBreather: this.setupBurnDeath();  break
+      case WeaponType.WebLauncher:   this.setupWebDeath();   break
+      default:                       this.setupGenericDeath(); break
+    }
+  }
+
+  override updateDeath(delta: number): void {
+    if (!this.deathState) return
+    this.deathState.elapsed += delta
+
+    // Free-flying parts (segments detached by sword/axe) integrate physics.
+    for (const part of this.deathParts) {
+      part.mesh.position.x += part.vx * delta
+      part.mesh.position.y += part.vy * delta
+      part.mesh.position.z += part.vz * delta
+      part.vy -= 12 * delta
+      part.mesh.rotation.x += part.rotVx * delta
+      part.mesh.rotation.z += part.rotVz * delta
+      if (part.mesh.position.y < 0.05) {
+        part.mesh.position.y = 0.05
+        part.vy = -part.vy * 0.3
+        part.vx *= 0.7
+        part.vz *= 0.7
+      }
+    }
+
+    switch (this.deathState.weapon) {
+      case WeaponType.Sword:         this.tickSwordDeath(); break
+      case WeaponType.Axe:           /* parts physics handles everything */ break
+      case WeaponType.BoxingGloves:  this.tickStabDeath();  break
+      case WeaponType.Bow:           this.tickBowDeath();   break
+      case WeaponType.FlameBreather: this.tickBurnDeath(); break
+      case WeaponType.WebLauncher:   this.tickWebDeath();   break
+      default:                       this.tickGenericDeath(); break
+    }
+  }
+
+  // ─── SWORD KILL — Body splits, rear segment flies back, front flips forward ─
+  private setupSwordDeath(): void {
+    if (this.bodyMeshes.length >= 2) {
+      // Detach the tail segment as a free part flying back+up
+      const tail = this.bodyMeshes[this.bodyMeshes.length - 1]
+      const worldPos = new THREE.Vector3()
+      tail.getWorldPosition(worldPos)
+      this.group.remove(tail)
+      this.threeScene.add(tail)
+      tail.position.copy(worldPos)
+      this.deathParts.push({
+        mesh: tail,
+        vx: -Math.sin(this.facingAngle) * 1.6 + (Math.random() - 0.5) * 0.6,
+        vy: 2.0 + Math.random() * 0.6,
+        vz: -Math.cos(this.facingAngle) * 1.6 + (Math.random() - 0.5) * 0.6,
+        rotVx: (Math.random() - 0.5) * 6,
+        rotVz: (Math.random() - 0.5) * 6,
+      })
+    }
+    this.deathState!.phase = 'flipping'
+    this.spawnIchor(this.group.position, 20)
+  }
+  private tickSwordDeath(): void {
+    this.frontFlipAngle += 0.075   // ~4.5 rad/s at 60fps
+    this.group.rotation.x = Math.min(this.frontFlipAngle, Math.PI / 2)
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.position.y = Math.max(0, 0.2 - this.frontFlipAngle * 0.1)
+    if (t > 0.7) this.fadeGroup(1 - (t - 0.7) / 0.3)
+  }
+
+  // ─── AXE KILL — All segments explode outward ────────────────────────────────
+  private setupAxeDeath(): void {
+    for (const seg of this.bodyMeshes) {
+      const worldPos = new THREE.Vector3()
+      seg.getWorldPosition(worldPos)
+      this.group.remove(seg)
+      this.threeScene.add(seg)
+      seg.position.copy(worldPos)
+      seg.position.x += (Math.random() - 0.5) * 0.2
+      seg.position.z += (Math.random() - 0.5) * 0.2
+      seg.position.y = 0.2 + Math.random() * 0.1
+      const angle = Math.random() * Math.PI * 2
+      const force = 3 + Math.random() * 2
+      this.deathParts.push({
+        mesh: seg,
+        vx: Math.cos(angle) * force,
+        vy: 3 + Math.random() * 2,
+        vz: Math.sin(angle) * force,
+        rotVx: (Math.random() - 0.5) * 10,
+        rotVz: (Math.random() - 0.5) * 10,
+      })
+    }
+    this.group.visible = false
+    this.spawnIchor(this.group.position, 50)
+  }
+
+  // ─── STAB KILL — Convulse + sideways collapse ──────────────────────────────
+  private setupStabDeath(): void { this.spawnIchor(this.group.position, 6) }
+  private tickStabDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    if (t < 0.4) {
+      const intensity = 1 - t / 0.4
+      this.group.position.x = this.collisionBody.x + (Math.random() - 0.5) * 0.08 * intensity
+      this.group.position.z = this.collisionBody.z + (Math.random() - 0.5) * 0.08 * intensity
+      this.group.rotation.z = Math.sin(t * 80) * 0.15 * intensity
+    } else {
+      const ct = (t - 0.4) / 0.6
+      this.group.rotation.z = 0.15 + ct * 1.3
+      this.group.position.y = Math.max(0, 0.2 * (1 - ct))
+      this.group.scale.z = 1 - ct * 0.3
+    }
+  }
+
+  // ─── BOW KILL — Skewered, slow tip-over ────────────────────────────────────
+  private setupBowDeath(): void {
+    const arrow = new THREE.Mesh(
+      new THREE.ConeGeometry(0.03, 0.25, 4),
+      new THREE.MeshToonMaterial({ color: 0x442288 }),
+    )
+    arrow.position.set(0, 0.15, 0)
+    arrow.rotation.x = Math.PI / 2
+    this.group.add(arrow)
+    this.spawnIchor(this.group.position, 8)
+  }
+  private tickBowDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.rotation.z = t * 1.4
+    this.group.position.y = Math.max(0, 0.2 - t * 0.18)
+    this.group.position.x = this.collisionBody.x + (Math.random() - 0.5) * 0.02 * (1 - t)
+    if (t > 0.8) this.fadeGroup(1 - (t - 0.8) / 0.2)
+  }
+
+  // ─── FLAME KILL — Char, smoke, shrink, ash ─────────────────────────────────
+  private setupBurnDeath(): void {
+    this.group.traverse(obj => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const m = (obj as THREE.Mesh).material as THREE.MeshToonMaterial & { emissive?: THREE.Color; emissiveIntensity?: number }
+        if (m.color) m.color.setHex(0x331100)
+        if (m.emissive) { m.emissive.setHex(0xff3300); m.emissiveIntensity = 0.8 }
+      }
+    })
+  }
+  private tickBurnDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    if (Math.random() < 0.6) this.spawnSmoke(this.group.position, 1)
+    this.group.scale.set(1 - t * 0.5, 1 - t * 0.7, 1 - t * 0.5)
+    this.group.position.y = Math.max(0, 0.2 - t * 0.15)
+    this.group.rotation.z = Math.sin(t * 6) * 0.2 * (1 - t)
+    this.group.traverse(obj => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const m = (obj as THREE.Mesh).material as { emissiveIntensity?: number }
+        if (m.emissiveIntensity !== undefined) m.emissiveIntensity = 0.8 * (1 - t)
+      }
+    })
+    if (t > 0.85) this.fadeGroup(1 - (t - 0.85) / 0.15)
+  }
+
+  // ─── WEB KILL — Wrap, slump ────────────────────────────────────────────────
+  private setupWebDeath(): void {
+    const wrap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 12, 8),
+      new THREE.MeshToonMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 }),
+    )
+    this.group.add(wrap)
+  }
+  private tickWebDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.rotation.z = t * 1.6
+    this.group.position.y = Math.max(0, 0.2 - t * 0.2)
+  }
+
+  // ─── GENERIC FALLBACK ──────────────────────────────────────────────────────
+  private setupGenericDeath(): void { /* nothing special */ }
+  private tickGenericDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.rotation.z = t * Math.PI / 2
+    this.group.position.y = Math.max(0, 0.2 - t * 0.2)
+    if (t > 0.7) this.fadeGroup(1 - (t - 0.7) / 0.3)
+  }
+
+  private fadeGroup(opacity: number): void {
+    this.group.traverse(obj => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const m = (obj as THREE.Mesh).material as THREE.Material & { opacity?: number; transparent?: boolean }
+        m.transparent = true
+        m.opacity = opacity
+      }
+    })
+  }
+
+  // Free death-parts that were detached from group on cleanup.
+  override cleanup(): void {
+    for (const part of this.deathParts) {
+      this.threeScene.remove(part.mesh)
+      part.mesh.geometry.dispose()
+      ;(part.mesh.material as THREE.Material).dispose()
+    }
+    this.deathParts = []
+    super.cleanup()
   }
 }
 

@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { InputManager } from './core/InputManager'
 import { physicsWorld } from './core/PhysicsWorld'
 import { Webbs3D } from './entities/Webbs3D'
+import { Enemy3D } from './entities/Enemy3D'
 import { HomeBaseScene3D } from './scenes/HomeBaseScene3D'
 import { AntColonyScene3D } from './scenes/AntColonyScene3D'
 import { BossRollerScene3D } from './scenes/BossRollerScene3D'
@@ -447,12 +448,31 @@ xpSystem.onGain = (amount, source) => {
 
 weaponUseSystem.onOutOfAmmo = () => hud.flashBossMessage('NO THISTLE SEEDS')
 
+// Round 9 Issue 4 — splatter particles fire from the weapon system on hit.
+weaponUseSystem.onSpawnHitParticles = (x, y, z, color, count) => {
+  particles.burst(new THREE.Vector3(x, y, z), color, count, 3.0, 0.06)
+}
+
+// Round 9b — global death-particle hook: ichor splatter (fast outward) for
+// regular kills, smoke (slow upward drift) for burn deaths.
+Enemy3D.onDeathParticles = (x, y, z, color, count, kind) => {
+  const pos = new THREE.Vector3(x, y, z)
+  if (kind === 'smoke') particles.smokeBurst(pos, color, count)
+  else                  particles.burst(pos, color, count, 3.5, 0.06)
+}
+
 // ─── Game Loop ────────────────────────────────────────────────────────────────
 
 const clock        = new THREE.Clock()
 const camLookTarget = new THREE.Vector3()
 let cameraShakeRemaining = 0
 let cameraShakeIntensity = 0
+
+// Round 9b — global camera shake hook (boss death scenes call this).
+Enemy3D.onCameraShake = (intensity, duration) => {
+  cameraShakeIntensity = intensity
+  cameraShakeRemaining = duration
+}
 let celebZoom        = false   // true while pickup celebration is open
 
 function gameLoop() {

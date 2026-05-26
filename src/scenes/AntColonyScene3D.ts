@@ -81,16 +81,17 @@ const DEAD_END_DATA: Array<{
 //   - Mid zone (-8 to 8): 8-12s delay
 //   - Entry zone (8 to 13): 18-25s delay
 type SpawnKind = 'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'
+// Round 9 Issue 5: respawn at maze chokepoints — corridor gaps & antechambers.
 const SPAWN_PLAN: Array<{ kind: SpawnKind; x: number; z: number; delay: number }> = [
-  // Deep zone — active immediately
-  { kind: 'centipede', x: -16, z:  0.5, delay: 0  },
-  { kind: 'beetle',    x: -12, z: -1.5, delay: 0  },
-  // Mid zone — appear as the player moves in
-  { kind: 'centipede', x:  -4, z:  1.0, delay: 8  },
-  { kind: 'beetle',    x:   2, z: -1.0, delay: 12 },
+  // Deep zone — guarding boss antechamber approach + back-left chest area
+  { kind: 'beetle',    x: -17, z:  9,   delay: 0  },   // northern-corridor west end (near crystals)
+  { kind: 'centipede', x: -14, z:  0,   delay: 0  },   // central chokepoint near danger marker
+  // Mid zone — guarding the central stub-wall pathing decisions
+  { kind: 'centipede', x:  -2, z:  6,   delay: 8  },   // northern gap at X=-2
+  { kind: 'beetle',    x:   2, z: -6,   delay: 12 },   // southern gap at X=+2
   // Entry zone — player gets ~18s safe exploration first
-  { kind: 'centipede', x:   8, z:  1.2, delay: 18 },
-  { kind: 'beetle',    x:  12, z: -1.0, delay: 25 },
+  { kind: 'centipede', x:  11, z:  0,   delay: 18 },   // entry-side chokepoint
+  { kind: 'beetle',    x:  16, z: -10,  delay: 25 },   // gold-beacon ambush (south reward route)
 ]
 
 // ── 20 chests, 6 mimics ────────────────────────────────────────────────────────
@@ -242,6 +243,8 @@ export class AntColonyScene3D {
   private tracked:       THREE.Object3D[] = []
   private wallBodies:    CollisionBody[]  = []
   private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; capMat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
+  // Round 9 Issue 5: AABBs for the new maze walls — used by webWallHitTest.
+  private mazeWallAabbs: Array<{ cx: number; cz: number; hw: number; hh: number }> = []
   // Round 7 Issue 3: time-delayed spawn queue
   private pendingSpawns:    PendingSpawn[] = []
   private elapsedSinceLoad  = 0
@@ -278,7 +281,9 @@ export class AntColonyScene3D {
 
     this.buildGround()
     this.buildOuterWalls()
-    this.buildCorridorDividers()
+    // Round 9 Issue 5: replaced 4-divider corridor grid with a proper maze.
+    this.buildMazeWalls()
+    this.buildLandmarks()
     this.buildPortals()
     this.buildWorkbench()
     this.buildChests()
@@ -392,9 +397,10 @@ export class AntColonyScene3D {
     }
   }
 
-  // ── Corridor dividers (horizontal walls between corridors) ────────────────────
-
-  private buildCorridorDividers(): void {
+  // ── Legacy corridor dividers (replaced by buildMazeWalls in Round 9) ──────
+  // Kept for reference; no longer called.
+  // @ts-ignore — intentionally unused
+  private _legacyBuildCorridorDividers(): void {
     for (let wi = 0; wi < DIV_WALLS.length; wi++) {
       const dw  = DIV_WALLS[wi]
       const hz  = (dw.lo + dw.hi) / 2
@@ -437,6 +443,122 @@ export class AntColonyScene3D {
         this.wallBodies.push(body)
       }
     }
+  }
+
+  // ── Round 9 Issue 5: real maze design ───────────────────────────────────────
+  // Replaces the 4-row corridor-divider grid with a chambered maze.  The
+  // topology gives the player 3 viable routes from entry (right, Z=0) to boss
+  // (left, Z=bossPortalZ):
+  //   • Northern  — drop up through Z=+6 gap, traverse west along Z≈+9
+  //   • Middle    — straight shot through the open mid arena
+  //   • Southern  — drop down through Z=-6 gap, traverse west along Z≈-9
+  // Plus dead-end reward alcoves (existing dead-end system) and stub walls in
+  // the middle that block sight-lines without fully sealing routes.
+  private buildMazeWalls(): void {
+    const mat = new THREE.MeshToonMaterial({ color: 0x2a1808, gradientMap: this.gradientMap })
+
+    // ── Northern divider (Z=+6) — gaps at X=-12, X=-2, X=+10 ────────────────
+    this.addMazeWall(-20,  6,  -14,  6, 0.4, mat)
+    this.addMazeWall(-10,  6,   -4,  6, 0.4, mat)
+    this.addMazeWall(  0,  6,    8,  6, 0.4, mat)
+    this.addMazeWall( 12,  6,   20,  6, 0.4, mat)
+
+    // ── Southern divider (Z=-6) — gaps at X=-10, X=+2, X=+12 ────────────────
+    this.addMazeWall(-20, -6,  -12, -6, 0.4, mat)
+    this.addMazeWall( -8, -6,    0, -6, 0.4, mat)
+    this.addMazeWall(  4, -6,   10, -6, 0.4, mat)
+    this.addMazeWall( 14, -6,   20, -6, 0.4, mat)
+
+    // ── Middle arena stub walls — break sight-lines, force pathing decisions ──
+    this.addMazeWall(-13, -2,  -13,  2, 0.4, mat)   // vertical chokepoint near back-left
+    this.addMazeWall( -5, -3,   -3,  0, 0.4, mat)   // diagonal stub mid-left
+    this.addMazeWall(  3,  0,    5,  3, 0.4, mat)   // diagonal stub mid-right
+    this.addMazeWall( 11, -2,   11,  2, 0.4, mat)   // vertical chokepoint near entry
+
+    // ── Stub walls inside corridors for maze complexity ─────────────────────
+    this.addMazeWall(-16,  8,  -16, 11, 0.35, mat)  // partial blocker N corridor far west
+    this.addMazeWall(  6,  9,    8, 11, 0.35, mat)  // diagonal stub N corridor mid-east
+    this.addMazeWall(-15, -8,  -15, -11, 0.35, mat) // partial blocker S corridor far west
+    this.addMazeWall(  6, -9,    8, -11, 0.35, mat) // diagonal stub S corridor mid-east
+
+    // ── Decorative stalactites at junctions ─────────────────────────────────
+    const stoneMat = new THREE.MeshToonMaterial({ color: 0x1a1006, gradientMap: this.gradientMap })
+    const stalacPositions: [number, number][] = [
+      [-18,  9], [-12,  6.3], [ -2,  6.3], [10,  6.3], [18,  9],
+      [-18, -9], [-10, -6.3], [  2, -6.3], [12, -6.3], [18, -9],
+      [-13,  0], [ -5,  3   ], [ 11,  0  ], [  0,  -1.5],
+    ]
+    for (const [sx, sz] of stalacPositions) {
+      const h = 0.2 + Math.random() * 0.35
+      const stal = new THREE.Mesh(new THREE.ConeGeometry(0.10, h, 6), stoneMat)
+      stal.position.set(sx, WALL_H - h / 2, sz)
+      this.add(stal)
+    }
+  }
+
+  // Add a wall: crooked visual segments + a single physics AABB collider.
+  private addMazeWall(
+    x0: number, z0: number, x1: number, z1: number,
+    thickness: number, mat: THREE.Material,
+  ): void {
+    this.addCrookedWallSegment(x0, z0, x1, z1, thickness, WALL_H, mat)
+
+    // Physics AABB covering the swept rectangle plus thickness margin.
+    const minX = Math.min(x0, x1) - thickness * 0.5
+    const minZ = Math.min(z0, z1) - thickness * 0.5
+    const wX   = Math.abs(x1 - x0) + thickness
+    const wZ   = Math.abs(z1 - z0) + thickness
+    const body = physicsWorld.add({
+      x: minX, z: minZ, radius: 0,
+      velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
+      aabb: { x: minX, z: minZ, w: wX, h: wZ },
+    })
+    this.wallBodies.push(body)
+    this.mazeWallAabbs.push({ cx: minX + wX / 2, cz: minZ + wZ / 2, hw: wX / 2, hh: wZ / 2 })
+  }
+
+  // ── Round 9 Issue 5: navigational landmarks ─────────────────────────────────
+  // Distinct glowing markers at key junctions so the player can orient through
+  // the fog of war.  Each gets a point light for visibility at range.
+  private buildLandmarks(): void {
+    // Cool blue crystal cluster at northern-corridor west end (safe route landmark)
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: 0x66ccff, emissive: 0x3388dd, emissiveIntensity: 1.2,
+    })
+    for (const [cx, cy, cz] of [
+      [-17, 0.30,  10],
+      [-17, 0.22,  10.5],
+      [-16.5, 0.28, 10.2],
+    ] as [number, number, number][]) {
+      const c = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), crystalMat)
+      c.position.set(cx, cy, cz)
+      this.add(c)
+    }
+    const blueL = new THREE.PointLight(0x66ccff, 1.2, 4.5)
+    blueL.position.set(-17, 0.5, 10)
+    this.add(blueL)
+
+    // Red danger marker at boss antechamber approach
+    const dangerMat = new THREE.MeshStandardMaterial({
+      color: 0xff3322, emissive: 0xaa0000, emissiveIntensity: 1.0,
+    })
+    const dangerMarker = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.45, 4), dangerMat)
+    dangerMarker.position.set(-15, 0.30, 0)
+    this.add(dangerMarker)
+    const redL = new THREE.PointLight(0xff3322, 1.0, 4.0)
+    redL.position.set(-15, 0.6, 0)
+    this.add(redL)
+
+    // Gold beacon at southern reward route entry
+    const goldMat = new THREE.MeshStandardMaterial({
+      color: 0xffcc33, emissive: 0xcc8800, emissiveIntensity: 1.0,
+    })
+    const goldMarker = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), goldMat)
+    goldMarker.position.set(16, 0.40, -10)
+    this.add(goldMarker)
+    const goldL = new THREE.PointLight(0xffcc33, 1.0, 4.0)
+    goldL.position.set(16, 0.6, -10)
+    this.add(goldL)
   }
 
   // Camera-to-player THREE.Raycaster: lerp occluding walls to 0.15 opacity.
@@ -783,17 +905,9 @@ export class AntColonyScene3D {
         x >= AntColonyScene3D.RIGHT - 0.5 ||
         z <= AntColonyScene3D.BACK  + 0.3 ||
         z >= AntColonyScene3D.FRONT - 0.3) return true
-    // Check corridor dividing walls
-    for (let wi = 0; wi < DIV_WALLS.length; wi++) {
-      const dw = DIV_WALLS[wi]
-      if (z < dw.lo - 0.1 || z > dw.hi + 0.1) continue
-      // Check if (x,z) is inside a gap
-      const gxs = DIV_GAPS[wi]
-      let inGap = false
-      for (const gx of gxs) {
-        if (Math.abs(x - gx) < GAP_HALF + 0.15) { inGap = true; break }
-      }
-      if (!inGap) return true
+    // Round 9 Issue 5: check maze wall AABBs instead of corridor dividers
+    for (const w of this.mazeWallAabbs) {
+      if (Math.abs(x - w.cx) < w.hw + 0.1 && Math.abs(z - w.cz) < w.hh + 0.1) return true
     }
     return false
   }

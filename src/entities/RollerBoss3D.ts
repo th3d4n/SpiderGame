@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D } from './Enemy3D'
+import { WeaponType } from '../systems/WeaponSystem'
 
 const PATROL_SPEED = 1.15   // wu/s  (115 px/s × 0.01)
 const CHARGE_SPEED = 3.90   // wu/s  (390 px/s × 0.01)
@@ -187,4 +188,205 @@ export class RollerBoss3D extends Enemy3D {
   isTailSwiping():    boolean { return this.attackState === 'tailSwipe'   }
   getFacingDir():     number  { return this.facingDir }
   getHealthRatio():   number  { return Math.max(0, this.hp / this.hpMax) }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Round 9b — boss death sequences (2-3s cinematic with camera shake).
+  // ───────────────────────────────────────────────────────────────────────────
+  private deathArrows: THREE.Mesh[] = []
+  private secondShakeFired = false
+
+  override startDeath(weapon: WeaponType): void {
+    if (this.deathState) return
+    const durations: Partial<Record<WeaponType, number>> = {
+      [WeaponType.Sword]:         2.20,
+      [WeaponType.Axe]:           2.80,
+      [WeaponType.BoxingGloves]:  2.50,
+      [WeaponType.Bow]:           2.30,
+      [WeaponType.FlameBreather]: 3.00,
+      [WeaponType.WebLauncher]:   1.80,
+      [WeaponType.Empty]:         2.00,
+    }
+    this.collisionBody.enabled = false
+    this.collisionBody.velocity.x = 0
+    this.collisionBody.velocity.z = 0
+    this.deathState = {
+      weapon, elapsed: 0,
+      duration: durations[weapon] ?? 2.5,
+      phase: 'initial',
+    }
+    // Initial impact shake
+    Enemy3D.onCameraShake?.(weapon === WeaponType.Axe ? 0.05 : 0.025, 0.4)
+
+    // Per-weapon setup (most just set phase / spawn arrows / discolor)
+    switch (weapon) {
+      case WeaponType.Bow: {
+        // Embed 4 arrows in the body for the bow death
+        const arrowMat = new THREE.MeshToonMaterial({ color: 0x442288 })
+        for (let i = 0; i < 4; i++) {
+          const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.45, 4), arrowMat)
+          arrow.position.set(
+            (Math.random() - 0.5) * 0.5, 0.2 + Math.random() * 0.3, (Math.random() - 0.5) * 0.4,
+          )
+          arrow.rotation.x = Math.PI / 4
+          arrow.rotation.z = (Math.random() - 0.5) * 0.6
+          this.group.add(arrow)
+          this.deathArrows.push(arrow)
+        }
+        break
+      }
+      case WeaponType.FlameBreather: {
+        this.group.traverse(obj => {
+          if ((obj as THREE.Mesh).isMesh) {
+            const m = (obj as THREE.Mesh).material as THREE.MeshToonMaterial & { emissive?: THREE.Color; emissiveIntensity?: number }
+            if (m.emissive) { m.emissive.setHex(0xff5500); m.emissiveIntensity = 0.9 }
+          }
+        })
+        break
+      }
+      case WeaponType.WebLauncher: {
+        const wrap = new THREE.Mesh(
+          new THREE.SphereGeometry(0.55, 14, 10),
+          new THREE.MeshToonMaterial({ color: 0xffffff, transparent: true, opacity: 0.65 }),
+        )
+        this.group.add(wrap)
+        break
+      }
+    }
+    this.spawnIchor(this.group.position, 30, 0xcc6633)
+  }
+
+  override updateDeath(delta: number): void {
+    if (!this.deathState) return
+    this.deathState.elapsed += delta
+    const t = Math.min(1, this.deathState.elapsed / this.deathState.duration)
+
+    switch (this.deathState.weapon) {
+      case WeaponType.Sword:        this.tickBossSword(t);            break
+      case WeaponType.Axe:          this.tickBossAxe(t);              break
+      case WeaponType.BoxingGloves: this.tickBossStab(t);             break
+      case WeaponType.Bow:          this.tickBossBow(t);              break
+      case WeaponType.FlameBreather:this.tickBossBurn(t, delta);      break
+      case WeaponType.WebLauncher:  this.tickBossWeb(t);              break
+      default:                      this.tickBossGeneric(t);          break
+    }
+
+    if (t > 0.9) {
+      const fade = 1 - (t - 0.9) / 0.1
+      this.group.traverse(obj => {
+        if ((obj as THREE.Mesh).isMesh) {
+          const m = (obj as THREE.Mesh).material as THREE.Material & { opacity?: number; transparent?: boolean }
+          m.transparent = true
+          m.opacity = fade
+        }
+      })
+    }
+  }
+
+  // ─── SWORD — staggered stumble, knee-buckle collapse on side ───────────────
+  private tickBossSword(t: number): void {
+    if (t < 0.3) {
+      // Step back, lean
+      this.group.position.x = this.collisionBody.x - this.facingDir * t * 0.6
+      this.group.rotation.x = -t * 0.3
+    } else if (t < 0.5) {
+      const ft = (t - 0.3) / 0.2
+      this.group.rotation.x = -0.3 + ft * 0.6   // forward falter
+      this.group.position.y = 0.3 * (1 - ft)
+    } else {
+      const ct = (t - 0.5) / 0.5
+      this.group.rotation.z = ct * (Math.PI / 2)
+      this.group.position.y = Math.max(0, 0.1 - ct * 0.1)
+      if (ct > 0.05 && ct < 0.20) this.spawnSmoke(this.group.position, 1)   // dust puff
+    }
+  }
+
+  // ─── AXE — big tumbling fall, second camera shake at ground hit ────────────
+  private tickBossAxe(t: number): void {
+    if (t < 0.25) {
+      // Spin from impact direction
+      this.group.rotation.y += 0.18
+    } else if (t < 0.5) {
+      // Airborne tumble: parabola
+      const at = (t - 0.25) / 0.25
+      this.group.position.y = 0.3 + Math.sin(at * Math.PI) * 0.9
+      this.group.rotation.x = at * Math.PI * 1.5
+      this.group.rotation.y += 0.15
+    } else {
+      if (!this.secondShakeFired) {
+        this.secondShakeFired = true
+        Enemy3D.onCameraShake?.(0.08, 0.5)
+        this.spawnSmoke(this.group.position, 14)
+      }
+      const ct = (t - 0.5) / 0.5
+      this.group.rotation.x = Math.PI * 1.5 + ct * 0.3
+      this.group.position.y = Math.max(0, 0.1 - ct * 0.1)
+    }
+  }
+
+  // ─── STAB — multiple wounds, sway, face-first collapse ─────────────────────
+  private tickBossStab(t: number): void {
+    if (t < 0.4) {
+      if (Math.random() < 0.08) this.spawnIchor(this.group.position, 2, 0xaa3322)
+    } else if (t < 0.7) {
+      const st = (t - 0.4) / 0.3
+      this.group.rotation.z = Math.sin(st * Math.PI * 4) * 0.25 * (1 - st * 0.5)
+    } else {
+      const ct = (t - 0.7) / 0.3
+      this.group.rotation.x = ct * (Math.PI / 2)
+      this.group.position.y = Math.max(0, 0.2 - ct * 0.2)
+    }
+  }
+
+  // ─── BOW — embedded arrows, roar swing, slow topple ────────────────────────
+  private tickBossBow(t: number): void {
+    if (t < 0.3) {
+      // Arrows already embedded in setup; head shake
+      this.group.rotation.y = Math.sin(t * 35) * 0.15
+    } else if (t < 0.6) {
+      const rt = (t - 0.3) / 0.3
+      this.group.rotation.y = Math.sin(rt * Math.PI * 3) * 0.30 * (1 - rt)
+    } else {
+      const tt = (t - 0.6) / 0.4
+      this.group.rotation.z = tt * (Math.PI / 2)
+      this.group.position.y = Math.max(0, 0.3 - tt * 0.25)
+    }
+  }
+
+  // ─── FLAME — panic burn, wobble circles, collapse smoldering ───────────────
+  private tickBossBurn(t: number, delta: number): void {
+    if (t < 0.4) {
+      if (Math.random() < 0.7) this.spawnSmoke(this.group.position, 1)
+      this.group.rotation.z = Math.sin(t * 20) * 0.1
+    } else if (t < 0.7) {
+      // Panic-run small circle
+      const pt = (t - 0.4) / 0.3
+      this.group.position.x = this.collisionBody.x + Math.cos(t * 12) * 0.4
+      this.group.position.z = this.collisionBody.z + Math.sin(t * 12) * 0.4
+      this.group.rotation.y += delta * 8
+      if (Math.random() < 0.5) this.spawnSmoke(this.group.position, 1)
+      // Fade emissive
+      this.group.traverse(obj => {
+        if ((obj as THREE.Mesh).isMesh) {
+          const m = (obj as THREE.Mesh).material as { emissiveIntensity?: number }
+          if (m.emissiveIntensity !== undefined) m.emissiveIntensity = 0.9 * (1 - pt)
+        }
+      })
+    } else {
+      const ct = (t - 0.7) / 0.3
+      this.group.rotation.z = ct * (Math.PI / 2)
+      this.group.position.y = Math.max(0, 0.2 - ct * 0.2)
+      if (Math.random() < 0.3) this.spawnSmoke(this.group.position, 1)
+    }
+  }
+
+  // ─── WEB — wrapped, quiet slump ────────────────────────────────────────────
+  private tickBossWeb(t: number): void {
+    this.group.rotation.z = t * (Math.PI / 2)
+    this.group.position.y = Math.max(0, 0.2 - t * 0.2)
+  }
+
+  private tickBossGeneric(t: number): void {
+    this.group.rotation.z = t * (Math.PI / 2)
+    this.group.position.y = Math.max(0, 0.2 - t * 0.2)
+  }
 }

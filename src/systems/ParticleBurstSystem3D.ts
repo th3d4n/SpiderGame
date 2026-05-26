@@ -7,6 +7,7 @@ interface Particle {
   vz:      number
   life:    number
   maxLife: number
+  isSmoke?: boolean   // smoke drifts up; no gravity
 }
 
 export class ParticleBurstSystem3D {
@@ -46,6 +47,31 @@ export class ParticleBurstSystem3D {
     }
   }
 
+  // Round 9b — slow upward-drifting smoke for burn / wound deaths.
+  smokeBurst(pos: THREE.Vector3, color = 0x444444, count = 4): void {
+    for (let i = 0; i < count; i++) {
+      const angle   = Math.random() * Math.PI * 2
+      const spd     = 0.4 + Math.random() * 0.3
+      const maxLife = 1.2 + Math.random() * 0.6
+      const mat     = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6 })
+      const mesh    = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.06 + Math.random() * 0.04, 0),
+        mat,
+      )
+      mesh.position.set(pos.x, pos.y, pos.z)
+      this.scene.add(mesh)
+      this.particles.push({
+        mesh,
+        vx: Math.cos(angle) * spd * 0.3,
+        vy: spd * 1.5,
+        vz: Math.sin(angle) * spd * 0.3,
+        life: maxLife,
+        maxLife,
+        isSmoke: true,
+      })
+    }
+  }
+
   update(delta: number): void {
     const keep: Particle[] = []
     for (const p of this.particles) {
@@ -59,7 +85,7 @@ export class ParticleBurstSystem3D {
       p.mesh.position.x += p.vx * delta
       p.mesh.position.y += p.vy * delta
       p.mesh.position.z += p.vz * delta
-      p.vy -= 7 * delta
+      if (!p.isSmoke) p.vy -= 7 * delta
       ;(p.mesh.material as THREE.MeshBasicMaterial).opacity = p.life / p.maxLife
       keep.push(p)
     }

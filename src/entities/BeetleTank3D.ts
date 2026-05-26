@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D, WeakPointZone } from './Enemy3D'
 import { physicsWorld } from '../core/PhysicsWorld'
+import { WeaponType } from '../systems/WeaponSystem'
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 const CONFIG: EnemyConfig3D = {
@@ -35,6 +36,9 @@ export class BeetleTank3D extends Enemy3D {
   private shellMesh:   THREE.Mesh | null = null
   private shellMat:    THREE.MeshToonMaterial | null = null
   private slamRings:   Array<{ mesh: THREE.Mesh; elapsed: number }> = []
+  private legMeshes:   THREE.Mesh[] = []   // Round 9b: tracked for flailing on stab/axe deaths
+  private shellPieces: THREE.Mesh[] = []   // Round 9b: detached shell chunks (physics-ticked)
+  private stumbleAngle = 0
 
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     super(threeScene, x, z, CONFIG, gradientMap)
@@ -86,6 +90,7 @@ export class BeetleTank3D extends Enemy3D {
         leg.position.set(side * 0.32, 0.08, lz)
         leg.rotation.z = side * 0.6
         this.group.add(leg)
+        this.legMeshes.push(leg)
       }
     }
   }
@@ -228,6 +233,252 @@ export class BeetleTank3D extends Enemy3D {
     }
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Round 9b — beetle death animations.  The shell is the centrepiece — each
+  // weapon either cracks it, shatters it, flips the beetle off it, or cooks it.
+  // ───────────────────────────────────────────────────────────────────────────
+  override startDeath(weapon: WeaponType): void {
+    if (this.deathState) return
+    const durations: Partial<Record<WeaponType, number>> = {
+      [WeaponType.Sword]:         1.10,
+      [WeaponType.Axe]:           1.40,
+      [WeaponType.BoxingGloves]:  1.20,
+      [WeaponType.Bow]:           1.30,
+      [WeaponType.FlameBreather]: 1.60,
+      [WeaponType.WebLauncher]:   0.90,
+      [WeaponType.Empty]:         1.00,
+    }
+    this.collisionBody.enabled = false
+    this.collisionBody.velocity.x = 0
+    this.collisionBody.velocity.z = 0
+    this.deathState = {
+      weapon, elapsed: 0,
+      duration: durations[weapon] ?? 1.0,
+      phase: 'initial',
+    }
+    switch (weapon) {
+      case WeaponType.Sword:         this.setupSwordDeath(); break
+      case WeaponType.Axe:           this.setupAxeDeath();   break
+      case WeaponType.BoxingGloves:  this.setupStabDeath();  break
+      case WeaponType.Bow:           this.setupBowDeath();   break
+      case WeaponType.FlameBreather: this.setupBurnDeath();  break
+      case WeaponType.WebLauncher:   this.setupWebDeath();   break
+      default:                       break
+    }
+  }
+
+  override updateDeath(delta: number): void {
+    if (!this.deathState) return
+    this.deathState.elapsed += delta
+
+    // Tick shell-piece physics (chunks detached by sword/axe/flame).
+    for (const piece of this.shellPieces) {
+      const ud = piece.userData as { vx: number; vy: number; vz: number; rotVx: number; rotVz: number }
+      if (ud.vx === undefined) continue
+      piece.position.x += ud.vx * delta
+      piece.position.y += ud.vy * delta
+      piece.position.z += ud.vz * delta
+      ud.vy -= 14 * delta
+      piece.rotation.x += ud.rotVx * delta
+      piece.rotation.z += ud.rotVz * delta
+      if (piece.position.y < 0.05) {
+        piece.position.y = 0.05
+        ud.vy = -ud.vy * 0.25
+        ud.vx *= 0.6
+        ud.vz *= 0.6
+      }
+    }
+
+    switch (this.deathState.weapon) {
+      case WeaponType.Sword:         this.tickSwordDeath(); break
+      case WeaponType.Axe:           this.tickAxeDeath(delta); break
+      case WeaponType.BoxingGloves:  this.tickStabDeath(); break
+      case WeaponType.Bow:           this.tickBowDeath(delta); break
+      case WeaponType.FlameBreather: this.tickBurnDeath(); break
+      case WeaponType.WebLauncher:   this.tickWebDeath();  break
+      default:                       this.tickGenericDeath(); break
+    }
+  }
+
+  // ─── SWORD — shell cracks; body slumps to side ──────────────────────────────
+  private setupSwordDeath(): void {
+    const mat = new THREE.MeshToonMaterial({ color: 0x335522, gradientMap: this.gradientMap })
+    for (let i = 0; i < 3; i++) {
+      const piece = new THREE.Mesh(
+        new THREE.SphereGeometry(0.15, 6, 4, 0, Math.PI * 0.7, 0, Math.PI), mat,
+      )
+      piece.position.set(
+        this.collisionBody.x + (Math.random() - 0.5) * 0.2,
+        0.4,
+        this.collisionBody.z + (Math.random() - 0.5) * 0.2,
+      )
+      this.threeScene.add(piece)
+      piece.userData = {
+        vx: -Math.sin(this.facingAngle) * 1.5 + (Math.random() - 0.5) * 1.0,
+        vy: 2.0 + Math.random() * 1.0,
+        vz: -Math.cos(this.facingAngle) * 1.5 + (Math.random() - 0.5) * 1.0,
+        rotVx: (Math.random() - 0.5) * 5,
+        rotVz: (Math.random() - 0.5) * 5,
+      }
+      this.shellPieces.push(piece)
+    }
+    this.spawnIchor(this.group.position, 15, 0x66aa33)
+  }
+  private tickSwordDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.rotation.z = t * 1.5
+    this.group.position.y = Math.max(0, 0.2 - t * 0.18)
+    this.group.scale.y = 1 - t * 0.2
+  }
+
+  // ─── AXE — SHATTER. Shell explodes into chunks, body flips ───────────────
+  private setupAxeDeath(): void {
+    const mat = new THREE.MeshToonMaterial({ color: 0x335522, gradientMap: this.gradientMap })
+    for (let i = 0; i < 8; i++) {
+      const piece = new THREE.Mesh(new THREE.DodecahedronGeometry(0.08 + Math.random() * 0.05, 0), mat)
+      piece.position.set(
+        this.collisionBody.x,
+        0.4 + (Math.random() - 0.5) * 0.1,
+        this.collisionBody.z,
+      )
+      this.threeScene.add(piece)
+      const angle = Math.random() * Math.PI * 2
+      piece.userData = {
+        vx: Math.cos(angle) * (3 + Math.random() * 3),
+        vy: 4 + Math.random() * 3,
+        vz: Math.sin(angle) * (3 + Math.random() * 3),
+        rotVx: (Math.random() - 0.5) * 12,
+        rotVz: (Math.random() - 0.5) * 12,
+      }
+      this.shellPieces.push(piece)
+    }
+    if (this.shellMesh) this.shellMesh.visible = false
+    this.spawnIchor(this.group.position, 40, 0x66aa33)
+  }
+  private tickAxeDeath(delta: number): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.rotation.x = Math.min(t * 6, Math.PI)
+    this.group.position.x -= Math.sin(this.facingAngle) * delta * 1.5 * (1 - t)
+    this.group.position.z -= Math.cos(this.facingAngle) * delta * 1.5 * (1 - t)
+    this.group.position.y = Math.max(0.05, 0.3 - t * 0.25)
+    for (const leg of this.legMeshes) {
+      leg.rotation.x = Math.sin(t * 30 + leg.position.x * 10) * 0.5
+    }
+  }
+
+  // ─── STAB — flip onto back, legs flailing ──────────────────────────────────
+  private setupStabDeath(): void { this.spawnIchor(this.group.position, 5, 0x66aa33) }
+  private tickStabDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    if (t < 0.4) {
+      const back = t * 0.3
+      this.group.position.x = this.collisionBody.x - Math.sin(this.facingAngle) * back
+      this.group.position.z = this.collisionBody.z - Math.cos(this.facingAngle) * back
+      this.group.rotation.x = -(t / 0.4) * 0.5
+    } else if (t < 0.7) {
+      const ft = (t - 0.4) / 0.3
+      this.group.rotation.x = -0.5 - ft * (Math.PI - 0.5)
+      this.group.position.y = 0.2 + Math.sin(ft * Math.PI) * 0.3
+    } else {
+      const flailT = (t - 0.7) / 0.3
+      this.group.rotation.x = -Math.PI
+      this.group.position.y = 0.15
+      for (let i = 0; i < this.legMeshes.length; i++) {
+        this.legMeshes[i].rotation.x = Math.sin((t * 25) + i) * 0.4 * (1 - flailT)
+      }
+    }
+  }
+
+  // ─── BOW — arrow embed, stumble in circles, collapse ───────────────────────
+  private setupBowDeath(): void {
+    const arrow = new THREE.Mesh(
+      new THREE.ConeGeometry(0.04, 0.3, 4),
+      new THREE.MeshToonMaterial({ color: 0x442288 }),
+    )
+    arrow.position.set(0, 0.4, 0)
+    arrow.rotation.x = Math.PI / 4
+    this.group.add(arrow)
+    this.spawnIchor(this.group.position, 8, 0x66aa33)
+  }
+  private tickBowDeath(delta: number): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    if (t < 0.6) {
+      this.stumbleAngle += delta * 6
+      this.group.position.x += Math.cos(this.stumbleAngle) * delta * 0.4
+      this.group.position.z += Math.sin(this.stumbleAngle) * delta * 0.4
+      this.group.rotation.y += delta * 3
+      this.group.rotation.z = Math.sin(this.stumbleAngle * 2) * 0.2
+    } else {
+      const ct = (t - 0.6) / 0.4
+      this.group.rotation.z = 0.2 + ct * 1.4
+      this.group.position.y = Math.max(0, 0.2 - ct * 0.18)
+    }
+  }
+
+  // ─── FLAME — shell heats, glows red, then splits ───────────────────────────
+  private setupBurnDeath(): void { this.deathState!.phase = 'heating' }
+  private tickBurnDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    if (t < 0.5) {
+      const ht = t / 0.5
+      if (this.shellMat) {
+        const r = 0x33 + ht * (0xff - 0x33)
+        this.shellMat.color.setRGB(r / 255, (0x55 - ht * 0x55) / 255, (0x22 - ht * 0x22) / 255)
+        if (this.shellMat.emissive) {
+          this.shellMat.emissive.setHex(0xff3300)
+          this.shellMat.emissiveIntensity = ht * 1.5
+        }
+      }
+      if (Math.random() < 0.4) this.spawnSmoke(this.group.position, 1)
+    } else if (t < 0.75) {
+      if (this.deathState!.phase === 'heating') {
+        this.deathState!.phase = 'cracked'
+        const pieceMat = new THREE.MeshToonMaterial({
+          color: 0x553311, emissive: new THREE.Color(0xff3300), emissiveIntensity: 0.8,
+        })
+        for (let i = 0; i < 4; i++) {
+          const piece = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.12), pieceMat)
+          piece.position.set(this.collisionBody.x, 0.45, this.collisionBody.z)
+          this.threeScene.add(piece)
+          const angle = (i / 4) * Math.PI * 2
+          piece.userData = {
+            vx: Math.cos(angle) * 2, vy: 3, vz: Math.sin(angle) * 2,
+            rotVx: (Math.random() - 0.5) * 8, rotVz: (Math.random() - 0.5) * 8,
+          }
+          this.shellPieces.push(piece)
+        }
+        if (this.shellMesh) this.shellMesh.visible = false
+        this.spawnSmoke(this.group.position, 8)
+      }
+    } else {
+      const ct = (t - 0.75) / 0.25
+      this.group.position.y = Math.max(0, 0.2 - ct * 0.15)
+      this.group.scale.set(1, 1 - ct * 0.5, 1)
+      if (Math.random() < 0.3) this.spawnSmoke(this.group.position, 1)
+    }
+  }
+
+  // ─── WEB — wrapped, slump ──────────────────────────────────────────────────
+  private setupWebDeath(): void {
+    const wrap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.35, 12, 8),
+      new THREE.MeshToonMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 }),
+    )
+    this.group.add(wrap)
+  }
+  private tickWebDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.rotation.z = t * 1.5
+    this.group.position.y = Math.max(0, 0.2 - t * 0.18)
+  }
+
+  // ─── GENERIC ───────────────────────────────────────────────────────────────
+  private tickGenericDeath(): void {
+    const t = this.deathState!.elapsed / this.deathState!.duration
+    this.group.rotation.z = t * Math.PI / 2
+    this.group.position.y = Math.max(0, 0.2 - t * 0.2)
+  }
+
   override cleanup(): void {
     for (const r of this.slamRings) {
       this.threeScene.remove(r.mesh)
@@ -235,6 +486,12 @@ export class BeetleTank3D extends Enemy3D {
       ;(r.mesh.material as THREE.Material).dispose()
     }
     this.slamRings = []
+    for (const p of this.shellPieces) {
+      this.threeScene.remove(p)
+      p.geometry.dispose()
+      ;(p.material as THREE.Material).dispose()
+    }
+    this.shellPieces = []
     super.cleanup()
   }
 }

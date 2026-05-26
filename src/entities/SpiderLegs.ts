@@ -132,6 +132,8 @@ interface Leg {
 type GaitPhase = 'IDLE' | 'A' | 'B'
 
 // ─── SpiderLegs ───────────────────────────────────────────────────────────────
+export type SwingStyle = 'thrust' | 'sword' | 'axe' | 'stab' | 'spray'
+
 interface LegAnim {
   elapsed:     number
   duration:    number
@@ -140,6 +142,7 @@ interface LegAnim {
   // Visual reach from body center — used to normalise per-leg thrust so every
   // leg's weapon tip lands at the same world point regardless of leg position.
   attackRange: number
+  style:       SwingStyle
 }
 
 function wrapAngle(a: number): number {
@@ -229,9 +232,20 @@ export class SpiderLegs {
   // Trigger a one-shot punch/thrust animation on a specific leg.
   // legIndex matches weapon slot (0-7). attackRange is the visual reach from body
   // centre — the weapon tip will always land at bodyPos + facing * attackRange.
-  triggerAnim(legIndex: number, durationSec: number, facingX: number, facingZ: number, attackRange = 1.0): void {
+  triggerAnim(legIndex: number, durationSec: number, facingX: number, facingZ: number, attackRange = 1.0, style: SwingStyle = 'thrust'): void {
     if (legIndex < 0 || legIndex >= 8) return
-    this.animStates[legIndex] = { elapsed: 0, duration: durationSec, facingX, facingZ, attackRange }
+    this.animStates[legIndex] = { elapsed: 0, duration: durationSec, facingX, facingZ, attackRange, style }
+  }
+
+  // Round 9 Issue 3 — convenience wrapper for weapon swings.  Per-style durations
+  // match the visuals in the weapon-anim loop below.  attackRange = 1.1wu so the
+  // weapon tip lands well in front of Webbs at the slam point.
+  startWeaponSwing(legIndex: number, style: 'sword' | 'axe' | 'stab' | 'spray', facingX: number, facingZ: number): void {
+    const dur = style === 'sword' ? 0.30
+              : style === 'axe'   ? 0.40
+              : style === 'stab'  ? 0.18
+              :                     0.10
+    this.triggerAnim(legIndex, dur, facingX, facingZ, 1.1, style)
   }
 
   // Main per-frame update — call after physicsWorld has settled body position.
@@ -244,12 +258,52 @@ export class SpiderLegs {
   ): void {
     this.updateWorldVecs(bodyPos, bodyRotY)
 
-    // Round 8 Issue 2: hard-turn snap — if the body rotated > 45° in one frame,
-    // every foot snaps to its (newly rotated) anchor so legs can't cross over.
-    const rotDelta = Math.abs(wrapAngle(bodyRotY - this.lastBodyRotation))
-    if (rotDelta > Math.PI / 4) {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Round 9 Issue 1 — proper rotation-tracking model.
+    //
+    // The Round 8 single-frame snap-on-45° threshold missed any rotation that
+    // was spread across multiple frames (e.g. 30°/frame × 3 frames = 90° total,
+    // each individual frame still under 45° so no snap fired). Result: legs lag
+    // behind cumulatively and the "front legs become back legs" visual returns.
+    //
+    // Fix: continuously rotate every foot's world position around the body
+    // centre by the same delta the BODY rotated this frame. This keeps each
+    // foot's body-local position constant during rotation, so the IK never
+    // bridges a stretched gap and the leg layout stays locked to the body.
+    // Stepping/gait runs on top of this for natural translation motion.
+    // ─────────────────────────────────────────────────────────────────────────
+    const rotDelta = wrapAngle(bodyRotY - this.lastBodyRotation)
+    if (Math.abs(rotDelta) > 0.0001) {
+      const rc = Math.cos(rotDelta)
+      const rs = Math.sin(rotDelta)
       for (const leg of this.legs) {
-        leg.footPos.copy(leg.anchorWorld)
+        const lx = leg.footPos.x - bodyPos.x
+        const lz = leg.footPos.z - bodyPos.z
+        leg.footPos.x = bodyPos.x + lx * rc - lz * rs
+        leg.footPos.z = bodyPos.z + lx * rs + lz * rc
+      }
+    }
+
+    // Hard catch-up — if a foot is somehow > 1.2wu from its body-local anchor
+    // (instant teleport, very long rotation, etc.), snap it straight to the
+    // rotated anchor position.
+    const bcos = Math.cos(-bodyRotY)
+    const bsin = Math.sin(-bodyRotY)
+    const wcos = Math.cos( bodyRotY)
+    const wsin = Math.sin( bodyRotY)
+    for (const leg of this.legs) {
+      const lfx = leg.footPos.x - bodyPos.x
+      const lfz = leg.footPos.z - bodyPos.z
+      // Un-rotate by body rotation → body-local foot position
+      const blx = lfx * bcos - lfz * bsin
+      const blz = lfx * bsin + lfz * bcos
+      const ax  = leg.anchorOffset.x
+      const az  = leg.anchorOffset.z
+      const dx  = blx - ax
+      const dz  = blz - az
+      if (dx * dx + dz * dz > 1.2 * 1.2) {
+        leg.footPos.x = bodyPos.x + ax * wcos - az * wsin
+        leg.footPos.z = bodyPos.z + ax * wsin + az * wcos
         leg.isStepping = false
       }
     }
@@ -301,22 +355,75 @@ export class SpiderLegs {
         if (wMesh) wMesh.visible = false
         continue
       }
-      const thrust = Math.sin(t * Math.PI)          // 0 → peak → 0
-      const flen   = Math.hypot(anim.facingX, anim.facingZ) || 1
-      const fx     = anim.facingX / flen
-      const fz     = anim.facingZ / flen
+      const flen = Math.hypot(anim.facingX, anim.facingZ) || 1
+      const fx   = anim.facingX / flen
+      const fz   = anim.facingZ / flen
 
-      // All legs converge to the same central attack point: bodyPos + facing * attackRange.
-      // This places the weapon tip directly ahead of the spider's eyes regardless of
-      // which leg slot is used — lateral anchor offset is cancelled out so no weapon
-      // ever appears shifted left/right off the attack axis.
-      const ax = bodyPos.x + fx * anim.attackRange
-      const az = bodyPos.z + fz * anim.attackRange
-      leg.footPos.set(
-        leg.anchorWorld.x + thrust * (ax - leg.anchorWorld.x),
-        thrust * 0.4,
-        leg.anchorWorld.z + thrust * (az - leg.anchorWorld.z),
-      )
+      // ─── Style-specific foot path ──────────────────────────────────────────
+      // All weapons converge on a single impact point in front of the body so
+      // the weapon tip lands at the same world location regardless of which
+      // leg-slot fired.  Lateral anchor offsets are cancelled out.
+      if (anim.style === 'sword') {
+        // Overhead slam: WINDUP up+back → SLAM down+forward → RETURN to anchor.
+        const ix = bodyPos.x + fx * anim.attackRange
+        const iz = bodyPos.z + fz * anim.attackRange
+        if (t < 0.30) {
+          const wt = t / 0.30
+          leg.footPos.set(
+            bodyPos.x - fx * 0.25 * wt,
+            0.05 + 0.85 * wt,
+            bodyPos.z - fz * 0.25 * wt,
+          )
+        } else if (t < 0.65) {
+          const st  = (t - 0.30) / 0.35
+          const ets = st * st                        // ease-in: slow rise then crash
+          const sx  = bodyPos.x - fx * 0.25
+          const sz  = bodyPos.z - fz * 0.25
+          leg.footPos.set(
+            sx + (ix - sx) * ets,
+            0.85 + (0.05 - 0.85) * ets,
+            sz + (iz - sz) * ets,
+          )
+        } else {
+          const rt = (t - 0.65) / 0.35
+          leg.footPos.set(
+            ix + (leg.anchorWorld.x - ix) * rt,
+            0.05 + (1 - rt) * 0.15,                  // small arc on return
+            iz + (leg.anchorWorld.z - iz) * rt,
+          )
+        }
+      } else if (anim.style === 'axe') {
+        // Horizontal 180° sweep — foot arcs sideways at constant radius around body.
+        const baseAng    = Math.atan2(fx, fz)
+        const swingAng   = -Math.PI / 2 + Math.PI * t        // -90° → +90°
+        const a          = baseAng + swingAng
+        const SWEEP_DIST = anim.attackRange
+        leg.footPos.set(
+          bodyPos.x + Math.sin(a) * SWEEP_DIST,
+          0.20 + Math.sin(t * Math.PI) * 0.30,               // gentle up-arc during sweep
+          bodyPos.z + Math.cos(a) * SWEEP_DIST,
+        )
+      } else if (anim.style === 'stab') {
+        // Quick lunge forward then back — peak extension at t=0.5.
+        const stabT = t < 0.5 ? (t / 0.5) : (1 - (t - 0.5) / 0.5)
+        const STAB_DIST = anim.attackRange * 0.95
+        leg.footPos.set(
+          bodyPos.x + fx * STAB_DIST * stabT,
+          0.10,
+          bodyPos.z + fz * STAB_DIST * stabT,
+        )
+      } else {
+        // Default 'thrust' / 'spray' — Round 7-style fan-out from anchor.
+        const thrust = Math.sin(t * Math.PI)
+        const ax = bodyPos.x + fx * anim.attackRange
+        const az = bodyPos.z + fz * anim.attackRange
+        leg.footPos.set(
+          leg.anchorWorld.x + thrust * (ax - leg.anchorWorld.x),
+          thrust * 0.4,
+          leg.anchorWorld.z + thrust * (az - leg.anchorWorld.z),
+        )
+      }
+      leg.isStepping = false
 
       if (wMesh) {
         // Show weapon mesh at the tip, oriented toward the attack direction
@@ -330,9 +437,10 @@ export class SpiderLegs {
         // Hide the tip sphere — weapon mesh is the visual
         leg.tip.visible = false
       } else {
-        // No weapon mesh: fall back to scaled tip sphere
+        // No weapon mesh: fall back to scaled tip sphere (use sin-pulse t).
+        const pulse = Math.sin(t * Math.PI)
         leg.tip.visible = true
-        leg.tip.scale.setScalar(1.0 + thrust * 3.0)
+        leg.tip.scale.setScalar(1.0 + pulse * 3.0)
       }
     }
 

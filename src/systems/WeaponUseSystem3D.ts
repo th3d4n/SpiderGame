@@ -7,22 +7,23 @@ import { BeetleTank3D } from '../entities/BeetleTank3D'
 import { RollerBoss3D } from '../entities/RollerBoss3D'
 
 // ── Weapon constants (pixel values × 0.01 = world units) ────────────────────
-const SWORD_RADIUS    = 0.70;  const SWORD_SWEEP  = 90;  const SWORD_DMG  = 18
-const SWORD_STAMINA   = 10;    const SWORD_CD     = 280; const SWORD_KB   = 4.0
-// Visual reach from body centre — how far the weapon tip extends at peak thrust.
-// Larger than the hit radius so the weapon extends past the enemy when it connects.
-const SWORD_REACH     = 1.00
+// Round 9 Issue 3+4: wider hit radii so the impact-point check lands cleanly,
+// per-weapon knockback + stagger durations for distinct hit feel.
+const SWORD_RADIUS    = 1.00;  const SWORD_SWEEP  = 360; const SWORD_DMG  = 18
+const SWORD_STAMINA   = 10;    const SWORD_CD     = 280; const SWORD_KB   = 6.0
+const SWORD_STAGGER   = 0.30
 
-const AXE_RADIUS      = 0.88;  const AXE_SWEEP    = 170; const AXE_DMG    = 44
-const AXE_STAMINA     = 22;    const AXE_CD       = 760; const AXE_KB     = 10.0
-const AXE_REACH       = 1.10
+const AXE_RADIUS      = 1.20;  const AXE_SWEEP    = 360; const AXE_DMG    = 44
+const AXE_STAMINA     = 22;    const AXE_CD       = 760; const AXE_KB     = 14.0
+const AXE_STAGGER     = 0.80
 
-const GLOVES_RADIUS   = 0.90;  const GLOVES_CONE  = 28;  const GLOVES_DMG = 14
-const GLOVES_STAMINA  = 15;    const GLOVES_CD    = 220; const GLOVES_KB  = 4.5
-const GLOVES_REACH    = 1.30   // long thin stab — tip extends further than any other weapon
+const GLOVES_RADIUS   = 1.00;  const GLOVES_CONE  = 360; const GLOVES_DMG = 14
+const GLOVES_STAMINA  = 15;    const GLOVES_CD    = 220; const GLOVES_KB  = 4.0
+const GLOVES_STAGGER  = 0.18
 
 const BOW_SPEED_WU    = 3.20;  const BOW_DMG      = 22;  const BOW_STAMINA = 12
-const BOW_CD          = 380;   const BOW_KB       = 2.2;  const BOW_PROJ_R = 0.06
+const BOW_CD          = 380;   const BOW_KB       = 5.0;  const BOW_PROJ_R = 0.06
+const BOW_STAGGER     = 0.20
 const BOW_MAX_RANGE   = 4.8    // 480 px × 0.01
 
 // ── FlameBreather constants ───────────────────────────────────────────────────
@@ -32,9 +33,6 @@ const FLAME_DPS       = 18
 const FLAME_DRAIN     = 120    // energy/s at 60fps-equivalent (2/frame × 60)
 
 // ── Animation durations (seconds) ────────────────────────────────────────────
-const ANIM_SWORD  = 0.28
-const ANIM_AXE    = 0.76
-const ANIM_GLOVES = 0.22
 const ANIM_BOW    = 0.22
 const ANIM_FLAME  = 0.08  // repeating spray cycle
 
@@ -54,32 +52,25 @@ interface HitEffect {
   fadeOnly?: boolean   // if true: only fade opacity, don't scale
 }
 
-// ── Sword overhead arc slam ───────────────────────────────────────────────────
-interface SwordSlashFx {
-  pivot:         THREE.Object3D  // rotates around local X to arc the blade
-  blade:         THREE.Mesh      // child of pivot — the bright sword blade
-  fanMesh:       THREE.Mesh      // scene-level fan showing full swept arc path
-  elapsed:       number
-  duration:      number
-  startRX:       number          // pivot.rotation.x start (behind/above)
-  endRX:         number          // pivot.rotation.x end   (front/below)
-  impactSpawned: boolean
-  ipx:           number          // ground impact world X
-  ipz:           number          // ground impact world Z
-}
-
 // ── Active melee swing — hit detection runs every frame for swing duration ───
 interface ActiveSwing {
-  px:         number      // player position snapshot at swing start
+  webbs:      Webbs3D     // for impact-point recalc each frame (player can move)
+  px:         number      // player position snapshot at swing start (fallback)
   pz:         number
   facingX:    number
   facingZ:    number
   radius:     number
-  sweepDeg:   number
+  sweepDeg:   number      // 360 = circle around impact point
   damage:     number
   knockback:  number
   remaining:  number      // seconds left in swing window
   hitEnemies: Set<Enemy3D>  // each enemy hit at most once per swing
+  // Round 9 Issue 3/4 — hit-feel fields
+  impactDist:     number    // forward offset from player to impact-point centre
+  staggerDur:     number
+  reactionStyle:  'small' | 'medium' | 'large' | 'stab' | 'sword' | 'axe'
+  particleColor:  number
+  particleCount:  number
   // VFX deferred until first hit
   ringMaxR:   number
   ringDur:    number
@@ -120,9 +111,9 @@ export class WeaponUseSystem3D {
   // Callback fired when bow has no ammo — wire to HUD in main.ts
   onOutOfAmmo: (() => void) | null = null
 
-  // Round 8 Issue 5: per-weapon animation FX
-  private swordSlashFx: SwordSlashFx[] = []
-  private axeSweepFx:   Array<{ mesh: THREE.Mesh; elapsed: number; duration: number; initialRotY: number; sweepRange: number }> = []
+  // Round 9 Issue 4 — splatter particles on successful hit.  Wired in main.ts
+  // to the ParticleBurstSystem.
+  onSpawnHitParticles: ((x: number, y: number, z: number, color: number, count: number) => void) | null = null
 
   // FlameBreather state
   private flameActive    = false
@@ -179,7 +170,7 @@ export class WeaponUseSystem3D {
       while (diff >  Math.PI) diff -= Math.PI * 2
       while (diff < -Math.PI) diff += Math.PI * 2
       if (Math.abs(diff) <= FLAME_HALF_ANG) {
-        enemy.takeDamage(FLAME_DPS * delta, WeakPointZone.Body)
+        enemy.takeDamage(FLAME_DPS * delta, WeakPointZone.Body, WeaponType.FlameBreather)
         this.lastHitFrame = true
       }
     }
@@ -213,8 +204,6 @@ export class WeaponUseSystem3D {
     this.checkSwingHits(delta)
     this.tickProjectiles(delta)
     this.tickHitEffects(delta)
-    this.tickSwordSlashFx(delta)
-    this.tickAxeSweepFx(delta)
   }
 
   // ── Round 8 Issue 5: vertical sword slash + horizontal axe sweep ─────────
@@ -223,163 +212,6 @@ export class WeaponUseSystem3D {
   // The blade pivots around the body centre, swinging from behind+above all the
   // way over the top and slamming into the ground in front of Webbs.
   // A pre-baked world-space fan shows the full swept arc as a translucent trail.
-
-  private spawnSwordSlash(webbs: Webbs3D): void {
-    const fAngle   = Math.atan2(webbs.facingX, webbs.facingZ)
-    const bladeLen = 0.76
-    const startRX  = -Math.PI * 0.68   // ~122° back: behind head, pointing up+back
-    const endRX    =  Math.PI * 0.44   // ~79° past horizontal: slamming into ground
-
-    // ── Pivot at body height, facing direction baked into rotation.y ─────────
-    const pivot = new THREE.Object3D()
-    pivot.position.set(webbs.collisionBody.x, 0.40, webbs.collisionBody.z)
-    pivot.rotation.y = fAngle
-    pivot.rotation.x = startRX
-
-    // Blade — narrow bright box extending forward from pivot centre
-    const blade = new THREE.Mesh(
-      new THREE.BoxGeometry(0.055, 0.055, bladeLen),
-      new THREE.MeshBasicMaterial({ color: 0xddeeff, transparent: true, opacity: 0.95 }),
-    )
-    blade.position.z = bladeLen * 0.5
-    pivot.add(blade)
-
-    this.threeScene.add(pivot)
-
-    // ── Arc-sweep fan: a static sector in world space showing the full path ──
-    // Built in world space so it doesn't rotate when the pivot animates.
-    // For pivot.rotation.x = a:
-    //   local tip = (0, -sin(a)*L, cos(a)*L)
-    //   world tip = pivot.pos + rotY(fAngle) * local tip
-    //             = (px - sin(fAngle)*cos(a)*L,  0.40 - sin(a)*L,  pz + cos(fAngle)*cos(a)*L)
-    const px = webbs.collisionBody.x, pz = webbs.collisionBody.z
-    const fanSegs  = 18
-    const sweepAng = endRX - startRX
-    const fanVerts: number[] = [px, 0.40, pz]   // fan centre
-    for (let i = 0; i <= fanSegs; i++) {
-      const a    = startRX + (sweepAng / fanSegs) * i
-      const ly   = -Math.sin(a) * bladeLen
-      const lz   =  Math.cos(a) * bladeLen
-      fanVerts.push(
-        px - Math.sin(fAngle) * lz,
-        0.40 + ly,
-        pz + Math.cos(fAngle) * lz,
-      )
-    }
-    const fanTris: number[] = []
-    for (let i = 0; i < fanSegs; i++) fanTris.push(0, i + 1, i + 2)
-    const fanGeo = new THREE.BufferGeometry()
-    fanGeo.setAttribute('position', new THREE.Float32BufferAttribute(fanVerts, 3))
-    fanGeo.setIndex(fanTris)
-    const fanMesh = new THREE.Mesh(fanGeo, new THREE.MeshBasicMaterial({
-      color: 0x99bbff, transparent: true, opacity: 0.18,
-      side: THREE.DoubleSide, depthWrite: false,
-    }))
-    this.threeScene.add(fanMesh)
-
-    // Impact position: where blade tip meets the ground at endRX
-    // forward reach = cos(endRX)*L projected along facing
-    const fwdReach = Math.max(Math.cos(endRX) * bladeLen, 0.30)
-    const ipx = px + webbs.facingX * fwdReach
-    const ipz = pz + webbs.facingZ * fwdReach
-
-    this.swordSlashFx.push({
-      pivot, blade, fanMesh,
-      elapsed: 0, duration: ANIM_SWORD,
-      startRX, endRX,
-      impactSpawned: false,
-      ipx, ipz,
-    })
-  }
-
-  private tickSwordSlashFx(delta: number): void {
-    const keep: SwordSlashFx[] = []
-    for (const fx of this.swordSlashFx) {
-      fx.elapsed += delta
-      const t = Math.min(fx.elapsed / fx.duration, 1.0)
-
-      // Ease-in² — slow wind-up, fast slam at the end
-      const tEased = t * t
-      fx.pivot.rotation.x = fx.startRX + (fx.endRX - fx.startRX) * tEased
-
-      // Fan fades as the swing completes
-      ;(fx.fanMesh.material as THREE.MeshBasicMaterial).opacity = 0.18 * (1 - t * 0.8)
-
-      // Blade: bright during swing, flash-then-fade on impact
-      const bm = fx.blade.material as THREE.MeshBasicMaterial
-      if (t < 0.78) {
-        bm.opacity = 0.95
-      } else {
-        const ti = (t - 0.78) / 0.22
-        bm.opacity = ti < 0.25 ? 1.0 : 0.95 * (1 - (ti - 0.25) / 0.75)
-      }
-
-      // Ground impact VFX at ~80% through the swing
-      if (!fx.impactSpawned && t >= 0.80) {
-        fx.impactSpawned = true
-        const pos = new THREE.Vector3(fx.ipx, 0.02, fx.ipz)
-        this.spawnHitRing(pos, 0.65, 0.40, 0x88bbff)
-
-        // Shockwave disc — expands on the ground at impact point
-        const shockGeo = new THREE.CircleGeometry(0.20, 16)
-        shockGeo.rotateX(-Math.PI / 2)
-        const shock = new THREE.Mesh(shockGeo, new THREE.MeshBasicMaterial({
-          color: 0xaaddff, transparent: true, opacity: 0.70,
-          side: THREE.DoubleSide, depthWrite: false,
-        }))
-        shock.position.set(fx.ipx, 0.03, fx.ipz)
-        this.threeScene.add(shock)
-        this.hitEffects.push({ mesh: shock, elapsed: 0, duration: 0.28, maxRadius: 2.2 })
-      }
-
-      if (t < 1.0) {
-        keep.push(fx)
-      } else {
-        fx.pivot.removeFromParent()
-        fx.blade.geometry.dispose()
-        ;(fx.blade.material as THREE.Material).dispose()
-        fx.fanMesh.removeFromParent()
-        fx.fanMesh.geometry.dispose()
-        ;(fx.fanMesh.material as THREE.Material).dispose()
-      }
-    }
-    this.swordSlashFx = keep
-  }
-
-  private spawnAxeSweep(webbs: Webbs3D): void {
-    const radius = AXE_RADIUS
-    const geo = new THREE.RingGeometry(radius * 0.4, radius, 32, 1, 0, Math.PI)
-    geo.rotateX(-Math.PI / 2)
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xff8844, transparent: true, opacity: 0.5, side: THREE.DoubleSide,
-    })
-    const sweep = new THREE.Mesh(geo, mat)
-    sweep.position.set(webbs.collisionBody.x, 0.10, webbs.collisionBody.z)
-    sweep.rotation.y = Math.atan2(webbs.facingX, webbs.facingZ) - Math.PI / 2
-    this.threeScene.add(sweep)
-    this.axeSweepFx.push({
-      mesh: sweep, elapsed: 0, duration: 0.36,
-      initialRotY: sweep.rotation.y, sweepRange: Math.PI,
-    })
-  }
-
-  private tickAxeSweepFx(delta: number): void {
-    const keep: typeof this.axeSweepFx = []
-    for (const fx of this.axeSweepFx) {
-      fx.elapsed += delta
-      const t = fx.elapsed / fx.duration
-      if (t >= 1) {
-        fx.mesh.removeFromParent()
-        fx.mesh.geometry.dispose()
-        ;(fx.mesh.material as THREE.Material).dispose()
-        continue
-      }
-      fx.mesh.rotation.y = fx.initialRotY + fx.sweepRange * t
-      ;(fx.mesh.material as THREE.MeshBasicMaterial).opacity = 0.5 * (1 - t)
-      keep.push(fx)
-    }
-    this.axeSweepFx = keep
-  }
 
   // ── Weapon activation ─────────────────────────────────────────────────────
   // aim: normalized direction override (e.g. mouse-to-world direction)
@@ -420,15 +252,18 @@ export class WeaponUseSystem3D {
     if (webbs.stamina <= 0) return
     webbs.stamina = Math.max(0, webbs.stamina - SWORD_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = SWORD_CD
-    webbs.legs.triggerAnim(slot, ANIM_SWORD, webbs.facingX, webbs.facingZ, SWORD_REACH)
-    this.spawnSwordSlash(webbs)   // Round 8 Issue 5: vertical overhead slash
+    // Round 9 Issue 3: the LEG carrying the sword now performs the overhead slam.
+    webbs.legs.startWeaponSwing(slot, 'sword', webbs.facingX, webbs.facingZ)
     this.activeSwings.push({
+      webbs,
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
       facingX: webbs.facingX,    facingZ: webbs.facingZ,
       radius: SWORD_RADIUS, sweepDeg: SWORD_SWEEP,
       damage: SWORD_DMG,    knockback: SWORD_KB,
-      remaining: ANIM_SWORD,
+      remaining: 0.30,                 // matches sword swing duration
       hitEnemies: new Set(),
+      impactDist: 1.1, staggerDur: SWORD_STAGGER, reactionStyle: 'sword',
+      particleColor: 0xff4422, particleCount: 12,
       ringMaxR: 0.8, ringDur: 0.55, ringColor: 0xaaaaff,
       shakeI: SHAKE_SWORD.i, shakeD: SHAKE_SWORD.d,
       ringFired: false,
@@ -441,15 +276,18 @@ export class WeaponUseSystem3D {
     if (webbs.stamina <= 0) return
     webbs.stamina = Math.max(0, webbs.stamina - AXE_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = AXE_CD
-    webbs.legs.triggerAnim(slot, ANIM_AXE, webbs.facingX, webbs.facingZ, AXE_REACH)
-    this.spawnAxeSweep(webbs)   // Round 8 Issue 5: horizontal 180° sweep
+    // Round 9 Issue 3: leg performs the 180° horizontal sweep itself.
+    webbs.legs.startWeaponSwing(slot, 'axe', webbs.facingX, webbs.facingZ)
     this.activeSwings.push({
+      webbs,
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
       facingX: webbs.facingX,    facingZ: webbs.facingZ,
       radius: AXE_RADIUS, sweepDeg: AXE_SWEEP,
       damage: AXE_DMG,    knockback: AXE_KB,
-      remaining: ANIM_AXE,
+      remaining: 0.40,
       hitEnemies: new Set(),
+      impactDist: 1.1, staggerDur: AXE_STAGGER, reactionStyle: 'axe',
+      particleColor: 0xff4422, particleCount: 18,
       ringMaxR: 1.0, ringDur: 0.45, ringColor: 0xaa6633,
       shakeI: SHAKE_AXE.i, shakeD: SHAKE_AXE.d,
       ringFired: false,
@@ -462,15 +300,18 @@ export class WeaponUseSystem3D {
     if (webbs.stamina <= 0) return
     webbs.stamina = Math.max(0, webbs.stamina - GLOVES_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = GLOVES_CD
-    webbs.legs.triggerAnim(slot, ANIM_GLOVES, webbs.facingX, webbs.facingZ, GLOVES_REACH)
-    this.spawnSwingFan(webbs, GLOVES_RADIUS, GLOVES_CONE, 0xeeddaa, ANIM_GLOVES)
+    // Round 9 Issue 3: toothpick stab — quick lunge forward + back.
+    webbs.legs.startWeaponSwing(slot, 'stab', webbs.facingX, webbs.facingZ)
     this.activeSwings.push({
+      webbs,
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
       facingX: webbs.facingX,    facingZ: webbs.facingZ,
       radius: GLOVES_RADIUS, sweepDeg: GLOVES_CONE,
       damage: GLOVES_DMG,    knockback: GLOVES_KB,
-      remaining: ANIM_GLOVES,
+      remaining: 0.18,
       hitEnemies: new Set(),
+      impactDist: 1.1, staggerDur: GLOVES_STAGGER, reactionStyle: 'stab',
+      particleColor: 0xaaccff, particleCount: 6,
       ringMaxR: 0.9, ringDur: 0.35, ringColor: 0xeeddaa,
       shakeI: SHAKE_GLOVES.i, shakeD: SHAKE_GLOVES.d,
       ringFired: false,
@@ -507,72 +348,78 @@ export class WeaponUseSystem3D {
     })
   }
 
-  // ── Swing fan VFX — pie-slice that matches exact hit geometry ─────────────
-
-  private spawnSwingFan(
-    webbs:    Webbs3D,
-    radius:   number,
-    sweepDeg: number,
-    color:    number,
-    duration: number,
-  ): void {
-    const facing   = Math.atan2(webbs.facingX, webbs.facingZ)
-    const half     = (sweepDeg / 2) * DEG
-    const segments = Math.max(8, Math.round(sweepDeg / 10))
-
-    // Build pie-slice vertices in local XZ space (y=0), center at origin
-    const verts: number[] = [0, 0, 0]
-    for (let i = 0; i <= segments; i++) {
-      const a = facing - half + (i / segments) * sweepDeg * DEG
-      verts.push(Math.sin(a) * radius, 0, Math.cos(a) * radius)
-    }
-    const tris: number[] = []
-    for (let i = 0; i < segments; i++) tris.push(0, i + 1, i + 2)
-
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
-    geo.setIndex(tris)
-    const mat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false,
-    })
-    const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(webbs.collisionBody.x, 0.04, webbs.collisionBody.z)
-    this.threeScene.add(mesh)
-    this.hitEffects.push({ mesh, elapsed: 0, duration, maxRadius: 1, fadeOnly: true })
-  }
 
   // ── Per-frame swing hit detection ─────────────────────────────────────────
   // Runs every frame for the full animation window so partial-range hits land.
 
+  // Round 9b — map ActiveSwing.reactionStyle back to WeaponType for death-anim dispatch.
+  private weaponForStyle(style: string): WeaponType {
+    switch (style) {
+      case 'sword': return WeaponType.Sword
+      case 'axe':   return WeaponType.Axe
+      case 'stab':  return WeaponType.BoxingGloves
+      default:      return WeaponType.Empty
+    }
+  }
+
+  // Round 9 Issue 3 — hit detection now centres on the leg's IMPACT POINT
+  // (player position + facing × impactDist) instead of the player body, so the
+  // sword/axe/stab reach the same distance the weapon visibly extends.
+  // Also applies stagger, hit-reaction wobble, and splatter particles.
   private checkSwingHits(delta: number): void {
     const keep: ActiveSwing[] = []
     for (const sw of this.activeSwings) {
       sw.remaining -= delta
+
+      // Impact point in front of the (current) player position
+      const ix = sw.webbs.collisionBody.x + sw.facingX * sw.impactDist
+      const iz = sw.webbs.collisionBody.z + sw.facingZ * sw.impactDist
       const facingAngle = Math.atan2(sw.facingX, sw.facingZ)
       const halfRad     = (sw.sweepDeg / 2) * DEG
+      const fullCircle  = sw.sweepDeg >= 359.9
 
       for (const enemy of this.enemies) {
         if (enemy.isDead() || sw.hitEnemies.has(enemy)) continue
-        const dx = enemy.collisionBody.x - sw.px
-        const dz = enemy.collisionBody.z - sw.pz
+        const dx = enemy.collisionBody.x - ix
+        const dz = enemy.collisionBody.z - iz
         const dist = Math.sqrt(dx * dx + dz * dz)
         if (dist - enemy.config.bodyRadius > sw.radius) continue
-        const toEnemy = Math.atan2(dx, dz)
-        if (Math.abs(wrapAngle(toEnemy - facingAngle)) <= halfRad) {
-          sw.hitEnemies.add(enemy)
-          enemy.takeDamage(sw.damage, this.resolveZone(enemy, sw.px, sw.pz))
-          const kx = Math.sin(toEnemy) * sw.knockback
-          const kz = Math.cos(toEnemy) * sw.knockback
-          enemy.applyKnockback(kx, kz)
-          this.lastHitFrame = true
+        if (!fullCircle) {
+          const toEnemy = Math.atan2(dx, dz)
+          if (Math.abs(wrapAngle(toEnemy - facingAngle)) > halfRad) continue
+        }
 
-          if (!sw.ringFired) {
-            sw.ringFired = true
-            const pos = new THREE.Vector3(sw.px, 0, sw.pz)
-            this.spawnHitRing(pos, sw.ringMaxR, sw.ringDur, sw.ringColor)
-            this.lastShakeIntensity = sw.shakeI
-            this.lastShakeDuration  = sw.shakeD
-          }
+        sw.hitEnemies.add(enemy)
+        enemy.takeDamage(sw.damage, this.resolveZone(enemy, sw.px, sw.pz), this.weaponForStyle(sw.reactionStyle))
+
+        // Knockback away from PLAYER (so enemy flies away from Webbs, not from
+        // the impact point — the latter would slam them straight up into Webbs).
+        const pdx = enemy.collisionBody.x - sw.webbs.collisionBody.x
+        const pdz = enemy.collisionBody.z - sw.webbs.collisionBody.z
+        const plen = Math.hypot(pdx, pdz) || 1
+        enemy.applyKnockback((pdx / plen) * sw.knockback, (pdz / plen) * sw.knockback)
+
+        // Stagger + visual hit reaction
+        enemy.staggerTimer = Math.max(enemy.staggerTimer, sw.staggerDur)
+        enemy.startHitReaction(sw.reactionStyle)
+
+        // Splatter particles
+        if (this.onSpawnHitParticles) {
+          this.onSpawnHitParticles(
+            enemy.collisionBody.x,
+            enemy.config.bodyRadius * 0.5,
+            enemy.collisionBody.z,
+            sw.particleColor, sw.particleCount,
+          )
+        }
+
+        this.lastHitFrame = true
+
+        if (!sw.ringFired) {
+          sw.ringFired = true
+          this.spawnHitRing(new THREE.Vector3(ix, 0, iz), sw.ringMaxR, sw.ringDur, sw.ringColor)
+          this.lastShakeIntensity = sw.shakeI
+          this.lastShakeDuration  = sw.shakeD
         }
       }
 
@@ -600,9 +447,15 @@ export class WeaponUseSystem3D {
         const dist = Math.sqrt(dx * dx + dz * dz)
         if (dist < enemy.config.bodyRadius + BOW_PROJ_R + 0.04) {
           enemy.addStuckThistle()
-          enemy.takeDamage(BOW_DMG, WeakPointZone.Body)
+          enemy.takeDamage(BOW_DMG, WeakPointZone.Body, WeaponType.Bow)
           const len = Math.hypot(proj.vx, proj.vz) || 1
           enemy.applyKnockback((proj.vx / len) * BOW_KB, (proj.vz / len) * BOW_KB)
+          // Round 9 Issue 4 — stagger + visual reaction + splatter on bow hits.
+          enemy.staggerTimer = Math.max(enemy.staggerTimer, BOW_STAGGER)
+          enemy.startHitReaction('small')
+          if (this.onSpawnHitParticles) {
+            this.onSpawnHitParticles(enemy.collisionBody.x, 0.3, enemy.collisionBody.z, 0xcc99ff, 6)
+          }
           this.spawnHitRing(proj.mesh.position, 0.5, 0.3, 0xcc99ff)
           proj.mesh.removeFromParent()
           this.lastHitFrame = true
