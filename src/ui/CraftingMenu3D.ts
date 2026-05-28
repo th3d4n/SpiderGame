@@ -4,6 +4,7 @@ import { registry } from '../core/Registry'
 import type { InputManager } from '../core/InputManager'
 import type { WeaponType } from '../systems/WeaponSystem'
 import { weaponIconSvg } from './WeaponIcon3D'
+import { audio } from '../systems/AudioManager'
 
 const MAT_ABBREV: Record<MaterialType, string> = {
   SilkThread: 'SLK', ChitinShard: 'CHT', VenomGland: 'VNM',
@@ -44,12 +45,13 @@ export class CraftingMenu3D {
     this.isOpen = true
     this.refreshInventory()
     this.renderSelection()
+    audio.play('workbench_open')
   }
 
   update(input: InputManager): void {
     if (!this.isOpen) return
-    if (input.justDown('ArrowUp'))   { this.selectedIndex = (this.selectedIndex - 1 + RECIPES.length) % RECIPES.length; this.renderSelection() }
-    if (input.justDown('ArrowDown')) { this.selectedIndex = (this.selectedIndex + 1) % RECIPES.length; this.renderSelection() }
+    if (input.justDown('ArrowUp'))   { this.selectedIndex = (this.selectedIndex - 1 + RECIPES.length) % RECIPES.length; this.renderSelection(); audio.play('ui_hover') }
+    if (input.justDown('ArrowDown')) { this.selectedIndex = (this.selectedIndex + 1) % RECIPES.length; this.renderSelection(); audio.play('ui_hover') }
     if (input.justDown('Space'))   this.tryCraft()
     if (input.justDown('Escape'))  this.close()
   }
@@ -58,6 +60,7 @@ export class CraftingMenu3D {
     this.panel.style.display = 'none'
     this.overlay.style.display = 'none'
     this.isOpen = false
+    audio.play('ui_back')
     this.onClose?.()
   }
 
@@ -206,6 +209,7 @@ export class CraftingMenu3D {
     if (isFirstDiscover && this.onFirstDiscover) {
       this.onFirstDiscover(recipe.produces)
     } else {
+      audio.play('crafting_complete')
       this.flash(`Crafted: ${recipe.displayName}`, '#7777ff')
     }
   }

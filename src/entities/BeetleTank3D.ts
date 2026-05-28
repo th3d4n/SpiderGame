@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D, WeakPointZone } from './Enemy3D'
 import { physicsWorld } from '../core/PhysicsWorld'
 import { WeaponType } from '../systems/WeaponSystem'
+import { audio } from '../systems/AudioManager'
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 const CONFIG: EnemyConfig3D = {
@@ -27,6 +28,7 @@ type BeetleState = 'PATROL' | 'WINDUP' | 'CHARGING' | 'RECOVERING'
 
 export class BeetleTank3D extends Enemy3D {
   private state:         BeetleState = 'PATROL'
+  private prevBeetleState: BeetleState = 'PATROL'   // Round 10 — for transition SFX
   private patrolDir      = 1          // +1 right, -1 left
   private chargeTimer    = 0
   private chargeCooldown = 0
@@ -107,6 +109,20 @@ export class BeetleTank3D extends Enemy3D {
   updateAI(delta: number, playerX: number, playerZ: number): void {
     this.chargeCooldown = Math.max(0, this.chargeCooldown - delta)
     this.tickSlamRings(delta)
+
+    // Round 10 — beetle state-transition SFX
+    if (this.state !== this.prevBeetleState) {
+      const cx = this.collisionBody.x, cz = this.collisionBody.z
+      if (this.state === 'WINDUP')        audio.play('beetle_charge_windup', cx, cz)
+      else if (this.state === 'RECOVERING' && this.prevBeetleState === 'CHARGING') {
+        audio.play('beetle_charge_crash', cx, cz)
+      }
+      else if (this.state === 'PATROL')   audio.playLoop('beetle_walk', cx, cz)
+      else if (this.state === 'CHARGING') audio.playLoop('beetle_charging', cx, cz)
+      if (this.prevBeetleState === 'PATROL')   audio.stopLoop('beetle_walk')
+      if (this.prevBeetleState === 'CHARGING') audio.stopLoop('beetle_charging')
+      this.prevBeetleState = this.state
+    }
 
     const dx   = playerX - this.collisionBody.x
     const dz   = playerZ - this.collisionBody.z
@@ -237,6 +253,11 @@ export class BeetleTank3D extends Enemy3D {
   // Round 9b — beetle death animations.  The shell is the centrepiece — each
   // weapon either cracks it, shatters it, flips the beetle off it, or cooks it.
   // ───────────────────────────────────────────────────────────────────────────
+  override startHitReaction(style: 'small' | 'medium' | 'large' | 'stab' | 'sword' | 'axe'): void {
+    super.startHitReaction(style)
+    audio.play('beetle_hit', this.collisionBody.x, this.collisionBody.z)
+  }
+
   override startDeath(weapon: WeaponType): void {
     if (this.deathState) return
     const durations: Partial<Record<WeaponType, number>> = {
@@ -256,6 +277,18 @@ export class BeetleTank3D extends Enemy3D {
       duration: durations[weapon] ?? 1.0,
       phase: 'initial',
     }
+
+    // Round 10 — per-weapon death SFX
+    const cx = this.collisionBody.x, cz = this.collisionBody.z
+    const deathKey = weapon === WeaponType.Sword         ? 'beetle_death_sword'
+                   : weapon === WeaponType.Axe           ? 'beetle_death_axe'
+                   : weapon === WeaponType.BoxingGloves  ? 'beetle_death_stab'
+                   : weapon === WeaponType.FlameBreather ? 'beetle_death_flame'
+                   :                                       'beetle_death_generic'
+    audio.stopLoop('beetle_walk')
+    audio.stopLoop('beetle_charging')
+    audio.play(deathKey, cx, cz)
+
     switch (weapon) {
       case WeaponType.Sword:         this.setupSwordDeath(); break
       case WeaponType.Axe:           this.setupAxeDeath();   break

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D } from './Enemy3D'
 import { WeaponType } from '../systems/WeaponSystem'
+import { audio } from '../systems/AudioManager'
 
 const PATROL_SPEED = 1.15   // wu/s  (115 px/s × 0.01)
 const CHARGE_SPEED = 3.90   // wu/s  (390 px/s × 0.01)
@@ -25,6 +26,7 @@ export class RollerBoss3D extends Enemy3D {
   private attackState: AttackState = 'idle'
   private attackTimer  = 0
   private attackCooldown = 0
+  private phaseChangeFired = false
 
   // One-shot event flags — scene reads these each frame and resets after
   justStartedBodySlam     = false
@@ -38,6 +40,7 @@ export class RollerBoss3D extends Enemy3D {
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     super(threeScene, x, z, CONFIG, gradientMap)
     this.buildVisuals()
+    audio.playLoop('boss_idle', x, z)
   }
 
   buildVisuals(): void {
@@ -162,6 +165,7 @@ export class RollerBoss3D extends Enemy3D {
     this.attackTimer    = 0.58
     this.attackCooldown = 2.6
     this.justStartedBodySlam = true
+    audio.play('boss_charge', this.collisionBody.x, this.collisionBody.z)
   }
 
   private doGroundPound(): void {
@@ -170,6 +174,7 @@ export class RollerBoss3D extends Enemy3D {
     this.attackState    = 'groundPound'
     this.attackTimer    = 0.7
     this.attackCooldown = 3.8
+    audio.play('boss_suction', this.collisionBody.x, this.collisionBody.z)
   }
 
   private doTailSwipe(): void {
@@ -188,6 +193,15 @@ export class RollerBoss3D extends Enemy3D {
   isTailSwiping():    boolean { return this.attackState === 'tailSwipe'   }
   getFacingDir():     number  { return this.facingDir }
   getHealthRatio():   number  { return Math.max(0, this.hp / this.hpMax) }
+
+  override startHitReaction(style: 'small' | 'medium' | 'large' | 'stab' | 'sword' | 'axe'): void {
+    super.startHitReaction(style)
+    audio.play('boss_hit', this.collisionBody.x, this.collisionBody.z)
+    if (!this.phaseChangeFired && this.hp <= this.hpMax * 0.5) {
+      this.phaseChangeFired = true
+      audio.play('boss_phase_change', this.collisionBody.x, this.collisionBody.z)
+    }
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // Round 9b — boss death sequences (2-3s cinematic with camera shake).
@@ -216,6 +230,8 @@ export class RollerBoss3D extends Enemy3D {
     }
     // Initial impact shake
     Enemy3D.onCameraShake?.(weapon === WeaponType.Axe ? 0.05 : 0.025, 0.4)
+    audio.stopLoop('boss_idle')
+    audio.play('boss_death', this.collisionBody.x, this.collisionBody.z)
 
     // Per-weapon setup (most just set phase / spawn arrows / discolor)
     switch (weapon) {

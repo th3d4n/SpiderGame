@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { Enemy3D } from '../entities/Enemy3D'
 import type { Webbs3D } from '../entities/Webbs3D'
 import { WeaponType } from './WeaponSystem'
+import { audio } from './AudioManager'
 
 // Converted from WebLauncherSystem.ts (Phaser px → Three.js world units × 0.01)
 const PROJECTILE_SPEED      = 7.0   // wu/s   (700px/s)
@@ -192,6 +193,7 @@ export class WebLauncherSystem3D {
         e.takeDamage(5, undefined, WeaponType.WebLauncher)
         this.addSilkWrap(e)
         this.state.attached = { kind: 'enemy', ref: e }
+        audio.play('web_attach_enemy', e.collisionBody.x, e.collisionBody.z)
         this.landProjectile()
         this.startPull(webbs)
         this.updateLine(webbs)
@@ -202,6 +204,7 @@ export class WebLauncherSystem3D {
     // Wall hit
     if (this.wallHitTest(px, pz)) {
       this.state.attached = { kind: 'wall', x: px, z: pz }
+      audio.play('web_attach_wall', px, pz)
       this.landProjectile()
       this.startPull(webbs)
       this.updateLine(webbs)
@@ -218,6 +221,7 @@ export class WebLauncherSystem3D {
   }
 
   private fire(webbs: Webbs3D, aim?: { dx: number; dz: number }): void {
+    audio.play('web_fire', webbs.collisionBody.x, webbs.collisionBody.z)
     let dx = webbs.facingX
     let dz = webbs.facingZ
     if (aim) {
@@ -284,6 +288,8 @@ export class WebLauncherSystem3D {
     if (!this.state?.attached) return
     this.state.pulling     = true
     this.state.pullElapsed = 0
+    audio.play('web_swing', webbs.collisionBody.x, webbs.collisionBody.z)
+    audio.playLoop('web_pull_loop', webbs.collisionBody.x, webbs.collisionBody.z)
 
     // Round 6 Issue 3: stretch the stun across the entire pull plus a brief follow-up
     // so the pulled enemy can't immediately bonk into the player on arrival.
@@ -397,6 +403,7 @@ export class WebLauncherSystem3D {
 
   release(): void {
     if (!this.state) return
+    audio.stopLoop('web_pull_loop')
     if (this.state.projectile) {
       this.threeScene.remove(this.state.projectile.mesh)
       this.state.projectile.mesh.geometry.dispose()

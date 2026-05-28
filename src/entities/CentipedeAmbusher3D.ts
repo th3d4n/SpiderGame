@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D, WeakPointZone } from './Enemy3D'
 import { WeaponType } from '../systems/WeaponSystem'
+import { audio } from '../systems/AudioManager'
 
 // ── Stats (pixel values × 0.01 = world units) ────────────────────────────────
 const CONFIG: EnemyConfig3D = {
@@ -45,6 +46,7 @@ type CentState = 'HIDING' | 'BURSTING' | 'TRACKING' | 'WINDUP' | 'LUNGING' | 'RE
 
 export class CentipedeAmbusher3D extends Enemy3D {
   private state:       CentState = 'HIDING'
+  private prevState:   CentState = 'HIDING'   // Round 10 — transition detection for one-shot SFX
   private stateTimer   = 0
   private lungeDir     = new THREE.Vector2(0, 1)
   private facingAngle  = 0
@@ -130,6 +132,15 @@ export class CentipedeAmbusher3D extends Enemy3D {
     const dist = Math.sqrt(dx * dx + dz * dz)
 
     this.stateTimer += delta
+    // Round 10 — emit transition SFX (compare with prevState captured at end of frame).
+    if (this.state !== this.prevState) {
+      const cx = this.collisionBody.x, cz = this.collisionBody.z
+      if (this.state === 'BURSTING')        audio.play('centipede_burst', cx, cz)
+      else if (this.state === 'LUNGING')    audio.play('centipede_attack', cx, cz)
+      else if (this.state === 'TRACKING')   audio.playLoop('centipede_skitter', cx, cz)
+      if (this.prevState === 'TRACKING')    audio.stopLoop('centipede_skitter')
+      this.prevState = this.state
+    }
 
     switch (this.state) {
       case 'HIDING': {
@@ -252,6 +263,11 @@ export class CentipedeAmbusher3D extends Enemy3D {
   }> = []
   private frontFlipAngle = 0
 
+  override startHitReaction(style: 'small' | 'medium' | 'large' | 'stab' | 'sword' | 'axe'): void {
+    super.startHitReaction(style)
+    audio.play('centipede_hit', this.collisionBody.x, this.collisionBody.z)
+  }
+
   override startDeath(weapon: WeaponType): void {
     if (this.deathState) return
     const durations: Partial<Record<WeaponType, number>> = {
@@ -272,6 +288,18 @@ export class CentipedeAmbusher3D extends Enemy3D {
       duration: durations[weapon] ?? 0.80,
       phase:    'initial',
     }
+
+    // Round 10 — per-weapon death SFX (3D positional)
+    const cx = this.collisionBody.x, cz = this.collisionBody.z
+    const deathKey = weapon === WeaponType.Sword         ? 'centipede_death_sword'
+                   : weapon === WeaponType.Axe           ? 'centipede_death_axe'
+                   : weapon === WeaponType.BoxingGloves  ? 'centipede_death_stab'
+                   : weapon === WeaponType.Bow           ? 'centipede_death_bow'
+                   : weapon === WeaponType.FlameBreather ? 'centipede_death_flame'
+                   :                                       'centipede_death_generic'
+    audio.stopLoop('centipede_skitter')
+    audio.play(deathKey, cx, cz)
+
     switch (weapon) {
       case WeaponType.Sword:         this.setupSwordDeath(); break
       case WeaponType.Axe:           this.setupAxeDeath();   break

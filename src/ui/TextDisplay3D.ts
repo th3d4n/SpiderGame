@@ -1,4 +1,5 @@
 import type { InputManager } from '../core/InputManager'
+import { audio } from '../systems/AudioManager'
 
 export interface TextDisplayData {
   pages:        string[]
@@ -66,7 +67,7 @@ export class TextDisplay3D {
   update(input: InputManager): void {
     if (!this.isOpen) return
     if (input.justDown('KeyM')) {
-      if (this.pageIndex < this.pages.length - 1) this.showPage(this.pageIndex + 1)
+      if (this.pageIndex < this.pages.length - 1) { this.showPage(this.pageIndex + 1); audio.play('ui_text_advance') }
       else this.close()
     }
     if (input.justDown('Space')) this.close()

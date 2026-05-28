@@ -4,6 +4,7 @@ import { registry } from '../core/Registry'
 import type { InputManager } from '../core/InputManager'
 import type { Webbs3D } from '../entities/Webbs3D'
 import { weaponIconSvg } from './WeaponIcon3D'
+import { audio } from '../systems/AudioManager'
 
 const SLOT_COUNT = 8
 
@@ -49,12 +50,13 @@ export class EquipScreen3D {
         this.selectedSlot = i
         this.focusedPanel = 'slots'
         this.refresh()
+        audio.play('ui_hover')
         return
       }
     }
 
-    if (input.justDown('ArrowLeft'))  { this.focusedPanel = 'slots'; this.refresh(); return }
-    if (input.justDown('ArrowRight')) { this.focusedPanel = 'inv';   this.refresh(); return }
+    if (input.justDown('ArrowLeft'))  { this.focusedPanel = 'slots'; this.refresh(); audio.play('ui_hover'); return }
+    if (input.justDown('ArrowRight')) { this.focusedPanel = 'inv';   this.refresh(); audio.play('ui_hover'); return }
 
     if (input.justDown('ArrowUp') || input.justDown('ArrowDown')) {
       const dir = input.justDown('ArrowUp') ? -1 : 1
@@ -69,12 +71,14 @@ export class EquipScreen3D {
         this.selectedInvIdx = (this.selectedInvIdx + dir + this.uniqueWeapons.length) % this.uniqueWeapons.length
       }
       this.refresh()
+      audio.play('ui_hover')
       return
     }
 
     if (input.justDown('Enter') || input.justDown('NumpadEnter')) {
       if (this.uniqueWeapons.length > 0 && this.webbs.weaponSystem.isSlotUnlocked(this.selectedSlot)) {
         this.equipWeapon(this.uniqueWeapons[this.selectedInvIdx])
+        audio.play('ui_click')
       }
       return
     }
@@ -82,6 +86,7 @@ export class EquipScreen3D {
     if (input.justDown('KeyX')) {
       if (this.webbs.weaponSystem.isSlotUnlocked(this.selectedSlot)) {
         this.unequipSlot(this.selectedSlot)
+        audio.play('ui_click')
       }
     }
   }
@@ -90,6 +95,7 @@ export class EquipScreen3D {
     this.panel.style.display = 'none'
     this.overlay.style.display = 'none'
     this.isOpen = false
+    audio.play('ui_back')
     this.onClose?.()
   }
 
@@ -326,6 +332,7 @@ export class EquipScreen3D {
     this.webbs.weaponSystem.equip(this.selectedSlot, wt)
     registry.set('equippedSlots', this.webbs.weaponSystem.getAllSlots())
     this.refresh()
+    if (wt === WeaponType.WebLauncher) audio.play('web_launcher_equipped')
   }
 
   private unequipSlot(slot: number): void {

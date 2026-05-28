@@ -5,6 +5,7 @@ import type { Webbs3D } from '../entities/Webbs3D'
 import { registry } from '../core/Registry'
 import { BeetleTank3D } from '../entities/BeetleTank3D'
 import { RollerBoss3D } from '../entities/RollerBoss3D'
+import { audio } from './AudioManager'
 
 // ── Weapon constants (pixel values × 0.01 = world units) ────────────────────
 // Round 9 Issue 3+4: wider hit radii so the impact-point check lands cleanly,
@@ -157,6 +158,8 @@ export class WeaponUseSystem3D {
     ;(this.flameMesh.material as THREE.MeshBasicMaterial).opacity = 0.35 + Math.random() * 0.4
 
     this.flameActive = true
+    audio.playLoop('flame_loop', webbs.collisionBody.x, webbs.collisionBody.z)
+    audio.updateLoopPosition('flame_loop', webbs.collisionBody.x, webbs.collisionBody.z)
 
     // Per-frame DPS in 45° cone
     const facingAngle = Math.atan2(fx / flen, fz / flen)
@@ -192,6 +195,7 @@ export class WeaponUseSystem3D {
     }
     this.flameActive    = false
     this.flameAnimTimer = 0
+    audio.stopLoop('flame_loop')
   }
 
   // ── Per-frame update ───────────────────────────────────────────────────────
@@ -254,6 +258,7 @@ export class WeaponUseSystem3D {
     this.cooldowns[slot] = SWORD_CD
     // Round 9 Issue 3: the LEG carrying the sword now performs the overhead slam.
     webbs.legs.startWeaponSwing(slot, 'sword', webbs.facingX, webbs.facingZ)
+    audio.play('sword_swing', webbs.collisionBody.x, webbs.collisionBody.z)
     this.activeSwings.push({
       webbs,
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
@@ -278,6 +283,7 @@ export class WeaponUseSystem3D {
     this.cooldowns[slot] = AXE_CD
     // Round 9 Issue 3: leg performs the 180° horizontal sweep itself.
     webbs.legs.startWeaponSwing(slot, 'axe', webbs.facingX, webbs.facingZ)
+    audio.play('axe_swing', webbs.collisionBody.x, webbs.collisionBody.z)
     this.activeSwings.push({
       webbs,
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
@@ -302,6 +308,7 @@ export class WeaponUseSystem3D {
     this.cooldowns[slot] = GLOVES_CD
     // Round 9 Issue 3: toothpick stab — quick lunge forward + back.
     webbs.legs.startWeaponSwing(slot, 'stab', webbs.facingX, webbs.facingZ)
+    audio.play('toothpick_stab', webbs.collisionBody.x, webbs.collisionBody.z)
     this.activeSwings.push({
       webbs,
       px: webbs.collisionBody.x, pz: webbs.collisionBody.z,
@@ -333,6 +340,8 @@ export class WeaponUseSystem3D {
     webbs.stamina = Math.max(0, webbs.stamina - BOW_STAMINA * this.staminaDrainMult)
     this.cooldowns[slot] = BOW_CD
     webbs.legs.triggerAnim(slot, ANIM_BOW, webbs.facingX, webbs.facingZ)
+    audio.play('bow_draw', webbs.collisionBody.x, webbs.collisionBody.z)
+    audio.play('bow_release', webbs.collisionBody.x, webbs.collisionBody.z)
 
     const geo = new THREE.SphereGeometry(BOW_PROJ_R, 8, 6)
     const mat = new THREE.MeshToonMaterial({ color: 0xcc99ff })
@@ -392,6 +401,13 @@ export class WeaponUseSystem3D {
         sw.hitEnemies.add(enemy)
         enemy.takeDamage(sw.damage, this.resolveZone(enemy, sw.px, sw.pz), this.weaponForStyle(sw.reactionStyle))
 
+        // Round 10 — weapon hit feedback (3D positional)
+        const hitKey = sw.reactionStyle === 'sword' ? 'sword_hit_enemy'
+                     : sw.reactionStyle === 'axe'   ? 'axe_hit_enemy'
+                     : sw.reactionStyle === 'stab'  ? 'toothpick_hit'
+                     : 'sword_hit_enemy'
+        audio.play(hitKey, enemy.collisionBody.x, enemy.collisionBody.z)
+
         // Knockback away from PLAYER (so enemy flies away from Webbs, not from
         // the impact point — the latter would slam them straight up into Webbs).
         const pdx = enemy.collisionBody.x - sw.webbs.collisionBody.x
@@ -423,7 +439,14 @@ export class WeaponUseSystem3D {
         }
       }
 
-      if (sw.remaining > 0) keep.push(sw)
+      if (sw.remaining > 0) {
+        keep.push(sw)
+      } else if (sw.hitEnemies.size === 0) {
+        const groundKey = sw.reactionStyle === 'sword' ? 'sword_hit_ground'
+                        : sw.reactionStyle === 'axe'   ? 'axe_hit_ground'
+                        :                                'sword_hit_ground'
+        audio.play(groundKey, sw.webbs.collisionBody.x, sw.webbs.collisionBody.z)
+      }
     }
     this.activeSwings = keep
   }
@@ -434,7 +457,11 @@ export class WeaponUseSystem3D {
     const keep: Projectile3D[] = []
     for (const proj of this.projectiles) {
       proj.life -= delta
-      if (proj.life <= 0) { proj.mesh.removeFromParent(); continue }
+      if (proj.life <= 0) {
+        audio.play('bow_hit_wall', proj.mesh.position.x, proj.mesh.position.z)
+        proj.mesh.removeFromParent()
+        continue
+      }
 
       proj.mesh.position.x += proj.vx * delta
       proj.mesh.position.z += proj.vz * delta
@@ -448,6 +475,7 @@ export class WeaponUseSystem3D {
         if (dist < enemy.config.bodyRadius + BOW_PROJ_R + 0.04) {
           enemy.addStuckThistle()
           enemy.takeDamage(BOW_DMG, WeakPointZone.Body, WeaponType.Bow)
+          audio.play('bow_hit_enemy', enemy.collisionBody.x, enemy.collisionBody.z)
           const len = Math.hypot(proj.vx, proj.vz) || 1
           enemy.applyKnockback((proj.vx / len) * BOW_KB, (proj.vz / len) * BOW_KB)
           // Round 9 Issue 4 — stagger + visual reaction + splatter on bow hits.

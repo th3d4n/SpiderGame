@@ -4,6 +4,7 @@ import { WEAPON_DATA, WEAPON_COLORS } from '../config/WeaponData'
 import { type CollisionBody, physicsWorld } from '../core/PhysicsWorld'
 import { InputManager } from '../core/InputManager'
 import { SpiderLegs, createFuzzyBodyTexture } from './SpiderLegs'
+import { audio } from '../systems/AudioManager'
 
 // ─── Scale factor ─────────────────────────────────────────────────────────────
 // 100 Phaser pixels = 1 Three.js world unit
@@ -47,6 +48,12 @@ export class Webbs3D {
 
   // Round 8 Issue 6: presented item visual during celebration
   private presentedItemMesh: THREE.Object3D | null = null
+
+  // Round 10 — footstep cadence (Webbs has 8 legs but we trigger one sound per step cycle)
+  private stepTimer = 0
+  private deathSoundFired = false
+  private windedSoundFired = false
+  floorType: 'dirt' | 'stone' = 'dirt'
 
   // ── Gameplay fields (all carried over from Webbs.ts) ──────────────────────
   hp             = PLAYER_MAX_HP
@@ -246,6 +253,25 @@ export class Webbs3D {
       this.group.rotation.y = Math.atan2(dx, dz)
     }
 
+    // Round 10 — footstep cadence.  ~3.5 steps/s while moving on the ground.
+    const moving = (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) && this.dodgeTimer <= 0
+    if (moving) {
+      this.stepTimer += delta
+      if (this.stepTimer >= 0.28) {
+        this.stepTimer = 0
+        audio.play(this.floorType === 'stone' ? 'footstep_stone' : 'footstep_dirt',
+          this.collisionBody.x, this.collisionBody.z)
+      }
+    } else {
+      this.stepTimer = 0
+    }
+
+    // Trigger one-shot death sound on the frame HP hits zero.
+    if (!this.deathSoundFired && this.hp <= 0) {
+      this.deathSoundFired = true
+      audio.play('webbs_death', this.collisionBody.x, this.collisionBody.z)
+    }
+
     // Stamina + energy regen
     if (this.stamina < this.maxStamina)
       this.stamina = Math.min(this.maxStamina, this.stamina + STAMINA_REGEN * this.staminaRegenMult * delta)
@@ -253,8 +279,16 @@ export class Webbs3D {
       this.energy = Math.min(this.maxEnergy, this.energy + 5 * delta)
 
     // Winded: engages at 0 stamina, clears above 20% max
-    if (this.stamina <= 0) this.winded = true
-    else if (this.winded && this.stamina >= this.maxStamina * STAMINA_RECOVER_AT) this.winded = false
+    if (this.stamina <= 0) {
+      if (!this.winded && !this.windedSoundFired) {
+        this.windedSoundFired = true
+        audio.play('stamina_winded', this.collisionBody.x, this.collisionBody.z)
+      }
+      this.winded = true
+    } else if (this.winded && this.stamina >= this.maxStamina * STAMINA_RECOVER_AT) {
+      this.winded = false
+      this.windedSoundFired = false
+    }
 
     // HP regen after grace period
     this.timeSinceDamage += delta
@@ -321,6 +355,9 @@ export class Webbs3D {
     this.hp = Math.max(0, this.hp - amount)
     this.timeSinceDamage = 0
 
+    // Round 10 — pain vocalisation
+    audio.play('webbs_damage', this.collisionBody.x, this.collisionBody.z)
+
     // Red flash on body (new color base = 0x6a4d8a)
     this.bodyMat.color.setHex(0xff3344)
     setTimeout(() => { this.bodyMat.color.setHex(0x6a4d8a) }, 140)
@@ -335,6 +372,7 @@ export class Webbs3D {
     const hpFrac = this.hp / this.hpMax
     if (!this.halfHpLeapTriggered && hpFrac <= 0.5 && hpFrac > 0) {
       this.halfHpLeapTriggered = true
+      audio.play('half_hp_pain', this.collisionBody.x, this.collisionBody.z)
       this.startDodgeLeap()
     }
   }
@@ -345,6 +383,7 @@ export class Webbs3D {
     this.dodgeVx    = -this.facingX * leapSpeed
     this.dodgeVz    = -this.facingZ * leapSpeed
     this.dodgeTimer = 0.25
+    audio.play('webbs_dodge', this.collisionBody.x, this.collisionBody.z)
   }
 
   // Build a web-launcher mount parented to this.group (body-local space).
@@ -397,6 +436,7 @@ export class Webbs3D {
     this.hp = amount ?? this.hpMax
     this.timeSinceDamage = 9999
     this.halfHpLeapTriggered = false   // Round 8 Issue 3: allow re-triggering
+    this.deathSoundFired = false       // Round 10: allow re-triggering after respawn
   }
 
   // ─── Round 8 Issue 6: presented item during celebration pose ──────────────

@@ -6,6 +6,7 @@ import { InputManager } from './core/InputManager'
 import { physicsWorld } from './core/PhysicsWorld'
 import { Webbs3D } from './entities/Webbs3D'
 import { Enemy3D } from './entities/Enemy3D'
+import { audio } from './systems/AudioManager'
 import { HomeBaseScene3D } from './scenes/HomeBaseScene3D'
 import { AntColonyScene3D } from './scenes/AntColonyScene3D'
 import { BossRollerScene3D } from './scenes/BossRollerScene3D'
@@ -198,9 +199,11 @@ pickupCelebration.onClose = () => {
 // Wire the three-phase presentation hooks
 presentation.onShowDiscoveryCard = (wt) => {
   // Phase 2 — purely the discovery card; no tutorial chained inside this overlay.
+  audio.play('celeb_burst')   // Round 10
   pickupCelebration.show(wt)
 }
 presentation.onShowTutorialCard = (wt) => {
+  audio.play('celeb_tutorial')   // Round 10
   // Phase 3 — show the tutorial pages for this weapon if any.
   const tutorial = wt === WeaponType.BoxingGloves ? TUTORIAL_TOOTHPICK
                  : wt === WeaponType.WebLauncher  ? TUTORIAL_WEB_LAUNCHER
@@ -219,6 +222,8 @@ craftingMenu.onFirstDiscover = (wt) => {
   craftingMenu.close()
   gamePaused  = true
   celebZoom   = true
+  audio.play('celeb_swell')   // Round 10 — opening swell into discovery
+  audio.play('crafting_complete')
   presentation.start(wt, webbs, particles)
   xpSystem.award('craft')
 }
@@ -358,6 +363,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         camera.position.set(HomeBaseScene3D.SPAWN_X + CAM_OFFSET.x, CAM_OFFSET.y, CAM_OFFSET.z)
         hud.setZoneLabel('HOME BASE')
         hud.hideBossHp()
+        webbs.floorType = 'dirt'
         break
       }
       case 'antColony': {
@@ -376,6 +382,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         camera.position.set(spawnX + CAM_OFFSET.x, CAM_OFFSET.y, spawnZ + CAM_OFFSET.z)
         hud.setZoneLabel('ZONE 1 — ANT COLONY')
         hud.hideBossHp()
+        webbs.floorType = 'stone'
         break
       }
       case 'bossRoller': {
@@ -395,6 +402,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         )
         registry.set('bossPortalZ', undefined)   // next colony visit re-randomizes portal
         hud.setZoneLabel('BOSS CHAMBER')
+        webbs.floorType = 'stone'
         break
       }
     }
@@ -442,6 +450,9 @@ xpSystem.onGain = (amount, source) => {
   xpValueEl.style.color = '#ffff88'
   setTimeout(() => { xpValueEl.style.color = '#aaffaa' }, 300)
   pickupNotify.notify(`+${amount} XP`, source, '#aaffaa')
+  // Round 10 — XP gain SFX: combo if a kill chain is rolling, otherwise small.
+  if (source === 'kill' || source === 'boss_kill') audio.play('xp_gain_combo')
+  else                                              audio.play('xp_gain_small')
 }
 
 // ─── Combat callbacks ─────────────────────────────────────────────────────────
@@ -473,7 +484,17 @@ Enemy3D.onCameraShake = (intensity, duration) => {
   cameraShakeIntensity = intensity
   cameraShakeRemaining = duration
 }
+
+// Round 10 — Audio mute toggle wiring.
+const audioToggle = document.getElementById('audio-toggle') as HTMLButtonElement | null
+if (audioToggle) {
+  audioToggle.addEventListener('click', () => {
+    if (audio.isMuted()) { audio.unmute(); audioToggle.textContent = 'SOUND ON' }
+    else                 { audio.mute();   audioToggle.textContent = 'SOUND OFF' }
+  })
+}
 let celebZoom        = false   // true while pickup celebration is open
+let energyWasDepleted = false
 
 function gameLoop() {
   requestAnimationFrame(gameLoop)
@@ -597,6 +618,7 @@ function gameLoop() {
               inv[result.mat] = (inv[result.mat] ?? 0) + result.qty
               registry.set('craftingInventory', inv)
               pickupNotify.notify(result.mat, `×${result.qty}`, '#88aa44')
+              audio.play('pickup_notify')
               xpSystem.award('pickup')
             } else {
               hud.flashBossMessage("IT'S A MIMIC!")
@@ -671,6 +693,22 @@ function gameLoop() {
   physicsWorld.update(delta)
   webbs.syncPosition()
 
+  // Round 10 — listener follows player so 3D positional audio pans correctly.
+  audio.setListenerPosition(webbs.collisionBody.x, webbs.collisionBody.z)
+
+  // Low-HP heartbeat: loop while HP < 30%, stop otherwise.
+  const hpFrac = webbs.hp / webbs.hpMax
+  if (hpFrac < 0.30 && hpFrac > 0) audio.playLoop('heartbeat_low_hp')
+  else                              audio.stopLoop('heartbeat_low_hp')
+
+  // Energy-depleted one-shot
+  if (webbs.energy <= 0 && !energyWasDepleted) {
+    energyWasDepleted = true
+    audio.play('energy_depleted')
+  } else if (webbs.energy > 0) {
+    energyWasDepleted = false
+  }
+
   // ── Consumable tick + per-frame buffs ────────────────────────────────────
 
   consumables.tick(delta * 1000)
@@ -693,6 +731,7 @@ function gameLoop() {
         registry.set('craftingInventory', inv)
         ;(activeScene as HomeBaseScene3D).collectMaterialPickup(pick.id)
         pickupNotify.notify(pick.mat, `×${pick.qty}`, '#aabbcc')
+        audio.play('pickup_notify')
         xpSystem.award('pickup')
       }
     } else if (currentZone === 'antColony') {
@@ -705,6 +744,7 @@ function gameLoop() {
           inv[cache.mat] = (inv[cache.mat] ?? 0) + cache.qty
           registry.set('craftingInventory', inv)
           pickupNotify.notify(cache.mat, `×${cache.qty}`, '#88aa44')
+          audio.play('pickup_notify')
           xpSystem.award('pickup')
         }
       }
@@ -715,6 +755,7 @@ function gameLoop() {
         inv['Thistle'] = (inv['Thistle'] ?? 0) + 1
         registry.set('craftingInventory', inv)
         pickupNotify.notify('Thistle seed', '+1', '#cc99ff')
+        audio.play('pickup_notify')
         xpSystem.award('pickup')
       }
     }
@@ -924,6 +965,7 @@ function dismissTitleMenu(el: HTMLElement): void {
 }
 
 function initNewGame(el: HTMLElement): void {
+  audio.play('ui_title_new_game')
   // Wipe save + reset all in-memory state
   saveSystem.deleteSave()
   registry.set('legTier', 0)
@@ -968,6 +1010,7 @@ function initNewGame(el: HTMLElement): void {
 }
 
 function initContinue(el: HTMLElement): void {
+  audio.play('ui_title_continue')
   dismissTitleMenu(el)
   if (!registry.get<boolean>('openingCutsceneSeen')) {
     registry.set('openingCutsceneSeen', true)
