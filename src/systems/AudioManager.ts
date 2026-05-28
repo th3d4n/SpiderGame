@@ -174,9 +174,12 @@ export class AudioManager {
       loop:   cfg.loop ?? false,
       rate:   cfg.rate  ?? 1.0,
       pool:   cfg.pool  ?? 4,
-      // Silent fail — keep console clean while audio assets are pending.
+      // Load error = permanent failure (file missing/corrupt). Play error is
+      // transient — most commonly the browser autoplay policy blocking audio
+      // before the first user gesture. Don't blacklist on play error; the next
+      // playLoop/play call after user interaction will succeed.
       onloaderror: () => { this.failedKeys.add(key); this.sounds.delete(key) },
-      onplayerror: () => { this.failedKeys.add(key) },
+      onplayerror: () => { /* transient — do not add to failedKeys */ },
     })
     this.sounds.set(key, h)
     return h

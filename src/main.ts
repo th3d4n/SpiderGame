@@ -1011,6 +1011,10 @@ function initNewGame(el: HTMLElement): void {
 
 function initContinue(el: HTMLElement): void {
   audio.play('ui_title_continue')
+  // User just interacted — AudioContext is now unlocked. The HomeBaseScene3D
+  // constructor's playLoop('amb_homebase') call fired before user interaction
+  // and was silently dropped, so we must retry it here.
+  audio.playLoop('amb_homebase')
   dismissTitleMenu(el)
   if (!registry.get<boolean>('openingCutsceneSeen')) {
     registry.set('openingCutsceneSeen', true)
