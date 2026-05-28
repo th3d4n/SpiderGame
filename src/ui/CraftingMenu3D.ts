@@ -57,6 +57,7 @@ export class CraftingMenu3D {
   }
 
   close(): void {
+    if (!this.isOpen) return   // guard against double-close
     this.panel.style.display = 'none'
     this.overlay.style.display = 'none'
     this.isOpen = false

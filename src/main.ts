@@ -528,7 +528,7 @@ function gameLoop() {
   else if (craftingMenu.isOpen)      craftingMenu.update(input)
   else if (pickupCelebration.isOpen) pickupCelebration.update(input, delta)
   else if (textDisplay.isOpen)       textDisplay.update(input)
-  else {
+  else if (!celebZoom) {
     // ── Dev restart (Backtick) — clears save and reloads ────────────────────
     if (input.justDown('Backquote')) {
       saveSystem.deleteSave()

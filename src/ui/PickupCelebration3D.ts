@@ -138,7 +138,7 @@ export class PickupCelebration3D {
     if (!this.isOpen) return
     const elapsedMs = performance.now() - this.openedAtMs
     if (elapsedMs < MIN_VISIBLE_MS) return
-    if (input.justDown('Space') || input.justDown('KeyM')) this.dismiss()
+    if (input.justDown('Space') || input.justDown('KeyM') || input.justDown('Escape')) this.dismiss()
   }
 
   close(): void {
