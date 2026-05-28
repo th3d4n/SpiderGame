@@ -6,6 +6,7 @@ import type { Enemy3D } from '../entities/Enemy3D'
 import type { Webbs3D } from '../entities/Webbs3D'
 import type { WeaponUseSystem3D } from '../systems/WeaponUseSystem3D'
 import type { HudSystem } from '../ui/HudSystem'
+import { audio } from '../systems/AudioManager'
 
 const W = 22   // X: -11 … +11
 const D = 7.2  // Z: -3.6 … +3.6
@@ -86,6 +87,9 @@ export class BossRollerScene3D {
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
     this.threeScene  = threeScene
     this.gradientMap = gradientMap
+
+    audio.playLoop('amb_boss')   // Round 10 — boss arena ambience
+
 
     physicsWorld.bounds = {
       minX: -10.8, maxX: 10.8,
@@ -629,6 +633,8 @@ export class BossRollerScene3D {
   updateEnemies(_delta: number, _px: number, _pz: number): void {}
 
   destroy(): void {
+    audio.stopLoop('amb_boss')
+    audio.stopLoop('boss_idle')
     for (let i = this.rocks.length - 1; i >= 0; i--) this.removeRock(i)
 
     // Shockwaves

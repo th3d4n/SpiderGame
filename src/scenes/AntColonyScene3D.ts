@@ -7,6 +7,7 @@ import { AntWorker3D } from '../entities/AntWorker3D'
 import { JumpingSpider3D } from '../entities/JumpingSpider3D'
 import { FogOfWarSystem3D } from '../systems/FogOfWarSystem3D'
 import { registry } from '../core/Registry'
+import { audio, type SoundKey } from '../systems/AudioManager'
 
 // ── World dimensions ───────────────────────────────────────────────────────────
 const W      = 40    // X: -20 … +20
@@ -245,6 +246,10 @@ export class AntColonyScene3D {
   private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; capMat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
   // Round 9 Issue 5: AABBs for the new maze walls — used by webWallHitTest.
   private mazeWallAabbs: Array<{ cx: number; cz: number; hw: number; hh: number }> = []
+  // Round 10 — adaptive ambience zone (entry / mid / deep) follows player X.
+  // Empty string = uninitialised; tickVisuals will start the correct one on
+  // the first frame rather than playing mid briefly then switching.
+  private currentAmbZone: 'entry' | 'mid' | 'deep' | '' = ''
   // Round 7 Issue 3: time-delayed spawn queue
   private pendingSpawns:    PendingSpawn[] = []
   private elapsedSinceLoad  = 0
@@ -285,6 +290,9 @@ export class AntColonyScene3D {
     this.buildMazeWalls()
     this.buildLandmarks()
     this.buildPortals()
+
+    // Round 10 — adaptive ambience starts on the first tickVisuals call so
+    // the correct zone (entry / mid / deep) is picked from the spawn position.
     this.buildWorkbench()
     this.buildChests()
     this.buildHpModules()
@@ -1021,9 +1029,18 @@ export class AntColonyScene3D {
     return null
   }
 
-  // Per-frame visual updates: mimic wake animation + orb bob
+  // Per-frame visual updates: mimic wake animation + orb bob + adaptive ambience
   tickVisuals(delta: number, px: number, pz: number): void {
     const t = Date.now() * 0.001
+
+    // Round 10 — adaptive ambience based on player depth.
+    const zone: 'entry' | 'mid' | 'deep' =
+      px > 8 ? 'entry' : px < -8 ? 'deep' : 'mid'
+    if (zone !== this.currentAmbZone) {
+      if (this.currentAmbZone !== '') audio.stopLoop(`amb_colony_${this.currentAmbZone}` as SoundKey)
+      audio.playLoop(`amb_colony_${zone}` as SoundKey)
+      this.currentAmbZone = zone
+    }
 
     // Orb bob
     for (let i = 0; i < this.orbMeshes.length; i++) {
@@ -1095,6 +1112,10 @@ export class AntColonyScene3D {
   // ── Destroy ─────────────────────────────────────────────────────────────────────
 
   destroy(): void {
+    // Round 10 — stop every active colony ambient loop
+    audio.stopLoop('amb_colony_entry')
+    audio.stopLoop('amb_colony_mid')
+    audio.stopLoop('amb_colony_deep')
     // Round 6 Issue 7: snapshot the reveal canvas before destroying so the next
     // visit can restore it.
     const fogSnapshot = this.fog.serialize()

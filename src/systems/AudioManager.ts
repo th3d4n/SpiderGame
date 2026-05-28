@@ -208,10 +208,17 @@ export class AudioManager {
     if (this.muted) return NULL_SOUND_ID
     const existing = this.activeLoops.get(key)
     if (existing !== undefined) {
-      if (worldX !== undefined && worldZ !== undefined) {
-        this.sounds.get(key)?.pos(worldX, 0, worldZ, existing)
+      const h = this.sounds.get(key)
+      // If the ID is stale (e.g. the initial play was blocked by browser autoplay
+      // policy before the first user gesture), clear it and fall through to retry.
+      if (h && h.playing(existing)) {
+        if (worldX !== undefined && worldZ !== undefined) {
+          h.pos(worldX, 0, worldZ, existing)
+        }
+        return existing
       }
-      return existing
+      // Stale entry — sound is not actually playing.
+      this.activeLoops.delete(key)
     }
     const h = this.getOrCreate(key)
     if (!h) return NULL_SOUND_ID

@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import { registry } from '../core/Registry'
 import type { Enemy3D } from '../entities/Enemy3D'
+import { audio } from '../systems/AudioManager'
 
 const W      = 22    // world width  (x: -11 … +11)
 const D      = 22    // world depth  (z: -11 … +11)
@@ -81,6 +82,8 @@ export class HomeBaseScene3D {
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
     this.threeScene  = threeScene
     this.gradientMap = gradientMap
+
+    audio.playLoop('amb_homebase')   // Round 10 — peaceful den ambience
 
     physicsWorld.bounds = {
       minX: HomeBaseScene3D.LEFT  + 0.3,
@@ -792,6 +795,7 @@ export class HomeBaseScene3D {
   // ── Destroy ───────────────────────────────────────────────────────────────────
 
   destroy(): void {
+    audio.stopLoop('amb_homebase')
     for (const obj of this.tracked) {
       this.threeScene.remove(obj)
       if ((obj as THREE.Mesh).isMesh) (obj as THREE.Mesh).geometry.dispose()
