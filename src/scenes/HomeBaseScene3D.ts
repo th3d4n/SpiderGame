@@ -64,7 +64,8 @@ export class HomeBaseScene3D {
   static readonly SPAWN_X        = -8.5   // west side — returning from colony
   static readonly EXIT_TRIGGER_X = -10.2  // just inside the west portal
 
-  enemies: Enemy3D[] = []
+  enemies:   Enemy3D[]           = []
+  warmPools: THREE.PointLight[]  = []   // exposed for per-frame flicker in main.ts
 
   toothpickAvailable = true
   cardAvailable      = true
@@ -706,14 +707,30 @@ export class HomeBaseScene3D {
   // ── Lighting ──────────────────────────────────────────────────────────────────
 
   private buildLighting(): void {
-    this.add(new THREE.AmbientLight(0x553322, 0.3))
-    const sunCrack = new THREE.DirectionalLight(0xffcc88, 0.45)
-    sunCrack.position.set(8, 10, -5)
+    // Cool hemisphere ambient — dark den ceiling/floor contrast, not noon
+    this.add(new THREE.HemisphereLight(0x3a4a6a, 0x100808, 0.18))
+
+    // Warm directional crack — light filtering through a gap in the ceiling.
+    // No shadows here: the global dirLight in main.ts handles shadow casting.
+    const sunCrack = new THREE.DirectionalLight(0xffd9a0, 0.45)
+    sunCrack.position.set(-6, 12, 4)
     this.add(sunCrack)
-    // Warm center lamp — makes chamber feel inhabited
-    const centerLight = new THREE.PointLight(0xffaa44, 0.3, 14)
-    centerLight.position.set(0, 2.0, 0)
-    this.add(centerLight)
+
+    // Warm pool point lights — pooled where family life was.
+    // Distance + quadratic decay (exponent 2) own the gaps between them.
+    const pools: THREE.PointLight[] = []
+    const pool = (x: number, y: number, z: number, intensity: number, dist: number, color = 0xffaa55) => {
+      const p = new THREE.PointLight(color, intensity, dist, 2)
+      p.position.set(x, y, z)
+      pools.push(p)
+      this.add(p)
+    }
+    pool(0,   1.5,  0,  6, 8)           // central hearth / hub
+    pool(-7,  2,   -3,  4, 6)           // lantern near workbench
+    pool(6,   2,    4,  4, 6)           // lantern near gift corner
+    pool(3,   1,   -6,  3, 5, 0xff7733) // dim ember near attacked corner
+
+    this.warmPools = pools
   }
 
   // ── Public API ────────────────────────────────────────────────────────────────

@@ -86,6 +86,7 @@ export class Webbs3D {
   private gradientMap:      THREE.Texture
   private webLauncherMount: THREE.Group | null = null
   private timeSinceDamage   = 9999
+  private idleTime          = 0
 
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     this.gradientMap = gradientMap
@@ -96,9 +97,10 @@ export class Webbs3D {
     // ─── Body — taller, fuzzier, layered (Round 8 Issue 1) ─────────────────
     // Cephalothorax (front part with eyes) + abdomen (rear bulb)
     const fuzzyTex = createFuzzyBodyTexture()
-    this.bodyMat = new THREE.MeshStandardMaterial({
+    // Hybrid: toon banding (cel look) + fuzzy map/bumpMap kept for surface hair detail
+    this.bodyMat = new THREE.MeshToonMaterial({
       color: 0x6a4d8a,
-      roughness: 0.95,
+      gradientMap: this.gradientMap,
       map: fuzzyTex,
       bumpMap: fuzzyTex,
       bumpScale: 0.04,
@@ -110,6 +112,10 @@ export class Webbs3D {
     cephMesh.castShadow = true
     cephMesh.position.set(0, 0.42, 0.16)        // RAISED so legs visible underneath
     this.group.add(cephMesh)
+    // Inverted-hull outline — BackSide dark mesh scaled out slightly
+    const cephOutline = new THREE.Mesh(cephGeo, new THREE.MeshBasicMaterial({ color: 0x0a0612, side: THREE.BackSide }))
+    cephOutline.scale.multiplyScalar(1.04)
+    cephMesh.add(cephOutline)
     this.bodyMesh = cephMesh
 
     const abdGeo = new THREE.SphereGeometry(0.26, 16, 14)
@@ -118,15 +124,18 @@ export class Webbs3D {
     abdMesh.castShadow = true
     abdMesh.position.set(0, 0.40, -0.18)
     this.group.add(abdMesh)
+    const abdOutline = new THREE.Mesh(abdGeo, new THREE.MeshBasicMaterial({ color: 0x0a0612, side: THREE.BackSide }))
+    abdOutline.scale.multiplyScalar(1.04)
+    abdMesh.add(abdOutline)
     this.abdMesh = abdMesh
 
     // ─── Eyes — 8 total in classic spider pattern ──────────────────────────
     const primaryEyeMat = new THREE.MeshStandardMaterial({
-      color: 0x111122, emissive: 0x4466aa, emissiveIntensity: 0.6,
+      color: 0x111122, emissive: 0x66e0ff, emissiveIntensity: 2.2,
     })
     const pupilMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
     const secondaryEyeMat = new THREE.MeshStandardMaterial({
-      color: 0x000000, emissive: 0x223355, emissiveIntensity: 0.4,
+      color: 0x000000, emissive: 0x44aadd, emissiveIntensity: 1.0,
     })
     // Two large primary eyes with white pupils — face direction = +Z (forward)
     const primaryR = 0.04
@@ -294,6 +303,10 @@ export class Webbs3D {
     this.timeSinceDamage += delta
     if (this.timeSinceDamage > REGEN_DELAY_S && this.hp < this.hpMax && this.hp > 0)
       this.hp = Math.min(this.hpMax, this.hp + REGEN_RATE * delta)
+
+    // Idle body bob — gentle sine on group Y. syncPosition() only writes X/Z so this persists.
+    this.idleTime += delta
+    this.group.position.y = Math.sin(this.idleTime * 2) * 0.012
   }
 
   // ── Call after physicsWorld.update() to sync 3D group from physics body ──

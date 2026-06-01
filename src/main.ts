@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { InputManager } from './core/InputManager'
 import { physicsWorld } from './core/PhysicsWorld'
 import { Webbs3D } from './entities/Webbs3D'
@@ -49,7 +50,9 @@ const composer = new EffectComposer(renderer)
 // ─── Scene ────────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene()
-scene.fog = new THREE.FogExp2(0x000000, 0.008)
+// Initial atmosphere = homeBase. transitionTo() switches these per zone.
+scene.fog        = new THREE.FogExp2(0x140d0a, 0.015)
+scene.background = new THREE.Color(0x0a0705)
 
 // ─── Isometric Camera ─────────────────────────────────────────────────────────
 
@@ -68,6 +71,38 @@ camera.lookAt(0, 0, 0)
 camera.zoom = 2.0          // Round 6 Issue 8: closer default view
 camera.updateProjectionMatrix()
 
+// ─── Warm grade + vignette shader ────────────────────────────────────────────
+// warmth uniform is zone-switched in transitionTo(): 0.12 for homeBase, 0 elsewhere.
+// OutputPass deliberately omitted — renderer.toneMapping = ACESFilmicToneMapping
+// handles that already; adding OutputPass would double-apply tone mapping.
+const GradeVignetteShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    warmth:   { value: 0.12 },   // start warm — game opens in home base
+    vignette: { value: 0.85 },   // corner darkening strength
+    lift:     { value: 0.02 },   // keep blacks from crushing fully
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform float warmth, vignette, lift;
+    varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      c.r += warmth * 0.6 * c.r;
+      c.b -= warmth * 0.4 * c.b;
+      c.rgb += lift;
+      vec2 d = vUv - 0.5;
+      float v = smoothstep(0.8, vignette * 0.35, dot(d, d) * 2.4);
+      c.rgb *= mix(1.0, v, 0.9);
+      gl_FragColor = c;
+    }
+  `,
+}
+
 // Wire composer passes now that camera exists
 composer.addPass(new RenderPass(scene, camera))
 composer.addPass(new UnrealBloomPass(
@@ -76,12 +111,18 @@ composer.addPass(new UnrealBloomPass(
   0.4,    // radius
   0.75,   // threshold — only the most emissive objects (portals, pickups) bloom
 ))
+const gradePass = new ShaderPass(GradeVignetteShader)
+composer.addPass(gradePass)
 
 // ─── Shared toon gradient map ─────────────────────────────────────────────────
 
 const gradientData = new Uint8Array([64, 64, 64, 255, 160, 160, 160, 255, 255, 255, 255, 255])
 const gradientMap  = new THREE.DataTexture(gradientData, 3, 1, THREE.RGBAFormat)
-gradientMap.needsUpdate = true
+// NearestFilter is REQUIRED — LinearFilter blurs the bands back into smooth shading
+gradientMap.minFilter     = THREE.NearestFilter
+gradientMap.magFilter     = THREE.NearestFilter
+gradientMap.generateMipmaps = false
+gradientMap.needsUpdate   = true
 
 // ─── Primary lighting (shared across scenes) ──────────────────────────────────
 
@@ -93,6 +134,7 @@ dirLight.shadow.camera.near = 0.5
 dirLight.shadow.camera.far  = 80
 dirLight.shadow.camera.left = dirLight.shadow.camera.bottom = -25
 dirLight.shadow.camera.right = dirLight.shadow.camera.top  =  25
+dirLight.shadow.bias = -0.0004   // reduces shadow acne across all zones
 scene.add(dirLight)
 
 const fillLight = new THREE.DirectionalLight(0x223366, 0.25)
@@ -412,6 +454,23 @@ async function transitionTo(zone: ZoneId): Promise<void> {
     if (savedHp !== undefined) webbs.hp = Math.max(1, savedHp)
   }, ZONE_TITLES[zone])
 
+  // ── Zone atmosphere: fog, background, warm grade ────────────────────────────
+  const fog = scene.fog as THREE.FogExp2
+  if (zone === 'homeBase') {
+    fog.color.setHex(0x140d0a);  fog.density = 0.015
+    scene.background = new THREE.Color(0x0a0705)
+    gradePass.uniforms['warmth'].value = 0.12
+  } else if (zone === 'antColony') {
+    fog.color.setHex(0x050a05);  fog.density = 0.012
+    scene.background = new THREE.Color(0x03050a)
+    gradePass.uniforms['warmth'].value = 0.0
+  } else {
+    // bossRoller
+    fog.color.setHex(0x000000);  fog.density = 0.008
+    scene.background = new THREE.Color(0x000000)
+    gradePass.uniforms['warmth'].value = 0.0
+  }
+
   if (zone === 'antColony' && !registry.get<boolean>('antColonyFirstVisit')) {
     registry.set('antColonyFirstVisit', true)
     textDisplay.show(COLONY_INTRO)
@@ -503,6 +562,16 @@ function gameLoop() {
   // ── HUD tick ─────────────────────────────────────────────────────────────
 
   hud.tickBossMsg(delta)
+
+  // ── Lantern flicker — runs even while paused so lights breathe during menus ──
+  if (currentZone === 'homeBase') {
+    const t = clock.elapsedTime
+    for (let i = 0; i < (activeScene as HomeBaseScene3D).warmPools.length; i++) {
+      const p = (activeScene as HomeBaseScene3D).warmPools[i]
+      const base = p.userData.baseIntensity ?? (p.userData.baseIntensity = p.intensity)
+      p.intensity = base * (0.9 + Math.sin(t * 9 + i * 2.3) * 0.05 + Math.sin(t * 23 + i) * 0.03)
+    }
+  }
 
   // ── Main menu: render background but skip all game input ─────────────────
 

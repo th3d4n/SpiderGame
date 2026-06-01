@@ -185,12 +185,21 @@ export class SpiderLegs {
       )
       const lower = new THREE.Mesh(
         new THREE.CylinderGeometry(1, 1, 2, 8),
-        new THREE.MeshToonMaterial({ color: TIER_COLORS[0], gradientMap: gm }),
+        // Bionic lower segment — dark metal, per-leg so weapon color can be set independently
+        new THREE.MeshStandardMaterial({ color: TIER_COLORS[0], metalness: 0.85, roughness: 0.35 }),
       )
       const knee = new THREE.Mesh(
         new THREE.SphereGeometry(0.08, 8, 6),
-        new THREE.MeshToonMaterial({ color: 0x444444, gradientMap: gm }),  // metallic hinge
+        // Servo joint — near-black metal
+        new THREE.MeshStandardMaterial({ color: 0x1a1a1f, metalness: 0.9, roughness: 0.25 }),
       )
+      // Emissive accent ring at the joint — the "this is a machine" tell; blooms with UnrealBloomPass
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.045, 0.008, 6, 14),
+        new THREE.MeshStandardMaterial({ color: 0x00d9ff, emissive: 0x00aaff, emissiveIntensity: 1.4 }),
+      )
+      ring.rotation.x = Math.PI / 2
+      knee.add(ring)
       const tip = new THREE.Mesh(
         new THREE.SphereGeometry(0.09, 8, 6),
         new THREE.MeshToonMaterial({ color: 0x444444, gradientMap: gm }),
@@ -465,7 +474,7 @@ export class SpiderLegs {
       const lowerColor = weaponType !== WeaponType.Empty
         ? weaponColor
         : TIER_COLORS[this.currentTier]
-      ;(leg.lower.material as THREE.MeshToonMaterial).color.setHex(lowerColor)
+      ;(leg.lower.material as THREE.MeshStandardMaterial).color.setHex(lowerColor)
 
       // Round 8 Issue 4: weapon mesh stays visible at the foot at rest, not just
       // during attack animation.  Orient the weapon to point outward from body.
@@ -774,9 +783,16 @@ export class SpiderLegs {
       leg.lower.geometry.dispose()
       leg.tip.geometry.dispose()
       ;(leg.upper.material as THREE.MeshToonMaterial).dispose()
-      ;(leg.knee.material  as THREE.MeshToonMaterial).dispose()
-      ;(leg.lower.material as THREE.MeshToonMaterial).dispose()
+      ;(leg.knee.material  as THREE.MeshStandardMaterial).dispose()
+      ;(leg.lower.material as THREE.MeshStandardMaterial).dispose()
       ;(leg.tip.material   as THREE.MeshToonMaterial).dispose()
+      // Dispose accent ring children parented to the knee
+      for (const child of leg.knee.children) {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose()
+          ;(child.material as THREE.Material).dispose()
+        }
+      }
     }
     this.legs = []
     for (let i = 0; i < 8; i++) {
