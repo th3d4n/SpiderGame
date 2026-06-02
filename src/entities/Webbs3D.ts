@@ -11,7 +11,7 @@ import { audio } from '../systems/AudioManager'
 export const SCALE = 0.01
 
 // ─── Gameplay constants (same values as Webbs.ts) ─────────────────────────────
-const SPEED_WU            = 300 * SCALE   // 3.0 world units/s
+const SPEED_WU            = 540 * SCALE   // 5.4 wu/s — 1.8× bump for 5× den (≈9.5s centre→rim)
 // Round 7 Issue 2: bumped from 0.22 → 0.28 so enemies are pushed out of Webbs'
 // silhouette and stay in striking range instead of standing inside him.
 export const BODY_R_NORMAL  = 28 * SCALE  // 0.28 — collision radius

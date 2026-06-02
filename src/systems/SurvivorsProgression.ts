@@ -259,8 +259,8 @@ export class SurvivorsProgression {
       const r  = 0.8 + Math.random() * 1.4
       const tx = center.x + Math.cos(a) * r
       const tz = center.z + Math.sin(a) * r
-      // Walk in from the west exit (portal is at x ≈ -10.7, start just beyond it)
-      spider.position.set(-12, 0, tz * 0.4)
+      // Walk in from the west exit — start just beyond the portal at x ≈ -DEN_RADIUS
+      spider.position.set(-59.4, 0, tz * 0.4)   // -12 * 4.95
       spider.userData.baseY = 0.12
       this.scene.add(spider)
       this.npcs.push(spider)

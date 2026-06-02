@@ -1,9 +1,10 @@
 import * as THREE from 'three'
+import { DEN_RADIUS, DEN_SCALE, PROP_SCALE } from '../env/denScale'
 
 // ─── Chamber constants — must match HomeBaseScene3D ───────────────────────────
-const CHAMBER_R = 10.5   // floor CircleGeometry radius / circularBound ≈ 10.0
-const WB_X      = -5.0   // HomeBaseScene3D.WORKBENCH_X
-const WB_Z      = -7.5   // HomeBaseScene3D.WORKBENCH_Z
+const CHAMBER_R = DEN_RADIUS              // 52 — floor/wall radius
+const WB_X      = -5.0  * DEN_SCALE       // -24.75
+const WB_Z      = -7.5  * DEN_SCALE       // -37.125
 // West exit gap arc — panels 3+4 of the octagon (135°–225°).  Burrow mounds
 // and blocked tunnels must not be placed inside this range.
 const EXIT_GAP_START = Math.PI * 0.75   // 135°
@@ -174,7 +175,7 @@ export function buildDenFloor(mat: DenMaterials, add: AddFn): THREE.Mesh {
     // Raised lip near the rim → reads as the bowl of a burrow
     if (d > CHAMBER_R * 0.72) y += (d - CHAMBER_R * 0.72) * 0.4
     // Worn central depression where the family gathered
-    y -= Math.max(0, 6 - d) * 0.04
+    y -= Math.max(0, 6 * DEN_SCALE - d) * 0.04
     pos.setY(i, y)
   }
   pos.needsUpdate = true
@@ -197,7 +198,7 @@ export function buildBurrowWalls(mat: DenMaterials, add: AddFn): THREE.Group {
 
     const r = CHAMBER_R * (0.88 + Math.random() * 0.16)
     const mound = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(2.8 + Math.random() * 1.8, 1),
+      new THREE.IcosahedronGeometry((2.8 + Math.random() * 1.8) * DEN_SCALE, 1),
       Math.random() > 0.5 ? mat.earth : mat.earthDark,
     )
     mound.scale.set(1, 0.55 + Math.random() * 0.45, 1)
@@ -210,7 +211,7 @@ export function buildBurrowWalls(mat: DenMaterials, add: AddFn): THREE.Group {
     // Occasional exposed root arcing out of a mound
     if (Math.random() > 0.55) {
       const root = new THREE.Mesh(
-        new THREE.TorusGeometry(1.2 + Math.random() * 0.6, 0.16, 6, 12, Math.PI * 0.8),
+        new THREE.TorusGeometry((1.2 + Math.random() * 0.6) * DEN_SCALE, 0.16 * DEN_SCALE, 6, 12, Math.PI * 0.8),
         mat.rootWall,
       )
       root.position.copy(mound.position)
@@ -230,11 +231,12 @@ export function buildBurrowWalls(mat: DenMaterials, add: AddFn): THREE.Group {
 export function buildSilkArchitecture(mat: DenMaterials, add: AddFn): THREE.Group {
   const group = new THREE.Group()
 
+  const S = DEN_SCALE
   // Ceiling support cables — criss-cross the den for vertical structure
   const anchors = [
-    new THREE.Vector3(-8, 6, -6), new THREE.Vector3( 7, 7, -5),
-    new THREE.Vector3( 8, 6,  7), new THREE.Vector3(-7, 7,  8),
-    new THREE.Vector3( 0, 8, -8), new THREE.Vector3( 2, 7,  8),
+    new THREE.Vector3(-8*S, 6*S, -6*S), new THREE.Vector3( 7*S, 7*S, -5*S),
+    new THREE.Vector3( 8*S, 6*S,  7*S), new THREE.Vector3(-7*S, 7*S,  8*S),
+    new THREE.Vector3(   0, 8*S, -8*S), new THREE.Vector3( 2*S, 7*S,  8*S),
   ]
   for (let i = 0; i < anchors.length; i++) {
     for (let j = i + 1; j < anchors.length; j++) {
@@ -249,21 +251,21 @@ export function buildSilkArchitecture(mat: DenMaterials, add: AddFn): THREE.Grou
     transparent: true, opacity: 0.4, side: THREE.DoubleSide,
     emissive: 0x2a2620, emissiveIntensity: 0.15,
   })
-  const funnel = new THREE.Mesh(new THREE.ConeGeometry(2.2, 3.5, 16, 4, true), funnelMat)
-  funnel.position.set(-7, 2.5, -6)
+  const funnel = new THREE.Mesh(new THREE.ConeGeometry(2.2*S, 3.5*S, 16, 4, true), funnelMat)
+  funnel.position.set(-7*S, 2.5*S, -6*S)
   funnel.rotation.x = Math.PI  // mouth opens upward
   group.add(funnel)
 
   // Seven family hammocks — density = extended family lived here.
   // Torn ones mark where people were taken.  All positions verified inside CHAMBER_R.
   const beds: Array<{ c: THREE.Vector3; w: number; d: number; torn: boolean }> = [
-    { c: new THREE.Vector3(-6, 2.2,  5.0), w: 2.5, d: 1.8, torn: false },
-    { c: new THREE.Vector3(-3, 2.0,  7.0), w: 2.2, d: 1.6, torn: true  }, // ripped
-    { c: new THREE.Vector3( 7, 2.4, -4.0), w: 2.8, d: 2.0, torn: false },
-    { c: new THREE.Vector3( 8, 1.8,  3.0), w: 2.0, d: 1.5, torn: true  }, // ripped
-    { c: new THREE.Vector3(-6, 2.6,  7.0), w: 2.3, d: 1.7, torn: false }, // d < 9.2 ✓
-    { c: new THREE.Vector3( 4, 2.2,  8.0), w: 1.8, d: 1.4, torn: false }, // d ≈ 8.9 ✓
-    { c: new THREE.Vector3(-8, 2.0, -4.0), w: 2.1, d: 1.6, torn: true  }, // ripped; d ≈ 8.9 ✓
+    { c: new THREE.Vector3(-6*S, 2.2*S,  5.0*S), w: 2.5*S, d: 1.8*S, torn: false },
+    { c: new THREE.Vector3(-3*S, 2.0*S,  7.0*S), w: 2.2*S, d: 1.6*S, torn: true  },
+    { c: new THREE.Vector3( 7*S, 2.4*S, -4.0*S), w: 2.8*S, d: 2.0*S, torn: false },
+    { c: new THREE.Vector3( 8*S, 1.8*S,  3.0*S), w: 2.0*S, d: 1.5*S, torn: true  },
+    { c: new THREE.Vector3(-6*S, 2.6*S,  7.0*S), w: 2.3*S, d: 1.7*S, torn: false },
+    { c: new THREE.Vector3( 4*S, 2.2*S,  8.0*S), w: 1.8*S, d: 1.4*S, torn: false },
+    { c: new THREE.Vector3(-8*S, 2.0*S, -4.0*S), w: 2.1*S, d: 1.6*S, torn: true  },
   ]
   const tornHammocks: THREE.Mesh[] = []
   for (const b of beds) {
@@ -280,7 +282,7 @@ export function buildSilkArchitecture(mat: DenMaterials, add: AddFn): THREE.Grou
     }
     group.add(hammock)
     // Suspension lines up toward the ceiling
-    const top = b.c.clone(); top.y += 3.5
+    const top = b.c.clone(); top.y += 3.5 * S
     group.add(silkStrand(b.c.clone().add(new THREE.Vector3(-b.w / 2, 0, 0)), top, mat.silk, 0.1))
     group.add(silkStrand(b.c.clone().add(new THREE.Vector3( b.w / 2, 0, 0)), top, mat.silk, 0.1))
   }
@@ -311,24 +313,22 @@ export function buildJunkFurniture(mat: DenMaterials, add: AddFn): THREE.Group {
     return g
   }
 
-  group.add(bottleCap(0,   0,   1.6))           // central gathering table (cake sits on top)
-  group.add(bottleCap(8,  -5,   1.0, true))      // side table, rusted
-  group.add(bottleCap(-9,  6,   0.8))            // near a hammock anchor
+  const P = PROP_SCALE
+  group.add(bottleCap(0,         0,         1.6*P))
+  group.add(bottleCap(8*DEN_SCALE,  -5*DEN_SCALE, 1.0*P, true))
+  group.add(bottleCap(-9*DEN_SCALE,  6*DEN_SCALE, 0.8*P))
 
-  // One cap knocked over — evidence of the attack
-  const tipped = bottleCap(-3, -8, 1.1, true)
+  const tipped = bottleCap(-3*DEN_SCALE, -8*DEN_SCALE, 1.1*P, true)
   tipped.rotation.z = Math.PI / 2.2
-  tipped.position.y = 1.0
+  tipped.position.y = 1.0 * P
   group.add(tipped)
 
-  // Matchbox cabinet — food store near the east wall
-  const box = new THREE.Mesh(new THREE.BoxGeometry(3, 1.4, 1.8), mat.cardboard)
-  box.position.set(9, 0.7, 5)
+  const box = new THREE.Mesh(new THREE.BoxGeometry(3*P, 1.4*P, 1.8*P), mat.cardboard)
+  box.position.set(9*DEN_SCALE, 0.7*P, 5*DEN_SCALE)
   box.castShadow = box.receiveShadow = true
   group.add(box)
-  // Ransacked drawer — pulled out and spilled
-  const drawer = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.5, 1.4), mat.wood)
-  drawer.position.set(9, 0.3, 7.5)
+  const drawer = new THREE.Mesh(new THREE.BoxGeometry(2.6*P, 0.5*P, 1.4*P), mat.wood)
+  drawer.position.set(9*DEN_SCALE, 0.3*P, 7.5*DEN_SCALE)
   drawer.rotation.y = 0.3
   drawer.castShadow = true
   group.add(drawer)
@@ -347,15 +347,14 @@ export function buildJunkFurniture(mat: DenMaterials, add: AddFn): THREE.Group {
   }
   for (let i = 0; i < 6; i++) {
     const a  = (i / 6) * Math.PI * 2
-    const st = spool(Math.cos(a) * 3.2, Math.sin(a) * 3.2)
-    if (i === 2) { st.rotation.z = Math.PI / 2; st.position.y = 0.35; st.userData.toppled = true }
+    const st = spool(Math.cos(a) * 3.2 * DEN_SCALE, Math.sin(a) * 3.2 * DEN_SCALE)
+    if (i === 2) { st.rotation.z = Math.PI / 2; st.position.y = 0.35 * P; st.userData.toppled = true }
     group.add(st)
   }
 
-  // Thimble pot — food prep, near the central hearth
   const thimble = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.6, 0.45, 1.1, 18, 1, true), mat.metalCap)
-  thimble.position.set(6, 0.55, 6)
+    new THREE.CylinderGeometry(0.6*P, 0.45*P, 1.1*P, 18, 1, true), mat.metalCap)
+  thimble.position.set(6*DEN_SCALE, 0.55*P, 6*DEN_SCALE)
   thimble.castShadow = true
   group.add(thimble)
 
@@ -369,36 +368,38 @@ export function buildJunkFurniture(mat: DenMaterials, add: AddFn): THREE.Group {
 export function buildInventions(mat: DenMaterials, add: AddFn): THREE.Group {
   const group = new THREE.Group()
 
+  const P = PROP_SCALE
+  const S = DEN_SCALE
   // Spare robotic leg segment upright on a stand
-  const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 0.6, 12), mat.metalCap)
-  stand.position.set(WB_X + 1.0, 0.3, WB_Z + 0.5)
+  const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.2*P, 0.3*P, 0.6*P, 12), mat.metalCap)
+  stand.position.set(WB_X + 1.0*S, 0.3*P, WB_Z + 0.5*S)
   group.add(stand)
 
   const legSeg = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.06, 0.05, 1.4, 8),
+    new THREE.CylinderGeometry(0.06*P, 0.05*P, 1.4*P, 8),
     new THREE.MeshStandardMaterial({ color: 0x3b3b42, metalness: 0.85, roughness: 0.35 }),
   )
-  legSeg.position.set(WB_X + 1.0, 1.2, WB_Z + 0.5)
+  legSeg.position.set(WB_X + 1.0*S, 1.2*P, WB_Z + 0.5*S)
   legSeg.rotation.z = 0.2
   group.add(legSeg)
 
-  // Still-powered — emissive ring above bloom threshold (1.4 used on Webbs' own legs)
+  // Still-powered — emissive ring above bloom threshold
   const spark = new THREE.Mesh(
-    new THREE.TorusGeometry(0.08, 0.02, 6, 12),
+    new THREE.TorusGeometry(0.08*P, 0.02*P, 6, 12),
     new THREE.MeshStandardMaterial({ color: 0x00d9ff, emissive: 0x00aaff, emissiveIntensity: 1.6 }),
   )
-  spark.position.set(WB_X + 1.0, 1.8, WB_Z + 0.5)
+  spark.position.set(WB_X + 1.0*S, 1.8*P, WB_Z + 0.5*S)
   spark.rotation.x = Math.PI / 2
   group.add(spark)
 
   // Scattered gears around the workbench area
   for (let i = 0; i < 5; i++) {
     const gear = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.18, 0.18, 0.06, 8), mat.rustCap)
+      new THREE.CylinderGeometry(0.18*P, 0.18*P, 0.06*P, 8), mat.rustCap)
     gear.position.set(
-      WB_X + (Math.random() * 2.4 - 1.2),
+      WB_X + (Math.random() * 2.4 - 1.2) * S,
       0.06,
-      WB_Z + (Math.random() * 1.8 - 0.9),
+      WB_Z + (Math.random() * 1.8 - 0.9) * S,
     )
     gear.rotation.x = Math.PI / 2
     gear.castShadow = true
@@ -444,15 +445,16 @@ export function buildBirthdayBash(mat: DenMaterials, add: AddFn): THREE.Group {
   cake.traverse(o => { o.castShadow = true })
   group.add(cake)
 
+  const S = DEN_SCALE
   // Banner — one end torn free, drooping.  The attack interrupted the stringing.
-  const bannerStart = new THREE.Vector3(-7, 5.5, -4)
-  const bannerEnd   = new THREE.Vector3( 5, 1.8, -3)   // low end = torn from its mount
+  const bannerStart = new THREE.Vector3(-7*S, 5.5*S, -4*S)
+  const bannerEnd   = new THREE.Vector3( 5*S, 1.8*S, -3*S)
   const cols        = [mat.partyPink, mat.partyTeal, mat.partyGold]
   for (let i = 0; i <= 9; i++) {
     const t    = i / 9
     const p    = new THREE.Vector3().lerpVectors(bannerStart, bannerEnd, t)
-    p.y       -= Math.sin(t * Math.PI) * 1.1 * (1 - t * 0.4)  // worse sag at torn end
-    const flag = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.48, 4), cols[i % 3])
+    p.y       -= Math.sin(t * Math.PI) * 1.1 * S * (1 - t * 0.4)
+    const flag = new THREE.Mesh(new THREE.ConeGeometry(0.22*S, 0.48*S, 4), cols[i % 3])
     flag.position.copy(p); flag.position.y -= 0.3
     flag.rotation.x = Math.PI; flag.rotation.y = Math.PI / 4
     group.add(flag)
@@ -465,7 +467,7 @@ export function buildBirthdayBash(mat: DenMaterials, add: AddFn): THREE.Group {
   for (let i = 0; i < 40; i++) {
     const conf = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), confMats[i % 3])
     const a    = Math.random() * Math.PI * 2
-    const r    = Math.random() * 5.5
+    const r    = Math.random() * 5.5 * DEN_SCALE
     conf.position.set(Math.cos(a) * r, 0.02, Math.sin(a) * r)
     conf.rotation.x = -Math.PI / 2
     conf.rotation.z = Math.random() * Math.PI
@@ -487,32 +489,34 @@ export function buildAttackEvidence(mat: DenMaterials, add: AddFn): THREE.Group 
   const dragMat = new THREE.MeshToonMaterial({
     color: 0x241509, gradientMap: mat.grad, transparent: true, opacity: 0.65,
   })
+  const S = DEN_SCALE
+  const P = PROP_SCALE
   // [startX, startZ, length, angleOffset]
   const markData: [number, number, number, number][] = [
-    [ -3.0,  0.5, 5.0, -0.25 ],
-    [ -1.5, -1.0, 4.5, -0.12 ],
-    [ -4.5,  1.8, 5.5,  0.10 ],
+    [ -3.0*S,  0.5*S, 5.0*S, -0.25 ],
+    [ -1.5*S, -1.0*S, 4.5*S, -0.12 ],
+    [ -4.5*S,  1.8*S, 5.5*S,  0.10 ],
   ]
   for (const [sx, sz, len, ao] of markData) {
-    const mark = new THREE.Mesh(new THREE.PlaneGeometry(0.55, len), dragMat)
+    const mark = new THREE.Mesh(new THREE.PlaneGeometry(0.55*S, len), dragMat)
     mark.rotation.x = -Math.PI / 2
-    mark.rotation.z = Math.PI / 2 + ao   // long axis along X (east-west) + slight angle
-    mark.position.set(sx - len * 0.3, 0.02, sz)  // offset center toward -X exit
+    mark.rotation.z = Math.PI / 2 + ao
+    mark.position.set(sx - len * 0.3, 0.02, sz)
     group.add(mark)
   }
 
-  // Claw gouges on an east-wall mound — three parallel scratches
+  // Claw gouges on an east-wall mound
   const gougeMat = new THREE.MeshToonMaterial({ color: 0x1a0f06, gradientMap: mat.grad })
   for (let i = 0; i < 3; i++) {
-    const g = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.03, 1.4), gougeMat)
-    g.position.set(9.5 + i * 0.22, 2.2, -5)
+    const g = new THREE.Mesh(new THREE.BoxGeometry(0.07*S, 0.03*S, 1.4*S), gougeMat)
+    g.position.set((9.5 + i * 0.22) * S, 2.2*S, -5*S)
     g.rotation.set(0, 0.35, 0.18)
     group.add(g)
   }
 
-  // Dropped child's toy — a spinning top, frozen mid-roll, never came to rest
-  const toy = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.48, 12), mat.acornCap)
-  toy.position.set(-4, 0.22, -3)
+  // Dropped child's toy
+  const toy = new THREE.Mesh(new THREE.ConeGeometry(0.28*P, 0.48*P, 12), mat.acornCap)
+  toy.position.set(-4*S, 0.22*P, -3*S)
   toy.rotation.z = Math.PI; toy.rotation.x = 0.45
   toy.castShadow = true
   group.add(toy)
@@ -520,8 +524,8 @@ export function buildAttackEvidence(mat: DenMaterials, add: AddFn): THREE.Group 
   // Food scattered from the ransacked matchbox cabinet
   for (let i = 0; i < 6; i++) {
     const half = new THREE.Mesh(
-      new THREE.SphereGeometry(0.24, 12, 8, 0, Math.PI), mat.acorn)
-    half.position.set(8 + Math.random() * 3, 0.1, 4 + Math.random() * 3)
+      new THREE.SphereGeometry(0.24*P, 12, 8, 0, Math.PI), mat.acorn)
+    half.position.set((8 + Math.random() * 3) * S, 0.1, (4 + Math.random() * 3) * S)
     half.rotation.set(Math.random(), Math.random() * Math.PI, Math.random())
     half.castShadow = true
     group.add(half)
@@ -554,53 +558,54 @@ export function buildExits(mat: DenMaterials, add: AddFn): THREE.Group {
     const inX = Math.cos(a)    // unit vector pointing inward (toward center)
     const inZ = Math.sin(a)
 
+    const S = DEN_SCALE
     // Dark tunnel mouth disk
-    const mouth = new THREE.Mesh(new THREE.CircleGeometry(2.1, 20), mat.earthDark)
-    mouth.position.set(x, 2.5, z)
-    mouth.lookAt(0, 2.5, 0)
+    const mouth = new THREE.Mesh(new THREE.CircleGeometry(2.1*S, 20), mat.earthDark)
+    mouth.position.set(x, 2.5*S, z)
+    mouth.lookAt(0, 2.5*S, 0)
     group.add(mouth)
 
     // Collapse rubble
     for (let i = 0; i < 6; i++) {
       const rock = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(0.5 + Math.random() * 0.6, 0), mat.earth)
+        new THREE.DodecahedronGeometry((0.5 + Math.random() * 0.6) * DEN_SCALE, 0), mat.earth)
       rock.position.set(
-        x - inX * 0.8 + (Math.random() - 0.5) * 2.5,
-        0.5 + Math.random() * 2.0,
-        z - inZ * 0.8 + (Math.random() - 0.5) * 2.5,
+        x - inX * 0.8*S + (Math.random() - 0.5) * 2.5*S,
+        0.5*S + Math.random() * 2.0*S,
+        z - inZ * 0.8*S + (Math.random() - 0.5) * 2.5*S,
       )
       rock.castShadow = rock.receiveShadow = true
       group.add(rock)
     }
 
     // Web seal over the collapse — spun shut
-    const seal = new THREE.Mesh(new THREE.CircleGeometry(1.9, 16), mat.silkTorn)
-    seal.position.set(x * 0.94, 2.0, z * 0.94)
-    seal.lookAt(0, 2.0, 0)
+    const seal = new THREE.Mesh(new THREE.CircleGeometry(1.9*S, 16), mat.silkTorn)
+    seal.position.set(x * 0.94, 2.0*S, z * 0.94)
+    seal.lookAt(0, 2.0*S, 0)
     group.add(seal)
   }
 
+  const S = DEN_SCALE
   // Silk web-bridge surface leading to the west exit (toward -X).
-  // PlaneGeometry(6, 1.6) after rotation.x gives 6 wu along X, 1.6 wu along Z.
-  const walkGeo = new THREE.PlaneGeometry(6.0, 1.6, 6, 2)
+  const walkGeo = new THREE.PlaneGeometry(6.0*S, 1.6*S, 6, 2)
   const walk    = new THREE.Mesh(walkGeo, mat.silk)
-  walk.rotation.x = -Math.PI / 2 + 0.12   // slight forward tilt toward exit
-  walk.position.set(-7.8, 0.5, 0)
+  walk.rotation.x = -Math.PI / 2 + 0.12
+  walk.position.set(-7.8*S, 0.5*S, 0)
   group.add(walk)
 
   // Guide cables flanking the bridge
-  const bStart = new THREE.Vector3(-6.0, 1.6, 0)
-  const bEnd   = new THREE.Vector3(-9.8, 0.6, 0)
-  const off    = 0.85
+  const bStart = new THREE.Vector3(-6.0*S, 1.6*S, 0)
+  const bEnd   = new THREE.Vector3(-9.8*S, 0.6*S, 0)
+  const off    = 0.85 * S
   group.add(silkStrand(
     bStart.clone().add(new THREE.Vector3(0, 0,  off)),
     bEnd.clone().add(  new THREE.Vector3(0, 0,  off)),
-    mat.silk, 0.15,
+    mat.silk, 0.15*S,
   ))
   group.add(silkStrand(
     bStart.clone().add(new THREE.Vector3(0, 0, -off)),
     bEnd.clone().add(  new THREE.Vector3(0, 0, -off)),
-    mat.silk, 0.15,
+    mat.silk, 0.15*S,
   ))
 
   add(group)

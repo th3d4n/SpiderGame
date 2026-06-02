@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
+import { CameraOccluder } from './env/CameraOccluder'
 import { InputManager } from './core/InputManager'
 import { physicsWorld } from './core/PhysicsWorld'
 import { Webbs3D } from './entities/Webbs3D'
@@ -57,7 +58,7 @@ scene.background = new THREE.Color(0x0a0705)
 
 // ─── Isometric Camera ─────────────────────────────────────────────────────────
 
-const FRUSTUM = 8
+const FRUSTUM = 36   // was 8; widened for DEN_RADIUS=52 (shows ~70% of den at zoom=2)
 const aspect  = CANVAS_W / CANVAS_H
 
 const camera = new THREE.OrthographicCamera(
@@ -367,6 +368,11 @@ let transitioning = false
 let pendingTransitionResume: (() => void) | null = null
 let lastActiveSlot = 0   // slot fired by left-click; updated whenever a number key fires
 
+// Camera occluder — fades burrow mounds that block the view of Webbs.
+// Recreated with each HomeBaseScene3D instance.
+let cameraOccluder: CameraOccluder | null = new CameraOccluder(camera)
+cameraOccluder.registerGroup((activeScene as HomeBaseScene3D).denHandles.walls)
+
 // Den progression — tracks survivors returning after boss defeats.
 // Recreated each time HomeBaseScene3D is created; disposed on zone exit.
 let denProgression: SurvivorsProgression | null = new SurvivorsProgression(
@@ -421,7 +427,9 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         hud.setZoneLabel('HOME BASE')
         hud.hideBossHp()
         webbs.floorType = 'dirt'
-        // Rebuild progression for the new scene instance
+        // Rebuild per-scene systems for the new HomeBaseScene3D instance
+        cameraOccluder = new CameraOccluder(camera)
+        cameraOccluder.registerGroup(s.denHandles.walls)
         denProgression = new SurvivorsProgression(s.denHandles, scene, s.warmPools)
         denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
         break
@@ -590,6 +598,7 @@ function gameLoop() {
       p.intensity = base * (0.9 + Math.sin(t * 9 + i * 2.3) * 0.05 + Math.sin(t * 23 + i) * 0.03)
     }
     denProgression?.update(delta, t)
+    cameraOccluder?.update(webbs.group.position, delta)
   }
 
   // ── Main menu: render background but skip all game input ─────────────────
@@ -1096,6 +1105,8 @@ function initNewGame(el: HTMLElement): void {
   webbs.collisionBody.velocity.x = 0
   webbs.collisionBody.velocity.z = 0
   camera.position.set(HomeBaseScene3D.SPAWN_X + CAM_OFFSET.x, CAM_OFFSET.y, CAM_OFFSET.z)
+  cameraOccluder = new CameraOccluder(camera)
+  cameraOccluder.registerGroup(freshHbs.denHandles.walls)
   denProgression = new SurvivorsProgression(freshHbs.denHandles, scene, freshHbs.warmPools)
   denProgression.applyState(0)
 
