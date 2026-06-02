@@ -3,6 +3,18 @@ import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import { registry } from '../core/Registry'
 import type { Enemy3D } from '../entities/Enemy3D'
 import { audio } from '../systems/AudioManager'
+import {
+  buildDenMaterials,
+  buildDenFloor,
+  buildBurrowWalls,
+  buildSilkArchitecture,
+  buildJunkFurniture,
+  buildInventions,
+  buildBirthdayBash,
+  buildAttackEvidence,
+  buildExits,
+  type DenHandles,
+} from './DenBuilder'
 
 const W      = 22    // world width  (x: -11 … +11)
 const D      = 22    // world depth  (z: -11 … +11)
@@ -64,8 +76,9 @@ export class HomeBaseScene3D {
   static readonly SPAWN_X        = -8.5   // west side — returning from colony
   static readonly EXIT_TRIGGER_X = -10.2  // just inside the west portal
 
-  enemies:   Enemy3D[]           = []
-  warmPools: THREE.PointLight[]  = []   // exposed for per-frame flicker in main.ts
+  enemies:    Enemy3D[]           = []
+  warmPools:  THREE.PointLight[]  = []   // exposed for per-frame flicker in main.ts
+  denHandles!: DenHandles                // exposed for SurvivorsProgression
 
   toothpickAvailable = true
   cardAvailable      = true
@@ -94,16 +107,34 @@ export class HomeBaseScene3D {
     }
     physicsWorld.circularBound = 10.0   // HomeBase chamber radius — keeps bodies in the circle
 
-    this.buildGround()
-    this.buildWalls()
+    // Build the shared material palette (uses the scene's gradientMap for
+    // consistent toon banding) and bind the tracked add helper once.
+    const denMat = buildDenMaterials(this.gradientMap)
+    const add    = this.add.bind(this)
+
+    // ── Terrain & structure ───────────────────────────────────────────────────
+    buildDenFloor(denMat, add)
+    this.buildWalls()                              // physics octagon + doorframe + glow
+    const walls = buildBurrowWalls(denMat, add)    // organic visual mounds over physics walls
+
+    // ── Gameplay objects (positions unchanged) ────────────────────────────────
     this.buildWorkbench()
-    this.buildBirthdayArea()
+    this.buildBirthdayArea()         // card + gift pickup objects — keep untouched
     this.buildToothpickPickup()
-    this.buildExitPortal()
-    this.buildBlockedPortal()
-    this.buildDecoration()
-    this.buildPartyExtra()
-    this.buildAttackDamage()   // Round 6 Issue 9: knocked-over stuff, claw marks, hanging streamers
+    this.buildExitPortal()           // west portal frame — already well-tuned
+
+    // ── Environmental dressing ────────────────────────────────────────────────
+    this.buildDecoration()           // pebbles, twigs, fungi, cobwebs — kept
+    const silk   = buildSilkArchitecture(denMat, add)
+    const junk   = buildJunkFurniture(denMat, add)
+    const invent = buildInventions(denMat, add)
+    const bash   = buildBirthdayBash(denMat, add)
+    const attack = buildAttackEvidence(denMat, add)
+    const exits  = buildExits(denMat, add)
+
+    // Collect handles for SurvivorsProgression (must be set before scene is returned)
+    this.denHandles = { mat: denMat, walls, silk, junk, invent, bash, attack, exits }
+
     this.buildMaterialPickups()
     this.buildLighting()
 
@@ -111,40 +142,6 @@ export class HomeBaseScene3D {
     if (registry.get<boolean>('toothpickCollected')) this.pickupToothpick()
     if (registry.get<boolean>('webThrowerFound'))    this.collectGift()
     if (registry.get<boolean>('birthdayCardRead'))   { this.cardAvailable = false }
-  }
-
-  // ── Ground ──────────────────────────────────────────────────────────────────
-
-  private buildGround(): void {
-    // Circular floor (16-sided polygon gives a smooth den feel)
-    const R = 10.5
-    const floorTex = createNoiseTexture(64, 58, 32, 16, 40, 5)
-    const mat = new THREE.MeshToonMaterial({
-      color: 0xffffff, map: floorTex, gradientMap: this.gradientMap,
-    })
-    const mesh = new THREE.Mesh(new THREE.CircleGeometry(R, 16).rotateX(-Math.PI / 2), mat)
-    mesh.receiveShadow = true
-    this.add(mesh)
-
-    // Dark ring border just inside the walls
-    const borderMat = new THREE.MeshBasicMaterial({ color: 0x281508 })
-    const border = new THREE.Mesh(
-      new THREE.RingGeometry(R - 0.8, R, 16).rotateX(-Math.PI / 2), borderMat
-    )
-    border.position.y = 0.004
-    this.add(border)
-
-    const patchMat = new THREE.MeshBasicMaterial({ color: 0x2a1808 })
-    const patchPositions = [
-      [-7, 3.5], [-3, -6], [2, 5], [6, -3], [-5, -2],
-      [8, 2], [-8, -5], [0, -8], [4, 8], [-2, 7],
-    ]
-    for (const [px, pz] of patchPositions) {
-      const r = 0.3 + Math.random() * 0.45
-      const patch = new THREE.Mesh(new THREE.CircleGeometry(r, 10).rotateX(-Math.PI / 2), patchMat)
-      patch.position.set(px, 0.006, pz)
-      this.add(patch)
-    }
   }
 
   // ── Walls ───────────────────────────────────────────────────────────────────
@@ -394,40 +391,6 @@ export class HomeBaseScene3D {
     }
   }
 
-  // ── Blocked portal (right — future zone, sealed) ─────────────────────────────
-
-  private buildBlockedPortal(): void {
-    const px = HomeBaseScene3D.RIGHT - 0.3
-    const pz = 0
-
-    // Dormant frame — dark gray, no emissive glow
-    const frameMat = new THREE.MeshToonMaterial({ color: 0x3a3030, gradientMap: this.gradientMap })
-    const barH = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.6, 0.12), frameMat)
-    barH.position.set(px, 0.8, pz - 0.95); this.add(barH)
-    const barH2 = barH.clone(); barH2.position.set(px, 0.8, pz + 0.95); this.add(barH2)
-    const barV = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 2.0), frameMat)
-    barV.position.set(px, 1.56, pz); this.add(barV)
-    const barV2 = barV.clone(); barV2.position.set(px, 0.06, pz); this.add(barV2)
-
-    // Planks nailed across the opening
-    const plankMat = new THREE.MeshToonMaterial({ color: 0x4a2e18, gradientMap: this.gradientMap })
-    for (const [pz2, angle] of [[0.3, 0.18], [-0.3, -0.22], [0.0, 0.06]] as [number, number][]) {
-      const plank = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 1.7), plankMat)
-      plank.position.set(px, 0.5 + Math.abs(pz2) * 0.8, pz + pz2)
-      plank.rotation.y = angle; this.add(plank)
-    }
-
-    // Cobweb over the sealed portal
-    this.buildCobweb(px + 0.05, pz + 0.1, 0.8)
-
-    // Rubble pile at base
-    const rubbleMat = new THREE.MeshToonMaterial({ color: 0x3d2514, gradientMap: this.gradientMap })
-    for (const [rx, rz, rs] of [[-0.15, -0.3, 0.12], [0.05, 0.25, 0.09], [-0.08, 0.0, 0.14]] as [number, number, number][]) {
-      const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(rs, 0), rubbleMat)
-      rock.position.set(px + rx, rs * 0.5, pz + rz); this.add(rock)
-    }
-  }
-
   // ── Environmental decoration ─────────────────────────────────────────────────
 
   private buildDecoration(): void {
@@ -469,147 +432,8 @@ export class HomeBaseScene3D {
     this.buildCobweb(-9.5, -9.5, 0.6)
   }
 
-  // ── Party decorations (extra birthday atmosphere) ────────────────────────────
-
-  private buildPartyExtra(): void {
-    const gm = this.gradientMap
-
-    // Birthday cake — near the gift
-    const cakeX = HomeBaseScene3D.GIFT_X - 1.5
-    const cakeZ = HomeBaseScene3D.GIFT_Z - 1.5
-    const cakeMat   = new THREE.MeshToonMaterial({ color: 0xeeaacc, gradientMap: gm })
-    const icingMat  = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: gm })
-    const candleMat = new THREE.MeshToonMaterial({ color: 0xffee44, gradientMap: gm })
-    const bottom = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.20, 12), cakeMat)
-    bottom.position.set(cakeX, 0.10, cakeZ); bottom.castShadow = true; this.add(bottom)
-    const top = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.18, 12), cakeMat)
-    top.position.set(cakeX, 0.29, cakeZ); top.castShadow = true; this.add(top)
-    const icing = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.03, 12), icingMat)
-    icing.position.set(cakeX, 0.395, cakeZ); this.add(icing)
-    for (const [cx, cz2] of [[-0.08, -0.06], [0.06, 0.08], [-0.04, 0.10]] as [number,number][]) {
-      const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.10, 5), candleMat)
-      candle.position.set(cakeX + cx, 0.45, cakeZ + cz2); this.add(candle)
-    }
-
-    // Knocked-over chair — box segments at an angle
-    const chairMat = new THREE.MeshToonMaterial({ color: 0x5c3d1e, gradientMap: gm })
-    const chX = -7.5, chZ = -2.5
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.07, 0.5), chairMat)
-    seat.position.set(chX, 0.15, chZ); seat.rotation.z = 1.3; seat.castShadow = true; this.add(seat)
-    const back = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.5, 0.06), chairMat)
-    back.position.set(chX + 0.1, 0.15, chZ + 0.28); back.rotation.z = 1.3; this.add(back)
-    for (const [lx, lz] of [[-0.2, -0.15], [0.2, -0.15], [-0.2, 0.15], [0.2, 0.15]] as [number,number][]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.3, 0.06), chairMat)
-      leg.position.set(chX + lz, 0.1, chZ + lx); leg.rotation.z = 1.3; this.add(leg)
-    }
-
-    // Silk streamers — radially arranged around chamber
-    const streamerColors = [0xff6688, 0x88eecc, 0xffee44, 0x88aaff]
-    for (let i = 0; i < 6; i++) {
-      const color = streamerColors[i % streamerColors.length]
-      const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55 })
-      const angle = (i / 6) * Math.PI * 2
-      const r = 8.5
-      const geo = new THREE.BoxGeometry(0.06, 0.04, 2.0)
-      const s   = new THREE.Mesh(geo, mat)
-      s.position.set(Math.cos(angle) * r, WALL_H * 0.85, Math.sin(angle) * r)
-      s.rotation.y = -angle
-      this.add(s)
-    }
-  }
-
   // ── Attack damage (Round 6 Issue 9) ───────────────────────────────────────────
-  // Tells the story of the kidnapping — knocked-over decorations, claw marks,
-  // half-fallen party streamers.  All purely visual.
-
-  private buildAttackDamage(): void {
-    const debrisMat = new THREE.MeshToonMaterial({ color: 0x4a3320, gradientMap: this.gradientMap })
-
-    const objects: Array<{ x: number; z: number; type: 'box' | 'jar' | 'streamer' }> = [
-      { x: -2.0, z:  3.0, type: 'box'      },
-      { x:  3.5, z:  1.0, type: 'jar'      },
-      { x: -4.5, z: -1.5, type: 'box'      },
-      { x:  1.5, z: -3.5, type: 'jar'      },
-      { x:  4.0, z: -6.0, type: 'streamer' },
-      { x: -3.5, z:  5.5, type: 'streamer' },
-    ]
-
-    for (const o of objects) {
-      if (o.type === 'box') {
-        const box = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 0.3), debrisMat)
-        box.position.set(o.x, 0.15, o.z)
-        box.rotation.set(0.4, Math.random() * Math.PI, 0.3)
-        box.castShadow = true
-        this.add(box)
-      } else if (o.type === 'jar') {
-        const jar = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 0.3, 8), debrisMat)
-        jar.position.set(o.x, 0.10, o.z)
-        jar.rotation.set(1.2, 0, Math.random() * 0.5)
-        jar.castShadow = true
-        this.add(jar)
-        // Spilled contents — small dots around the jar
-        for (let i = 0; i < 5; i++) {
-          const drop = new THREE.Mesh(
-            new THREE.SphereGeometry(0.04, 6, 4),
-            new THREE.MeshBasicMaterial({ color: 0xddcc88 }),
-          )
-          drop.position.set(o.x + (Math.random() - 0.5) * 0.6, 0.04, o.z + (Math.random() - 0.5) * 0.6)
-          this.add(drop)
-        }
-      } else {
-        // Fallen streamer — thin curved line on the floor
-        const points: THREE.Vector3[] = []
-        for (let i = 0; i < 16; i++) {
-          const t = i / 15
-          points.push(new THREE.Vector3(
-            o.x + (t - 0.5) * 0.8 + Math.sin(t * 8) * 0.1,
-            0.03,
-            o.z + Math.cos(t * 6) * 0.2,
-          ))
-        }
-        const geo  = new THREE.BufferGeometry().setFromPoints(points)
-        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xcc4488 }))
-        this.add(line)
-      }
-    }
-
-    // Claw marks on a few wall panels (skip the doorway arc 135°–225°)
-    const scratchMat = new THREE.LineBasicMaterial({ color: 0x1a0e04, transparent: true, opacity: 0.7 })
-    for (let i = 0; i < 6; i++) {
-      const angle = (i / 6) * Math.PI * 2 + 0.4
-      const deg = (angle * 180 / Math.PI) % 360
-      if (deg >= 135 && deg <= 225) continue
-      const sx = Math.cos(angle) * 10.2
-      const sz = Math.sin(angle) * 10.2
-      for (let s = 0; s < 3; s++) {
-        const pts = [
-          new THREE.Vector3(sx + (s - 1) * 0.1, 0.3,                  sz),
-          new THREE.Vector3(sx + (s - 1) * 0.1 + 0.10, WALL_H * 0.85, sz),
-        ]
-        const geo = new THREE.BufferGeometry().setFromPoints(pts)
-        this.add(new THREE.Line(geo, scratchMat))
-      }
-    }
-
-    // Hanging silk streamers from "ceiling" — half-fallen party decorations
-    const streamerMat = new THREE.LineBasicMaterial({ color: 0xccaa55, transparent: true, opacity: 0.7 })
-    for (let i = 0; i < 5; i++) {
-      const angle = (i / 5) * Math.PI * 2 + 0.3
-      const sx = Math.cos(angle) * 6
-      const sz = Math.sin(angle) * 6
-      const pts: THREE.Vector3[] = []
-      for (let j = 0; j < 8; j++) {
-        const t = j / 7
-        pts.push(new THREE.Vector3(
-          sx + Math.sin(t * 4) * 0.1,
-          WALL_H - t * 1.0,
-          sz + Math.cos(t * 4) * 0.1,
-        ))
-      }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts)
-      this.add(new THREE.Line(geo, streamerMat))
-    }
-  }
+  // Replaced by buildAttackEvidence() in DenBuilder — kept as tombstone comment.
 
   // ── Material pickup orbs ──────────────────────────────────────────────────────
 

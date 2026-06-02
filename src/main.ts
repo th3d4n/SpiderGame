@@ -27,6 +27,7 @@ import { PickupCelebration3D } from './ui/PickupCelebration3D'
 import { PickupNotification3D } from './ui/PickupNotification3D'
 import { ConsumableSystem } from './systems/ConsumableSystem'
 import { saveSystem } from './systems/SaveSystem'
+import { SurvivorsProgression } from './systems/SurvivorsProgression'
 
 // ─── Renderer ────────────────────────────────────────────────────────────────
 
@@ -113,6 +114,9 @@ composer.addPass(new UnrealBloomPass(
 ))
 const gradePass = new ShaderPass(GradeVignetteShader)
 composer.addPass(gradePass)
+// Expose to SurvivorsProgression for warmth tweening
+scene.userData.gradePass      = gradePass
+scene.userData.homeBaseWarmth = 0.12   // mutable; updated by SurvivorsProgression on warmth steps
 
 // ─── Shared toon gradient map ─────────────────────────────────────────────────
 
@@ -363,6 +367,15 @@ let transitioning = false
 let pendingTransitionResume: (() => void) | null = null
 let lastActiveSlot = 0   // slot fired by left-click; updated whenever a number key fires
 
+// Den progression — tracks survivors returning after boss defeats.
+// Recreated each time HomeBaseScene3D is created; disposed on zone exit.
+let denProgression: SurvivorsProgression | null = new SurvivorsProgression(
+  (activeScene as HomeBaseScene3D).denHandles,
+  scene,
+  (activeScene as HomeBaseScene3D).warmPools,
+)
+denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
+
 weaponUseSystem.setEnemies((activeScene as HomeBaseScene3D).enemies)
 webLauncher.setEnemies((activeScene as HomeBaseScene3D).enemies)
 webLauncher.setWallHitTest((x, z) => (activeScene as HomeBaseScene3D).webWallHitTest(x, z))
@@ -389,6 +402,8 @@ async function transitionTo(zone: ZoneId): Promise<void> {
     bossRoller: 'ZONE 2  —  THE ROLLER',
   }
   await ZoneTransitionSystem3D.transition(() => {
+    // Dispose zone-specific systems before tearing down the scene
+    if (currentZone === 'homeBase') { denProgression?.dispose(); denProgression = null }
     activeScene.destroy()
 
     switch (zone) {
@@ -406,6 +421,9 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         hud.setZoneLabel('HOME BASE')
         hud.hideBossHp()
         webbs.floorType = 'dirt'
+        // Rebuild progression for the new scene instance
+        denProgression = new SurvivorsProgression(s.denHandles, scene, s.warmPools)
+        denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
         break
       }
       case 'antColony': {
@@ -459,7 +477,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
   if (zone === 'homeBase') {
     fog.color.setHex(0x140d0a);  fog.density = 0.015
     scene.background = new THREE.Color(0x0a0705)
-    gradePass.uniforms['warmth'].value = 0.12
+    gradePass.uniforms['warmth'].value = (scene.userData.homeBaseWarmth as number) ?? 0.12
   } else if (zone === 'antColony') {
     fog.color.setHex(0x050a05);  fog.density = 0.012
     scene.background = new THREE.Color(0x03050a)
@@ -563,7 +581,7 @@ function gameLoop() {
 
   hud.tickBossMsg(delta)
 
-  // ── Lantern flicker — runs even while paused so lights breathe during menus ──
+  // ── Lantern flicker + den progression ────────────────────────────────────────
   if (currentZone === 'homeBase') {
     const t = clock.elapsedTime
     for (let i = 0; i < (activeScene as HomeBaseScene3D).warmPools.length; i++) {
@@ -571,6 +589,7 @@ function gameLoop() {
       const base = p.userData.baseIntensity ?? (p.userData.baseIntensity = p.intensity)
       p.intensity = base * (0.9 + Math.sin(t * 9 + i * 2.3) * 0.05 + Math.sin(t * 23 + i) * 0.03)
     }
+    denProgression?.update(delta, t)
   }
 
   // ── Main menu: render background but skip all game input ─────────────────
@@ -926,6 +945,9 @@ function gameLoop() {
 
     if (result === 'victory' && !transitioning) {
       xpSystem.award('boss_kill')
+      // Increment boss counter — SurvivorsProgression reads it on next homeBase entry
+      registry.set('bossesBeaten', (registry.get<number>('bossesBeaten') ?? 0) + 1)
+      saveSystem.save()
       if (bs.pendingLoot) {
         const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
         for (const [mat, qty] of Object.entries(bs.pendingLoot)) {
@@ -1048,6 +1070,7 @@ function initNewGame(el: HTMLElement): void {
   registry.set('tutorialWebLauncherSeen', false)
   registry.set('antColonyFirstVisit', false)
   registry.set('pickupsCollected_HomeBaseScene', [])   // Bug 13: clear collected pickups
+  registry.set('bossesBeaten', 0)
   registry.set('totalXp', 0)                            // Round 8 Issue 8: reset XP
   xpSystem.reset()
   xpValueEl.textContent = '0'
@@ -1060,6 +1083,7 @@ function initNewGame(el: HTMLElement): void {
   webLauncher.release()
   webLauncher.clearWraps()
   weaponUseSystem.stopFlame()
+  denProgression?.dispose(); denProgression = null
   activeScene.destroy()
   const freshHbs = new HomeBaseScene3D(scene, gradientMap)
   activeScene  = freshHbs
@@ -1072,6 +1096,8 @@ function initNewGame(el: HTMLElement): void {
   webbs.collisionBody.velocity.x = 0
   webbs.collisionBody.velocity.z = 0
   camera.position.set(HomeBaseScene3D.SPAWN_X + CAM_OFFSET.x, CAM_OFFSET.y, CAM_OFFSET.z)
+  denProgression = new SurvivorsProgression(freshHbs.denHandles, scene, freshHbs.warmPools)
+  denProgression.applyState(0)
 
   dismissTitleMenu(el)
   registry.set('openingCutsceneSeen', true)

@@ -13,6 +13,7 @@ export interface SaveData {
   weaponPickupsCollected:         string[]
   openingCutsceneSeen:            boolean
   antColonyFirstVisit:            boolean
+  bossesBeaten:                   number
 }
 
 const SAVE_KEY = 'noLegs_save_v1'
@@ -30,6 +31,7 @@ const SAVE_FIELDS: (keyof SaveData)[] = [
   'weaponPickupsCollected',
   'openingCutsceneSeen',
   'antColonyFirstVisit',
+  'bossesBeaten',
 ]
 
 export class SaveSystem {
