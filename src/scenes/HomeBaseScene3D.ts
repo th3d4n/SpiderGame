@@ -7,6 +7,7 @@ import { DEN_SCALE, PROP_SCALE } from '../env/denScale'
 import { buildAntColonyEntrance } from '../env/AntColonyEntrance'
 import {
   buildDenMaterials,
+  type DenMaterials,
   buildDenFloor,
   buildBurrowWalls,
   buildSilkArchitecture,
@@ -46,19 +47,20 @@ function createNoiseTexture(
 
 // 11 material pickups distributed across the chamber interior.  Persistent via registry.
 // All positions are within radius 7.5 of center so the player can always reach them.
-// All x/z positions ×DEN_SCALE (≈4.95) from original authored coords
+// Pickups are part of the home cluster — positions ×LIFE_SCALE (≈2.08).
+// Their geometry stays Webbs-sized (see buildMaterialPickups — no size scaling).
 const MATERIAL_PICKUPS = [
-  { id: 0,  x: -24.75, z: -24.75, mat: 'SilkThread',  qty: 3, color: 0xddeeff },
-  { id: 1,  x:  19.8,  z: -27.2,  mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
-  { id: 2,  x:  29.7,  z:   9.9,  mat: 'WebFluid',     qty: 2, color: 0x44aaff },
-  { id: 3,  x: -12.4,  z:  29.7,  mat: 'SilkThread',   qty: 2, color: 0xddeeff },
-  { id: 4,  x:   7.4,  z: -32.2,  mat: 'ChitinShard',  qty: 3, color: 0x88aa44 },
-  { id: 5,  x: -29.7,  z:  14.85, mat: 'BoneFragment', qty: 2, color: 0xccbbaa },
-  { id: 6,  x:  19.8,  z:  29.7,  mat: 'WebFluid',     qty: 2, color: 0x44aaff },
-  { id: 7,  x: -22.3,  z: -27.2,  mat: 'SilkThread',   qty: 2, color: 0xddeeff },
-  { id: 8,  x:  32.2,  z: -14.85, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
-  { id: 9,  x: -32.2,  z:  -9.9,  mat: 'BoneFragment', qty: 1, color: 0xccbbaa },
-  { id: 10, x:   0.0,  z:  32.2,  mat: 'WebFluid',     qty: 1, color: 0x44aaff },
+  { id: 0,  x: -10.4,  z: -10.4,  mat: 'SilkThread',  qty: 3, color: 0xddeeff },
+  { id: 1,  x:   8.32, z: -11.44, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
+  { id: 2,  x:  12.48, z:   4.16, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
+  { id: 3,  x:  -5.2,  z:  12.48, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
+  { id: 4,  x:   3.12, z: -13.52, mat: 'ChitinShard',  qty: 3, color: 0x88aa44 },
+  { id: 5,  x: -12.48, z:   6.24, mat: 'BoneFragment', qty: 2, color: 0xccbbaa },
+  { id: 6,  x:   8.32, z:  12.48, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
+  { id: 7,  x:  -9.36, z: -11.44, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
+  { id: 8,  x:  13.52, z:  -6.24, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
+  { id: 9,  x: -13.52, z:  -4.16, mat: 'BoneFragment', qty: 1, color: 0xccbbaa },
+  { id: 10, x:   0.0,  z:  13.52, mat: 'WebFluid',     qty: 1, color: 0x44aaff },
 ] as const
 
 export class HomeBaseScene3D {
@@ -67,26 +69,40 @@ export class HomeBaseScene3D {
   static readonly BACK   = -D / 2         // -11
   static readonly FRONT  =  D / 2         // +11
 
-  static readonly WORKBENCH_X    = -24.75  // -5.0   × DEN_SCALE
-  static readonly WORKBENCH_Z    = -37.1   // -7.5   × DEN_SCALE
-  static readonly CARD_X         =  27.2   //  5.5   × DEN_SCALE
-  static readonly CARD_Z         =  22.3   //  4.5   × DEN_SCALE
-  static readonly GIFT_X         =  27.2   //  5.5   × DEN_SCALE
-  static readonly GIFT_Z         = -14.85  // -3.0   × DEN_SCALE
-  static readonly TOOTHPICK_X    = -14.85  // -3.0   × DEN_SCALE
-  static readonly TOOTHPICK_Z    =  42.1   //  8.5   × DEN_SCALE
-  static readonly OBJ_Z          =  0.0    // legacy compat (unused)
-  static readonly SPAWN_X        = -42.1   // -8.5   × DEN_SCALE
-  static readonly EXIT_TRIGGER_X = -50.5   // -10.2  × DEN_SCALE
+  // Interactables/props live in the LIFE cluster (× LIFE_SCALE ≈ 2.08), NOT the
+  // full den radius — keeps the home intimate inside the big room.
+  static readonly WORKBENCH_X    = -10.4   // -5.0  × LIFE_SCALE
+  static readonly WORKBENCH_Z    = -15.6   // -7.5  × LIFE_SCALE
+  static readonly CARD_X         =  11.44  //  5.5  × LIFE_SCALE
+  static readonly CARD_Z         =   9.36  //  4.5  × LIFE_SCALE
+  static readonly GIFT_X         =  11.44  //  5.5  × LIFE_SCALE
+  static readonly GIFT_Z         =  -6.24  // -3.0  × LIFE_SCALE
+  static readonly TOOTHPICK_X    =  -6.24  // -3.0  × LIFE_SCALE
+  static readonly TOOTHPICK_Z    =  17.68  //  8.5  × LIFE_SCALE
+  static readonly OBJ_Z          =   0.0   // legacy compat (unused)
+  static readonly SPAWN_X        = -17.68  // -8.5  × LIFE_SCALE — spawn inside the home
+  static readonly EXIT_TRIGGER_X = -50.5   // stays at full den scale (the real exit)
+  static readonly INTERACT_R     =   3.5   // proximity radius for E-prompts + glint
 
-  enemies:      Enemy3D[]           = []
-  warmPools:    THREE.PointLight[]  = []   // exposed for per-frame flicker in main.ts
-  denHandles!:  DenHandles               // exposed for SurvivorsProgression
-  exitTriggerX: number = HomeBaseScene3D.EXIT_TRIGGER_X  // updated by buildAntColonyEntrance
+  enemies:           Enemy3D[]           = []
+  warmPools:         THREE.PointLight[]  = []   // exposed for per-frame flicker in main.ts
+  denHandles!:       DenHandles               // exposed for SurvivorsProgression
+  antEntranceGroup!: THREE.Group              // exposed for CameraOccluder registration
+  exitTriggerX:      number = HomeBaseScene3D.EXIT_TRIGGER_X  // updated by buildAntColonyEntrance
 
   toothpickAvailable = true
   cardAvailable      = true
   giftAvailable      = true
+
+  // Three-clue struggle trail (center → path → threshold). Found-state persists via registry.
+  private clues: Array<{ x: number; z: number; text: string }> = [
+    { x: -4.16, z:  6.24,
+      text: "The little one's cradle. Still warm. Whatever came, it went for the smallest first." },
+    { x:  8.32, z: -4.16,
+      text: "Silk, but not ours — spun to bind, not to rest. They wrapped the colony like prey and dragged them off." },
+    { x: -48.96, z: 0,
+      text: "A bristle — coarse, barbed, the length of my leg. No spider sheds this. Whatever took them went this way. So do I." },
+  ]
 
   private threeScene:     THREE.Scene
   private gradientMap:    THREE.Texture
@@ -96,6 +112,13 @@ export class HomeBaseScene3D {
   private cardGroup:      THREE.Group | null = null
   private pickupMeshes:   Array<THREE.Group | null> = Array(MATERIAL_PICKUPS.length).fill(null)
   private staticBodies:   CollisionBody[] = []   // stones + doorframe posts
+
+  // Proximity glint — interactables ramp emissive as Webbs nears.
+  private glinters: Array<{
+    x: number; z: number
+    mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial
+    available?: () => boolean
+  }> = []
 
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
     this.threeScene  = threeScene
@@ -127,7 +150,8 @@ export class HomeBaseScene3D {
     this.buildToothpickPickup()
     // Fix 3: replace old flat portal frame with sculpted entrance
     const ent = buildAntColonyEntrance(denMat, add)
-    this.exitTriggerX = ent.triggerX
+    this.exitTriggerX     = ent.triggerX
+    this.antEntranceGroup = ent.group
 
     // ── Environmental dressing ────────────────────────────────────────────────
     this.buildDecoration()           // pebbles, twigs, fungi, cobwebs — kept
@@ -142,6 +166,7 @@ export class HomeBaseScene3D {
     this.denHandles = { mat: denMat, walls, silk, junk, invent, bash, attack, exits }
 
     this.buildMaterialPickups()
+    this.buildClues(denMat)
     this.buildLighting()
 
     // Restore pickup state from save — remove objects the player already collected
@@ -271,6 +296,8 @@ export class HomeBaseScene3D {
     const wbLight = new THREE.PointLight(0x88ffcc, 0.6, 12.4)  // 2.5 × DEN_SCALE
     wbLight.position.set(bx, 0.9*P, bz)
     this.add(wbLight)
+
+    this.addGlint(bx, bz, woodMat)
   }
 
   // ── Birthday area ────────────────────────────────────────────────────────────
@@ -296,6 +323,7 @@ export class HomeBaseScene3D {
     cardGlow.position.set(cx, 0.01, ccz); cardGroup.add(cardGlow)
     this.cardGroup = cardGroup
     this.threeScene.add(cardGroup); this.tracked.push(cardGroup)
+    this.addGlint(cx, ccz, cardMat, () => this.cardAvailable)
 
     // ── Gift box (east-south wall) ──────────────────────────────────────────
     const giftGroup = new THREE.Group()
@@ -321,6 +349,7 @@ export class HomeBaseScene3D {
     giftGlow.position.set(gx, 0.01, gz); giftGroup.add(giftGlow)
     this.giftGroup = giftGroup
     this.threeScene.add(giftGroup); this.tracked.push(giftGroup)
+    this.addGlint(gx, gz, giftMat, () => this.giftAvailable)
 
     const bdLight = new THREE.PointLight(0xff88cc, 0.5, 22.3)   // 4.5 × DEN_SCALE
     bdLight.position.set(gx - 1.5*P, 1.2*P, (ccz + gz) / 2)
@@ -337,27 +366,28 @@ export class HomeBaseScene3D {
     group.position.set(bx, 0, bz)
 
     const stickMat = new THREE.MeshToonMaterial({ color: 0xccaa66, gradientMap: this.gradientMap })
-    const P = PROP_SCALE
-    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.018*P, 0.022*P, 0.5*P, 6), stickMat)
-    stick.position.set(0, 0.38*P, 0); stick.rotation.z = 0.25; stick.castShadow = true
+    // Weapon pickup — geometry stays Webbs-sized; only position is clustered.
+    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.5, 6), stickMat)
+    stick.position.set(0, 0.38, 0); stick.rotation.z = 0.25; stick.castShadow = true
     group.add(stick)
 
     const tipMat = new THREE.MeshToonMaterial({ color: 0x886644, gradientMap: this.gradientMap })
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.022*P, 0.09*P, 5), tipMat)
-    tip.position.set(0.06*P, 0.64*P, 0); tip.rotation.z = 0.25; group.add(tip)
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.09, 5), tipMat)
+    tip.position.set(0.06, 0.64, 0); tip.rotation.z = 0.25; group.add(tip)
 
     const glowMesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.18*P, 0.26*P, 20).rotateX(-Math.PI / 2),
+      new THREE.RingGeometry(0.18, 0.26, 20).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({ color: 0xddcc88, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
     )
     glowMesh.position.set(0, 0.01, 0); group.add(glowMesh)
 
-    const light = new THREE.PointLight(0xddcc88, 0.5, 8.91)   // 1.8 × DEN_SCALE
-    light.position.set(0, 0.6*P, 0); group.add(light)
+    const light = new THREE.PointLight(0xddcc88, 0.5, 4.5)
+    light.position.set(0, 0.6, 0); group.add(light)
 
     this.threeScene.add(group)
     this.tracked.push(group)
     this.toothpickGroup = group
+    this.addGlint(bx, bz, stickMat, () => this.toothpickAvailable)
   }
 
   // ── Environmental decoration ─────────────────────────────────────────────────
@@ -417,25 +447,25 @@ export class HomeBaseScene3D {
       const g = new THREE.Group()
       g.position.set(p.x, 0, p.z)
 
-      const P = PROP_SCALE
+      // Pickup geometry stays Webbs-sized (NOT scaled) — only the position clusters.
       const orb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22 * P, 8, 6),
+        new THREE.SphereGeometry(0.22, 8, 6),
         new THREE.MeshStandardMaterial({ color: p.color, emissive: p.color, emissiveIntensity: 1.2 }),
       )
-      orb.position.y = 0.30 * P; g.add(orb)
+      orb.position.y = 0.30; g.add(orb)
 
       const glow = new THREE.Mesh(
-        new THREE.RingGeometry(0.22 * P, 0.36 * P, 16).rotateX(-Math.PI / 2),
+        new THREE.RingGeometry(0.22, 0.36, 16).rotateX(-Math.PI / 2),
         new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
       )
       glow.position.y = 0.01; g.add(glow)
 
       // Light beam rising from orb — draws the eye from across the room
       const beam = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05 * P, 0.05 * P, 1.5 * P, 6, 1, true),
+        new THREE.CylinderGeometry(0.05, 0.05, 1.5, 6, 1, true),
         new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.25, side: THREE.DoubleSide }),
       )
-      beam.position.y = 0.85 * P; g.add(beam)
+      beam.position.y = 0.85; g.add(beam)
 
       this.threeScene.add(g)
       this.tracked.push(g)
@@ -503,18 +533,99 @@ export class HomeBaseScene3D {
 
   // ── Lighting ──────────────────────────────────────────────────────────────────
 
+  // ── Clue trail — three struggle clues: who / how / what took the colony ───────
+  private buildClues(mat: DenMaterials): void {
+    // Clue 0 — Overturned Cradle (center, by the hearth)
+    {
+      const c = this.clues[0]
+      const g = new THREE.Group(); g.position.set(c.x, 0, c.z)
+      const bowlMat = new THREE.MeshStandardMaterial({ color: 0xd8cdb8, roughness: 0.6, side: THREE.DoubleSide })
+      const bowl = new THREE.Mesh(new THREE.SphereGeometry(0.5, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), bowlMat)
+      bowl.rotation.z = Math.PI / 2          // tipped on its side
+      bowl.position.set(0, 0.45, 0); bowl.castShadow = true
+      g.add(bowl)
+      const toy = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.30, 10), mat.acornCap)
+      toy.position.set(0.55, 0.15, 0.2); toy.rotation.z = 2.2; toy.castShadow = true
+      g.add(toy)
+      this.add(g)
+      this.addGlint(c.x, c.z, bowlMat)
+    }
+    // Clue 1 — Drag-Sac (midway, aligned with the drag marks toward the exit)
+    {
+      const c = this.clues[1]
+      const g = new THREE.Group(); g.position.set(c.x, 0, c.z)
+      const sacMat = new THREE.MeshStandardMaterial({ color: 0xcabfa8, roughness: 0.7, transparent: true, opacity: 0.9 })
+      const sac = new THREE.Mesh(new THREE.SphereGeometry(0.45, 14, 10), sacMat)
+      sac.scale.set(0.7, 0.7, 1.7)           // elongated, torn cocoon
+      sac.position.y = 0.4; sac.rotation.y = 0.5; sac.castShadow = true
+      g.add(sac)
+      this.add(g)
+      this.addGlint(c.x, c.z, sacMat)
+    }
+    // Clue 2 — Snagged Bristle (the threshold, at the ant entrance mouth)
+    {
+      const c = this.clues[2]
+      const g = new THREE.Group(); g.position.set(c.x, 0, c.z)
+      const brMat = new THREE.MeshStandardMaterial({ color: 0xb8a890, roughness: 0.5, metalness: 0.1 })
+      const bristle = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.05, 1.6, 6), brMat)
+      bristle.position.set(0, 1.0, 0); bristle.rotation.set(0.5, 0, 0.7)   // snagged at an angle
+      bristle.castShadow = true
+      g.add(bristle)
+      this.add(g)
+      this.addGlint(c.x, c.z, brMat)
+    }
+  }
+
+  // Returns clue index near the player, or -1.  Mirrors the near* interactables.
+  nearClue(px: number, pz: number): number {
+    const r = HomeBaseScene3D.INTERACT_R
+    for (let i = 0; i < this.clues.length; i++) {
+      const dx = px - this.clues[i].x, dz = pz - this.clues[i].z
+      if (dx * dx + dz * dz < r * r) return i
+    }
+    return -1
+  }
+
+  clueText(i: number): string { return this.clues[i]?.text ?? '' }
+
+  // ── Proximity glint helpers ───────────────────────────────────────────────────
+  // emissive ramps 0 → 0.6 as Webbs closes to interact range. 0.6 stays below the
+  // bloom-halo threshold so props glint (findable) without glowing.
+  private addGlint(
+    x: number, z: number,
+    mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial,
+    available?: () => boolean,
+  ): void {
+    mat.emissive = new THREE.Color(0xffd9a0)
+    mat.emissiveIntensity = 0
+    this.glinters.push({ x, z, mat, available })
+  }
+
+  // Call every frame from the homeBase loop.
+  updateGlints(px: number, pz: number): void {
+    const NEAR = HomeBaseScene3D.INTERACT_R * 2.5
+    for (const gl of this.glinters) {
+      if (gl.available && !gl.available()) { gl.mat.emissiveIntensity = 0; continue }
+      const dx = px - gl.x, dz = pz - gl.z
+      const d  = Math.sqrt(dx * dx + dz * dz)
+      const t  = Math.max(0, Math.min(1, 1 - d / NEAR))
+      gl.mat.emissiveIntensity = t * 0.6
+    }
+  }
+
   private buildLighting(): void {
-    // Cool hemisphere ambient — dark den ceiling/floor contrast, not noon
-    this.add(new THREE.HemisphereLight(0x3a4a6a, 0x100808, 0.18))
+    // Cool hemisphere ambient — lifted so the dark reads as cozy-dim, not can't-see
+    this.add(new THREE.HemisphereLight(0x3a4a6a, 0x100808, 0.30))
 
     // Warm directional crack — light filtering through a gap in the ceiling.
     // No shadows here: the global dirLight in main.ts handles shadow casting.
-    const sunCrack = new THREE.DirectionalLight(0xffd9a0, 0.45)
+    const sunCrack = new THREE.DirectionalLight(0xffd9a0, 0.6)
     sunCrack.position.set(-6, 12, 4)
     this.add(sunCrack)
 
-    // Warm pool point lights — pooled where family life was.
-    // Distance + quadratic decay (exponent 2) own the gaps between them.
+    // Warm pool point lights — pooled where family life is (the LIFE cluster).
+    // Positions ×LIFE_SCALE so they light the re-anchored props; ranges widened
+    // for the larger room. Quadratic decay keeps the dark owning the gaps.
     const pools: THREE.PointLight[] = []
     const pool = (x: number, y: number, z: number, intensity: number, dist: number, color = 0xffaa55) => {
       const p = new THREE.PointLight(color, intensity, dist, 2)
@@ -522,10 +633,10 @@ export class HomeBaseScene3D {
       pools.push(p)
       this.add(p)
     }
-    pool(0,   1.5,  0,  6, 8)           // central hearth / hub
-    pool(-7,  2,   -3,  4, 6)           // lantern near workbench
-    pool(6,   2,    4,  4, 6)           // lantern near gift corner
-    pool(3,   1,   -6,  3, 5, 0xff7733) // dim ember near attacked corner
+    pool(0,      3,  0,      8,   24)            // central hearth / hub
+    pool(-14.56, 4, -6.24,   5.5, 18)           // lantern near workbench
+    pool(12.48,  4,  8.32,   5.5, 18)           // lantern near gift corner
+    pool(6.24,   2.5, -12.48, 4,  14, 0xff7733) // dim ember near attacked corner
 
     this.warmPools = pools
   }
@@ -539,28 +650,28 @@ export class HomeBaseScene3D {
   nearWorkbench(playerX: number, playerZ: number): boolean {
     const dx = playerX - HomeBaseScene3D.WORKBENCH_X
     const dz = playerZ - HomeBaseScene3D.WORKBENCH_Z
-    return dx * dx + dz * dz < 3.5 * 3.5   // 0.7 × DEN_SCALE
+    return dx * dx + dz * dz < HomeBaseScene3D.INTERACT_R ** 2
   }
 
   nearToothpick(playerX: number, playerZ: number): boolean {
     if (!this.toothpickAvailable) return false
     const dx = playerX - HomeBaseScene3D.TOOTHPICK_X
     const dz = playerZ - HomeBaseScene3D.TOOTHPICK_Z
-    return dx * dx + dz * dz < 3.5 * 3.5   // 0.7 × DEN_SCALE
+    return dx * dx + dz * dz < HomeBaseScene3D.INTERACT_R ** 2
   }
 
   nearBirthdayCard(playerX: number, playerZ: number): boolean {
     if (!this.cardAvailable) return false
     const dx = playerX - HomeBaseScene3D.CARD_X
     const dz = playerZ - HomeBaseScene3D.CARD_Z
-    return dx * dx + dz * dz < 4.0 * 4.0   // 0.8 × DEN_SCALE
+    return dx * dx + dz * dz < HomeBaseScene3D.INTERACT_R ** 2
   }
 
   nearGift(playerX: number, playerZ: number): boolean {
     if (!this.giftAvailable) return false
     const dx = playerX - HomeBaseScene3D.GIFT_X
     const dz = playerZ - HomeBaseScene3D.GIFT_Z
-    return dx * dx + dz * dz < 4.0 * 4.0   // 0.8 × DEN_SCALE
+    return dx * dx + dz * dz < HomeBaseScene3D.INTERACT_R ** 2
   }
 
   webWallHitTest(x: number, z: number): boolean {
@@ -617,6 +728,7 @@ export class HomeBaseScene3D {
     for (const body of this.staticBodies) physicsWorld.remove(body)
     this.staticBodies   = []
     this.tracked        = []
+    this.glinters       = []
     this.toothpickGroup = null
     physicsWorld.bounds         = null
     physicsWorld.circularBound  = null

@@ -1,10 +1,11 @@
 import * as THREE from 'three'
-import { DEN_RADIUS, DEN_SCALE, PROP_SCALE } from '../env/denScale'
+import { DEN_RADIUS, DEN_SCALE, PROP_SCALE, LIFE_SCALE } from '../env/denScale'
 
 // ─── Chamber constants — must match HomeBaseScene3D ───────────────────────────
-const CHAMBER_R = DEN_RADIUS              // 52 — floor/wall radius
-const WB_X      = -5.0  * DEN_SCALE       // -24.75
-const WB_Z      = -7.5  * DEN_SCALE       // -37.125
+const CHAMBER_R = DEN_RADIUS              // 52 — floor/wall radius (structure)
+// Workbench sits in the LIFE cluster, matching HomeBaseScene3D.WORKBENCH_X/Z
+const WB_X      = -5.0  * LIFE_SCALE      // -10.4
+const WB_Z      = -7.5  * LIFE_SCALE      // -15.6
 // West exit gap arc — panels 3+4 of the octagon (135°–225°).  Burrow mounds
 // and blocked tunnels must not be placed inside this range.
 const EXIT_GAP_START = Math.PI * 0.75   // 135°
@@ -231,7 +232,7 @@ export function buildBurrowWalls(mat: DenMaterials, add: AddFn): THREE.Group {
 export function buildSilkArchitecture(mat: DenMaterials, add: AddFn): THREE.Group {
   const group = new THREE.Group()
 
-  const S = DEN_SCALE
+  const S = LIFE_SCALE   // props cluster in the intimate life zone, not the full room
   // Ceiling support cables — criss-cross the den for vertical structure
   const anchors = [
     new THREE.Vector3(-8*S, 6*S, -6*S), new THREE.Vector3( 7*S, 7*S, -5*S),
@@ -314,21 +315,22 @@ export function buildJunkFurniture(mat: DenMaterials, add: AddFn): THREE.Group {
   }
 
   const P = PROP_SCALE
-  group.add(bottleCap(0,         0,         1.6*P))
-  group.add(bottleCap(8*DEN_SCALE,  -5*DEN_SCALE, 1.0*P, true))
-  group.add(bottleCap(-9*DEN_SCALE,  6*DEN_SCALE, 0.8*P))
+  const L = LIFE_SCALE   // positions cluster in the life zone
+  group.add(bottleCap(0,        0,        1.6*P))
+  group.add(bottleCap(8*L,  -5*L, 1.0*P, true))
+  group.add(bottleCap(-9*L,  6*L, 0.8*P))
 
-  const tipped = bottleCap(-3*DEN_SCALE, -8*DEN_SCALE, 1.1*P, true)
+  const tipped = bottleCap(-3*L, -8*L, 1.1*P, true)
   tipped.rotation.z = Math.PI / 2.2
   tipped.position.y = 1.0 * P
   group.add(tipped)
 
   const box = new THREE.Mesh(new THREE.BoxGeometry(3*P, 1.4*P, 1.8*P), mat.cardboard)
-  box.position.set(9*DEN_SCALE, 0.7*P, 5*DEN_SCALE)
+  box.position.set(9*L, 0.7*P, 5*L)
   box.castShadow = box.receiveShadow = true
   group.add(box)
   const drawer = new THREE.Mesh(new THREE.BoxGeometry(2.6*P, 0.5*P, 1.4*P), mat.wood)
-  drawer.position.set(9*DEN_SCALE, 0.3*P, 7.5*DEN_SCALE)
+  drawer.position.set(9*L, 0.3*P, 7.5*L)
   drawer.rotation.y = 0.3
   drawer.castShadow = true
   group.add(drawer)
@@ -347,14 +349,14 @@ export function buildJunkFurniture(mat: DenMaterials, add: AddFn): THREE.Group {
   }
   for (let i = 0; i < 6; i++) {
     const a  = (i / 6) * Math.PI * 2
-    const st = spool(Math.cos(a) * 3.2 * DEN_SCALE, Math.sin(a) * 3.2 * DEN_SCALE)
+    const st = spool(Math.cos(a) * 3.2 * L, Math.sin(a) * 3.2 * L)
     if (i === 2) { st.rotation.z = Math.PI / 2; st.position.y = 0.35 * P; st.userData.toppled = true }
     group.add(st)
   }
 
   const thimble = new THREE.Mesh(
     new THREE.CylinderGeometry(0.6*P, 0.45*P, 1.1*P, 18, 1, true), mat.metalCap)
-  thimble.position.set(6*DEN_SCALE, 0.55*P, 6*DEN_SCALE)
+  thimble.position.set(6*L, 0.55*P, 6*L)
   thimble.castShadow = true
   group.add(thimble)
 
@@ -369,7 +371,7 @@ export function buildInventions(mat: DenMaterials, add: AddFn): THREE.Group {
   const group = new THREE.Group()
 
   const P = PROP_SCALE
-  const S = DEN_SCALE
+  const S = LIFE_SCALE   // offsets from the (life-zone) workbench
   // Spare robotic leg segment upright on a stand
   const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.2*P, 0.3*P, 0.6*P, 12), mat.metalCap)
   stand.position.set(WB_X + 1.0*S, 0.3*P, WB_Z + 0.5*S)
@@ -445,7 +447,7 @@ export function buildBirthdayBash(mat: DenMaterials, add: AddFn): THREE.Group {
   cake.traverse(o => { o.castShadow = true })
   group.add(cake)
 
-  const S = DEN_SCALE
+  const S = LIFE_SCALE   // banner + confetti cluster in the life zone
   // Banner — one end torn free, drooping.  The attack interrupted the stringing.
   const bannerStart = new THREE.Vector3(-7*S, 5.5*S, -4*S)
   const bannerEnd   = new THREE.Vector3( 5*S, 1.8*S, -3*S)
@@ -467,7 +469,7 @@ export function buildBirthdayBash(mat: DenMaterials, add: AddFn): THREE.Group {
   for (let i = 0; i < 40; i++) {
     const conf = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), confMats[i % 3])
     const a    = Math.random() * Math.PI * 2
-    const r    = Math.random() * 5.5 * DEN_SCALE
+    const r    = Math.random() * 5.5 * S
     conf.position.set(Math.cos(a) * r, 0.02, Math.sin(a) * r)
     conf.rotation.x = -Math.PI / 2
     conf.rotation.z = Math.random() * Math.PI
@@ -489,7 +491,7 @@ export function buildAttackEvidence(mat: DenMaterials, add: AddFn): THREE.Group 
   const dragMat = new THREE.MeshToonMaterial({
     color: 0x241509, gradientMap: mat.grad, transparent: true, opacity: 0.65,
   })
-  const S = DEN_SCALE
+  const S = LIFE_SCALE   // evidence sits in the life zone with the rest of the home
   const P = PROP_SCALE
   // [startX, startZ, length, angleOffset]
   const markData: [number, number, number, number][] = [

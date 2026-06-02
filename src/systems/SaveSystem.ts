@@ -14,6 +14,7 @@ export interface SaveData {
   openingCutsceneSeen:            boolean
   antColonyFirstVisit:            boolean
   bossesBeaten:                   number
+  cluesFoundIds:                  number[]
 }
 
 const SAVE_KEY = 'noLegs_save_v1'
@@ -32,6 +33,7 @@ const SAVE_FIELDS: (keyof SaveData)[] = [
   'openingCutsceneSeen',
   'antColonyFirstVisit',
   'bossesBeaten',
+  'cluesFoundIds',
 ]
 
 export class SaveSystem {

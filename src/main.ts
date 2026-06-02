@@ -345,8 +345,8 @@ const input = new InputManager(renderer.domElement)
 // camera toward `celebZoom ? 2.8 : userZoom` so the celebration override works
 // without permanently overwriting the player's chosen zoom.
 
-const ZOOM_MIN  = 1.0
-const ZOOM_MAX  = 3.5
+const ZOOM_MIN  = 1.6   // most zoomed-OUT
+const ZOOM_MAX  = 5.0   // most zoomed-IN — raised for the 5× den (Webbs reads small at FRUSTUM 36)
 const ZOOM_STEP = 0.15
 let   userZoom  = 2.0
 
@@ -372,6 +372,7 @@ let lastActiveSlot = 0   // slot fired by left-click; updated whenever a number 
 // Recreated with each HomeBaseScene3D instance.
 let cameraOccluder: CameraOccluder | null = new CameraOccluder(camera)
 cameraOccluder.registerGroup((activeScene as HomeBaseScene3D).denHandles.walls)
+cameraOccluder.register((activeScene as HomeBaseScene3D).antEntranceGroup)
 
 // Den progression — tracks survivors returning after boss defeats.
 // Recreated each time HomeBaseScene3D is created; disposed on zone exit.
@@ -430,6 +431,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         // Rebuild per-scene systems for the new HomeBaseScene3D instance
         cameraOccluder = new CameraOccluder(camera)
         cameraOccluder.registerGroup(s.denHandles.walls)
+        cameraOccluder.register(s.antEntranceGroup)
         denProgression = new SurvivorsProgression(s.denHandles, scene, s.warmPools)
         denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
         break
@@ -599,6 +601,7 @@ function gameLoop() {
     }
     denProgression?.update(delta, t)
     cameraOccluder?.update(webbs.group.position, delta)
+    ;(activeScene as HomeBaseScene3D).updateGlints(webbs.group.position.x, webbs.group.position.z)
   }
 
   // ── Main menu: render background but skip all game input ─────────────────
@@ -650,6 +653,7 @@ function gameLoop() {
       if      (hbs.nearToothpick(px, pz))    hintText = '[E] pick up Toothpick'
       else if (hbs.nearBirthdayCard(px, pz)) hintText = '[E] read Birthday Card'
       else if (hbs.nearGift(px, pz))         hintText = '[E] open Gift'
+      else if (hbs.nearClue(px, pz) >= 0)    hintText = '[E] investigate'
       else if (canCraft)                     hintText = '[E] use Workbench'
     } else if (currentZone === 'antColony') {
       const acs = activeScene as AntColonyScene3D
@@ -697,6 +701,17 @@ function gameLoop() {
           } else {
             pickupNotify.notify('Web Launcher', 'already found', '#ddeeff')
           }
+        } else if (hbs.nearClue(px, pz) >= 0) {
+          const clueIdx = hbs.nearClue(px, pz)
+          const found = registry.get<number[]>('cluesFoundIds') ?? []
+          if (!found.includes(clueIdx)) {
+            found.push(clueIdx)
+            registry.set('cluesFoundIds', found)
+            saveSystem.save()
+            xpSystem.award('pickup')
+          }
+          textDisplay.show({ pages: [hbs.clueText(clueIdx)], title: '— A CLUE —', accentColor: '#ffd9a0' })
+          gamePaused = true
         } else if (canCraft) {
           craftingMenu.show()
           gamePaused = true
@@ -1080,6 +1095,7 @@ function initNewGame(el: HTMLElement): void {
   registry.set('antColonyFirstVisit', false)
   registry.set('pickupsCollected_HomeBaseScene', [])   // Bug 13: clear collected pickups
   registry.set('bossesBeaten', 0)
+  registry.set('cluesFoundIds', [])
   registry.set('totalXp', 0)                            // Round 8 Issue 8: reset XP
   xpSystem.reset()
   xpValueEl.textContent = '0'
@@ -1107,6 +1123,7 @@ function initNewGame(el: HTMLElement): void {
   camera.position.set(HomeBaseScene3D.SPAWN_X + CAM_OFFSET.x, CAM_OFFSET.y, CAM_OFFSET.z)
   cameraOccluder = new CameraOccluder(camera)
   cameraOccluder.registerGroup(freshHbs.denHandles.walls)
+  cameraOccluder.register(freshHbs.antEntranceGroup)
   denProgression = new SurvivorsProgression(freshHbs.denHandles, scene, freshHbs.warmPools)
   denProgression.applyState(0)
 
