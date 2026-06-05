@@ -8,25 +8,27 @@ const UPPER_LEN      = 0.55
 const LOWER_LEN      = 0.55
 
 // ─── Gait constants (base values) ─────────────────────────────────────────────
-const STEP_DURATION  = 0.12   // seconds per step swing (time-based, no scale)
+const STEP_DURATION  = 0.10   // seconds per step swing (time-based, no scale)
 const STEP_HEIGHT    = 0.18   // world units of arc lift
-const STEP_THRESHOLD = 0.28   // distance before a foot triggers a step
-const OVERSHOOT      = 0.18   // anticipatory plant ahead of anchor
+const STEP_THRESHOLD = 0.20   // distance before a foot triggers a step
 const SNAP_THRESHOLD = 0.85   // hard snap when foot drifts this far
 
 // ─── Leg anchor data (body-local, unscaled) ───────────────────────────────────
-// 4L + 4R: legs anchor on the SIDES (±X dominant) with a small fore/aft Z fan.
-// Feet splay ~70–110° off the forward (+Z) axis, matching classic spider stance.
+// 4L + 4R, anchored on the SIDES (±X) but with a WIDE fore-aft (±Z) fan so the
+// four legs of each bank splay across a real arc: front legs reach forward, rear
+// legs reach back. Without enough Z spread the bank collapses to a near-lateral
+// line that foreshortens into a "stacked" clump at axis headings under the iso
+// camera; the wide fan keeps all four legs visually distinct at every heading.
 // Group A: R1, L2, R3, L4  |  Group B: L1, R2, L3, R4
 const ANCHOR_DATA = [
-  { i: 0, side: 'left',  group: 'B', root: [-0.20, 0.15,  0.28], anchor: [-0.80, 0,  0.30] },
-  { i: 1, side: 'right', group: 'A', root: [ 0.20, 0.15,  0.28], anchor: [ 0.80, 0,  0.30] },
-  { i: 2, side: 'left',  group: 'A', root: [-0.20, 0.12,  0.09], anchor: [-0.85, 0,  0.10] },
-  { i: 3, side: 'right', group: 'B', root: [ 0.20, 0.12,  0.09], anchor: [ 0.85, 0,  0.10] },
-  { i: 4, side: 'left',  group: 'B', root: [-0.20, 0.12, -0.09], anchor: [-0.85, 0, -0.10] },
-  { i: 5, side: 'right', group: 'A', root: [ 0.20, 0.12, -0.09], anchor: [ 0.85, 0, -0.10] },
-  { i: 6, side: 'left',  group: 'A', root: [-0.20, 0.15, -0.28], anchor: [-0.80, 0, -0.30] },
-  { i: 7, side: 'right', group: 'B', root: [ 0.20, 0.15, -0.28], anchor: [ 0.80, 0, -0.30] },
+  { i: 0, side: 'left',  group: 'B', root: [-0.18, 0.15,  0.34], anchor: [-0.62, 0,  0.72] },
+  { i: 1, side: 'right', group: 'A', root: [ 0.18, 0.15,  0.34], anchor: [ 0.62, 0,  0.72] },
+  { i: 2, side: 'left',  group: 'A', root: [-0.20, 0.12,  0.12], anchor: [-0.82, 0,  0.26] },
+  { i: 3, side: 'right', group: 'B', root: [ 0.20, 0.12,  0.12], anchor: [ 0.82, 0,  0.26] },
+  { i: 4, side: 'left',  group: 'B', root: [-0.20, 0.12, -0.12], anchor: [-0.82, 0, -0.26] },
+  { i: 5, side: 'right', group: 'A', root: [ 0.20, 0.12, -0.12], anchor: [ 0.82, 0, -0.26] },
+  { i: 6, side: 'left',  group: 'A', root: [-0.18, 0.15, -0.34], anchor: [-0.62, 0, -0.72] },
+  { i: 7, side: 'right', group: 'B', root: [ 0.18, 0.15, -0.34], anchor: [ 0.62, 0, -0.72] },
 ] as const
 
 // ─── Leg tier materials ───────────────────────────────────────────────────────
@@ -160,6 +162,11 @@ export class SpiderLegs {
   private slotWeapons:  WeaponType[]              = Array(8).fill(WeaponType.Empty)
   private weaponMeshes: Array<THREE.Group | null> = Array(8).fill(null)
   private lastBodyRotation = 0
+  // Body-speed tracking → anticipatory step targets (keeps feet within reach when
+  // Webbs moves fast; otherwise the plant lands behind the receding anchor and the
+  // lower leg stretches past its length at diagonal headings → "detach + hop").
+  private lastBodyPos = new THREE.Vector3()
+  private bodySpeed   = 0
   threeScene: THREE.Scene
 
   // Per-instance scaled constants (multiplied by constructor `scale` param)
@@ -168,9 +175,9 @@ export class SpiderLegs {
   private readonly lowerLen:     number
   private readonly stepH:        number
   private readonly stepThresh:   number
-  private readonly overshootDist: number
   private readonly snapThresh:   number
   private readonly rootHOff:     number   // body-height offset for root world Y
+  private readonly maxLead:      number   // cap on anticipatory plant distance
 
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture, scale = 1.0) {
     this.threeScene    = threeScene
@@ -180,9 +187,11 @@ export class SpiderLegs {
     this.lowerLen      = LOWER_LEN      * scale
     this.stepH         = STEP_HEIGHT    * scale
     this.stepThresh    = STEP_THRESHOLD * scale
-    this.overshootDist = OVERSHOOT      * scale
     this.snapThresh    = SNAP_THRESHOLD * scale
     this.rootHOff      = 0.32           * scale
+    // Never plant further ahead than ~45% of total reach — keeps the foot inside
+    // the leg's working envelope even at top speed.
+    this.maxLead       = (UPPER_LEN + LOWER_LEN) * 0.45 * scale
     this.buildLegs()
   }
 
@@ -252,6 +261,8 @@ export class SpiderLegs {
     for (const leg of this.legs) {
       leg.footPos.copy(leg.anchorWorld)
     }
+    this.lastBodyPos.set(bodyPos.x, bodyPos.y, bodyPos.z)
+    this.bodySpeed = 0
   }
 
   // Trigger a one-shot punch/thrust animation on a specific leg.
@@ -282,6 +293,14 @@ export class SpiderLegs {
     weaponSystem: WeaponSystem
   ): void {
     this.updateWorldVecs(bodyPos, bodyRotY)
+
+    // Body-speed estimate (wu/s) from frame displacement — drives anticipatory
+    // foot plants in startStep().  Smoothed so a single jittery frame can't spike it.
+    if (delta > 0.0001) {
+      const inst = Math.hypot(bodyPos.x - this.lastBodyPos.x, bodyPos.z - this.lastBodyPos.z) / delta
+      this.bodySpeed += (inst - this.bodySpeed) * 0.4
+    }
+    this.lastBodyPos.set(bodyPos.x, bodyPos.y, bodyPos.z)
 
     // ─────────────────────────────────────────────────────────────────────────
     // Round 9 Issue 1 — proper rotation-tracking model.
@@ -466,6 +485,16 @@ export class SpiderLegs {
       }
     }
 
+    // Hard reach clamp — guarantee the foot stays inside the leg's working
+    // envelope so the lower segment can never stretch into a "detached" look.
+    // Skip animated legs (attacks deliberately extend the reach).
+    const maxR = (this.upperLen + this.lowerLen) * 0.95
+    for (const leg of this.legs) {
+      if (this.animStates[leg.index]) continue
+      const dRF = leg.footPos.distanceTo(leg.rootWorld)
+      if (dRF > maxR) leg.footPos.lerpVectors(leg.rootWorld, leg.footPos, maxR / dRF)
+    }
+
     // Solve IK + position meshes + update colors + sync weapon meshes
     for (const leg of this.legs) {
       solveTwoBoneIK(leg.rootWorld, leg.footPos, this.upperLen, this.lowerLen, leg.poleDir, this.kneePos)
@@ -610,14 +639,17 @@ export class SpiderLegs {
   }
 
   private startStep(group: Leg[], moveDir: THREE.Vector2): void {
+    // Anticipatory plant: lead the anchor by the distance the body will travel
+    // during the swing (speed × STEP_DURATION), so the foot lands AT the anchor
+    // when the body catches up rather than behind it.  moveDir is unit-length.
+    const lead = Math.min(this.bodySpeed * STEP_DURATION, this.maxLead)
     for (const leg of group) {
       leg.isStepping = true
       leg.stepT      = 0
       leg.stepStart.copy(leg.footPos)
-      // Plant target = anchor world + a little ahead in movement direction
       leg.stepTarget.copy(leg.anchorWorld)
-      leg.stepTarget.x += moveDir.x * this.overshootDist
-      leg.stepTarget.z += moveDir.y * this.overshootDist
+      leg.stepTarget.x += moveDir.x * lead
+      leg.stepTarget.z += moveDir.y * lead
       leg.stepTarget.y  = 0
     }
   }
