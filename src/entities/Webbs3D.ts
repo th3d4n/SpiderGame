@@ -87,8 +87,10 @@ export class Webbs3D {
   private webLauncherMount: THREE.Group | null = null
   private timeSinceDamage   = 9999
   private idleTime          = 0
+  private bodyScale         = 1.0   // applied to speed + collider; set from main.ts
 
-  constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
+  constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture, scale = 1.0) {
+    this.bodyScale   = scale
     this.gradientMap = gradientMap
     this.group = new THREE.Group()
     this.group.position.set(x, 0, z)
@@ -179,14 +181,14 @@ export class Webbs3D {
     threeScene.add(this.group)
 
     // IK legs — added directly to the scene (world-space positioning)
-    this.legs = new SpiderLegs(threeScene, gradientMap)
+    this.legs = new SpiderLegs(threeScene, gradientMap, scale)
     this.legs.initFeetAt(new THREE.Vector3(x, 0, z), 0)
 
     // Physics body on the XZ ground plane
     this.collisionBody = physicsWorld.add({
       x,
       z,
-      radius: BODY_R_NORMAL,
+      radius: BODY_R_NORMAL * scale,
       velocity: { x: 0, z: 0 },
       isStatic: false,
       enabled: true,
@@ -201,7 +203,7 @@ export class Webbs3D {
       this.group.add(this.webLauncherMount)
     }
 
-    const speed = this.winded ? SPEED_WU * WINDED_SPEED_MULT : SPEED_WU
+    const speed = (this.winded ? SPEED_WU * WINDED_SPEED_MULT : SPEED_WU) * this.bodyScale
 
     // Round 9 Issue 2 — camera-aligned WASD.
     // The camera sits at world offset (18, 18, 18) — rotated 45° around Y from

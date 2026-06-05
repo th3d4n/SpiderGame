@@ -88,6 +88,7 @@ export class HomeBaseScene3D {
   warmPools:         THREE.PointLight[]  = []   // exposed for per-frame flicker in main.ts
   denHandles!:       DenHandles               // exposed for SurvivorsProgression
   antEntranceGroup!: THREE.Group              // exposed for CameraOccluder registration
+  wallPanels:        THREE.Mesh[]        = []   // octagon wall panels; registered with CameraOccluder
   exitTriggerX:      number = HomeBaseScene3D.EXIT_TRIGGER_X  // updated by buildAntColonyEntrance
 
   toothpickAvailable = true
@@ -168,6 +169,7 @@ export class HomeBaseScene3D {
     this.buildMaterialPickups()
     this.buildClues(denMat)
     this.buildLighting()
+    this.buildPropColliders()
 
     // Restore pickup state from save — remove objects the player already collected
     if (registry.get<boolean>('toothpickCollected')) this.pickupToothpick()
@@ -204,6 +206,7 @@ export class HomeBaseScene3D {
       panel.rotation.y = -(a0 + a1) / 2
       panel.castShadow = true; panel.receiveShadow = true
       this.add(panel)
+      this.wallPanels.push(panel)   // E: registered with CameraOccluder in main.ts
 
       const cap = new THREE.Mesh(new THREE.BoxGeometry(chord + 0.5, 0.6, 2.5), capMat)  // 0.1/0.12/0.5 × DEN_SCALE
       cap.position.set(mx, WALL_H + 0.06, mz)
@@ -588,6 +591,50 @@ export class HomeBaseScene3D {
 
   clueText(i: number): string { return this.clues[i]?.text ?? '' }
 
+  // ── Prop colliders (A fix) ────────────────────────────────────────────────────
+  // Static circle colliders for every solid prop so Webbs walks around them
+  // instead of phasing through. Radii derived from world-space footprints at 0.45
+  // coverage (slightly inside the visual so edges can be brushed).
+  private buildPropColliders(): void {
+    const body = (x: number, z: number, radius: number) => {
+      this.staticBodies.push(physicsWorld.add({
+        x, z, radius,
+        velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
+      }))
+    }
+    const L = 2.08    // LIFE_SCALE ≈ 2.08
+
+    // Workbench — BoxGeometry(1.4P × 0.9P footprint) ≈ (5.2 × 3.34) → radius 1.17
+    body(HomeBaseScene3D.WORKBENCH_X, HomeBaseScene3D.WORKBENCH_Z, 1.17)
+
+    // Central bottle-cap table (s=1.6P=5.94) + birthday cake on top
+    body(0, 0, 2.68)
+
+    // Bottle-cap table (rusty, 8L × -5L, s=1.0P=3.71)
+    body(8 * L, -5 * L, 1.67)
+
+    // Bottle-cap table (-9L × 6L, s=0.8P=2.97)
+    body(-9 * L, 6 * L, 1.34)
+
+    // Matchbox cabinet (9L × 5L, BoxGeometry 3P×1.8P = 11.1×6.7) → radius 2.51
+    body(9 * L, 5 * L, 2.51)
+
+    // Thimble (6L × 6L, base radius 0.6P=2.23) → collider radius 1.00
+    body(6 * L, 6 * L, 1.00)
+
+    // Gift box (GIFT_X × GIFT_Z, side 0.55P=2.04) → radius 0.46
+    body(HomeBaseScene3D.GIFT_X, HomeBaseScene3D.GIFT_Z, 0.46)
+
+    // Spool stools — 6 around center at r=3.2L=6.66, flange radius 0.55
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2
+      body(Math.cos(a) * 3.2 * L, Math.sin(a) * 3.2 * L, 0.50)
+    }
+
+    // Clue cradle (overturned, bowl radius 0.5)
+    body(-4.16, 6.24, 0.38)
+  }
+
   // ── Proximity glint helpers ───────────────────────────────────────────────────
   // emissive ramps 0 → 0.6 as Webbs closes to interact range. 0.6 stays below the
   // bloom-halo threshold so props glint (findable) without glowing.
@@ -639,6 +686,12 @@ export class HomeBaseScene3D {
     pool(6.24,   2.5, -12.48, 4,  14, 0xff7733) // dim ember near attacked corner
 
     this.warmPools = pools
+
+    // F: guide light midway between life cluster and ant-colony bridge so the
+    // warm→cool gradient is visible from the spawn point and draws the eye west.
+    const guideLight = new THREE.PointLight(0xffcc77, 3.0, 28, 2)
+    guideLight.position.set(-26, 3.5, 0)
+    this.add(guideLight)
   }
 
   // ── Public API ────────────────────────────────────────────────────────────────

@@ -152,7 +152,9 @@ saveSystem.load()
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 
-const webbs = new Webbs3D(scene, HomeBaseScene3D.SPAWN_X, 0, gradientMap)
+const WEBBS_SCALE = 2.4   // tune by eye vs. workbench height (D: Webbs scale pass)
+const webbs = new Webbs3D(scene, HomeBaseScene3D.SPAWN_X, 0, gradientMap, WEBBS_SCALE)
+webbs.group.scale.setScalar(WEBBS_SCALE)   // scale body meshes to match leg IK scale
 webbs.group.renderOrder = 10   // renders above transparent corridor walls
 
 // ─── Combat system ────────────────────────────────────────────────────────────
@@ -368,11 +370,12 @@ let transitioning = false
 let pendingTransitionResume: (() => void) | null = null
 let lastActiveSlot = 0   // slot fired by left-click; updated whenever a number key fires
 
-// Camera occluder — fades burrow mounds that block the view of Webbs.
+// Camera occluder — fades burrow mounds AND octagon wall panels blocking Webbs.
 // Recreated with each HomeBaseScene3D instance.
 let cameraOccluder: CameraOccluder | null = new CameraOccluder(camera)
 cameraOccluder.registerGroup((activeScene as HomeBaseScene3D).denHandles.walls)
 cameraOccluder.register((activeScene as HomeBaseScene3D).antEntranceGroup)
+for (const p of (activeScene as HomeBaseScene3D).wallPanels) cameraOccluder.register(p)
 
 // Den progression — tracks survivors returning after boss defeats.
 // Recreated each time HomeBaseScene3D is created; disposed on zone exit.
@@ -432,6 +435,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         cameraOccluder = new CameraOccluder(camera)
         cameraOccluder.registerGroup(s.denHandles.walls)
         cameraOccluder.register(s.antEntranceGroup)
+        for (const p of s.wallPanels) cameraOccluder.register(p)
         denProgression = new SurvivorsProgression(s.denHandles, scene, s.warmPools)
         denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
         break
@@ -1124,6 +1128,7 @@ function initNewGame(el: HTMLElement): void {
   cameraOccluder = new CameraOccluder(camera)
   cameraOccluder.registerGroup(freshHbs.denHandles.walls)
   cameraOccluder.register(freshHbs.antEntranceGroup)
+  for (const p of freshHbs.wallPanels) cameraOccluder.register(p)
   denProgression = new SurvivorsProgression(freshHbs.denHandles, scene, freshHbs.warmPools)
   denProgression.applyState(0)
 

@@ -3,31 +3,30 @@ import { WeaponType } from '../systems/WeaponSystem'
 import type { WeaponSystem } from '../systems/WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
 
-// ─── IK constants ─────────────────────────────────────────────────────────────
-const UPPER_LEN = 0.55
-const LOWER_LEN = 0.55
+// ─── IK constants (base values; scaled per-instance by SpiderLegs.sc) ────────
+const UPPER_LEN      = 0.55
+const LOWER_LEN      = 0.55
 
-// ─── Gait constants ───────────────────────────────────────────────────────────
-const STEP_DURATION  = 0.12   // seconds per step swing
+// ─── Gait constants (base values) ─────────────────────────────────────────────
+const STEP_DURATION  = 0.12   // seconds per step swing (time-based, no scale)
 const STEP_HEIGHT    = 0.18   // world units of arc lift
 const STEP_THRESHOLD = 0.28   // distance before a foot triggers a step
 const OVERSHOOT      = 0.18   // anticipatory plant ahead of anchor
-// If a foot drifts this far from its anchor (e.g. after a sharp turn), snap it
-// back immediately rather than waiting for the gait machine.
-const SNAP_THRESHOLD = 0.85
+const SNAP_THRESHOLD = 0.85   // hard snap when foot drifts this far
 
-// ─── Leg anchor data (body-local space) — Round 7 Issue 4: scaled ~0.75 ─────
-// Group A: R1, L2, R3, L4 (diagonal cross)
-// Group B: L1, R2, L3, R4 (other diagonal)
+// ─── Leg anchor data (body-local, unscaled) ───────────────────────────────────
+// 4L + 4R: legs anchor on the SIDES (±X dominant) with a small fore/aft Z fan.
+// Feet splay ~70–110° off the forward (+Z) axis, matching classic spider stance.
+// Group A: R1, L2, R3, L4  |  Group B: L1, R2, L3, R4
 const ANCHOR_DATA = [
-  { i: 0, side: 'left',  group: 'B', root: [-0.19, 0.16,  0.22], anchor: [-0.68, 0,  0.52] },
-  { i: 1, side: 'right', group: 'A', root: [ 0.19, 0.16,  0.22], anchor: [ 0.68, 0,  0.52] },
-  { i: 2, side: 'left',  group: 'A', root: [-0.21, 0.12,  0.08], anchor: [-0.75, 0,  0.15] },
-  { i: 3, side: 'right', group: 'B', root: [ 0.21, 0.12,  0.08], anchor: [ 0.75, 0,  0.15] },
-  { i: 4, side: 'left',  group: 'B', root: [-0.21, 0.12, -0.08], anchor: [-0.75, 0, -0.15] },
-  { i: 5, side: 'right', group: 'A', root: [ 0.21, 0.12, -0.08], anchor: [ 0.75, 0, -0.15] },
-  { i: 6, side: 'left',  group: 'A', root: [-0.19, 0.16, -0.22], anchor: [-0.68, 0, -0.52] },
-  { i: 7, side: 'right', group: 'B', root: [ 0.19, 0.16, -0.22], anchor: [ 0.68, 0, -0.52] },
+  { i: 0, side: 'left',  group: 'B', root: [-0.20, 0.15,  0.28], anchor: [-0.80, 0,  0.30] },
+  { i: 1, side: 'right', group: 'A', root: [ 0.20, 0.15,  0.28], anchor: [ 0.80, 0,  0.30] },
+  { i: 2, side: 'left',  group: 'A', root: [-0.20, 0.12,  0.09], anchor: [-0.85, 0,  0.10] },
+  { i: 3, side: 'right', group: 'B', root: [ 0.20, 0.12,  0.09], anchor: [ 0.85, 0,  0.10] },
+  { i: 4, side: 'left',  group: 'B', root: [-0.20, 0.12, -0.09], anchor: [-0.85, 0, -0.10] },
+  { i: 5, side: 'right', group: 'A', root: [ 0.20, 0.12, -0.09], anchor: [ 0.85, 0, -0.10] },
+  { i: 6, side: 'left',  group: 'A', root: [-0.20, 0.15, -0.28], anchor: [-0.80, 0, -0.30] },
+  { i: 7, side: 'right', group: 'B', root: [ 0.20, 0.15, -0.28], anchor: [ 0.80, 0, -0.30] },
 ] as const
 
 // ─── Leg tier materials ───────────────────────────────────────────────────────
@@ -160,19 +159,36 @@ export class SpiderLegs {
   private currentTier   = 0
   private slotWeapons:  WeaponType[]              = Array(8).fill(WeaponType.Empty)
   private weaponMeshes: Array<THREE.Group | null> = Array(8).fill(null)
-  // Round 8 Issue 2: detect large rotation deltas → snap feet to anchors so legs
-  // can't reach across the body when Webbs spins fast.
   private lastBodyRotation = 0
   threeScene: THREE.Scene
 
-  constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
-    this.threeScene = threeScene
-    this.gradientMap = gradientMap
+  // Per-instance scaled constants (multiplied by constructor `scale` param)
+  private readonly sc:           number
+  private readonly upperLen:     number
+  private readonly lowerLen:     number
+  private readonly stepH:        number
+  private readonly stepThresh:   number
+  private readonly overshootDist: number
+  private readonly snapThresh:   number
+  private readonly rootHOff:     number   // body-height offset for root world Y
+
+  constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture, scale = 1.0) {
+    this.threeScene    = threeScene
+    this.gradientMap   = gradientMap
+    this.sc            = scale
+    this.upperLen      = UPPER_LEN      * scale
+    this.lowerLen      = LOWER_LEN      * scale
+    this.stepH         = STEP_HEIGHT    * scale
+    this.stepThresh    = STEP_THRESHOLD * scale
+    this.overshootDist = OVERSHOOT      * scale
+    this.snapThresh    = SNAP_THRESHOLD * scale
+    this.rootHOff      = 0.32           * scale
     this.buildLegs()
   }
 
   private buildLegs(): void {
     const gm = this.gradientMap
+    const sc = this.sc
     for (const d of ANCHOR_DATA) {
       // Three-part leg: fuzzy organic upper (body color) → hinge → bionic lower (tier/weapon)
       const upper = new THREE.Mesh(
@@ -189,19 +205,19 @@ export class SpiderLegs {
         new THREE.MeshStandardMaterial({ color: TIER_COLORS[0], metalness: 0.85, roughness: 0.35 }),
       )
       const knee = new THREE.Mesh(
-        new THREE.SphereGeometry(0.08, 8, 6),
+        new THREE.SphereGeometry(0.08 * sc, 8, 6),
         // Servo joint — near-black metal
         new THREE.MeshStandardMaterial({ color: 0x1a1a1f, metalness: 0.9, roughness: 0.25 }),
       )
       // Emissive accent ring at the joint — the "this is a machine" tell; blooms with UnrealBloomPass
       const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(0.045, 0.008, 6, 14),
+        new THREE.TorusGeometry(0.045 * sc, 0.008 * sc, 6, 14),
         new THREE.MeshStandardMaterial({ color: 0x00d9ff, emissive: 0x00aaff, emissiveIntensity: 1.4 }),
       )
       ring.rotation.x = Math.PI / 2
       knee.add(ring)
       const tip = new THREE.Mesh(
-        new THREE.SphereGeometry(0.09, 8, 6),
+        new THREE.SphereGeometry(0.09 * sc, 8, 6),
         new THREE.MeshToonMaterial({ color: 0x444444, gradientMap: gm }),
       )
       upper.castShadow = false
@@ -214,8 +230,8 @@ export class SpiderLegs {
         index:        d.i,
         side:         d.side,
         group:        d.group,
-        rootOffset:   new THREE.Vector3(...d.root),
-        anchorOffset: new THREE.Vector3(...d.anchor),
+        rootOffset:   new THREE.Vector3(d.root[0] * sc,   d.root[1] * sc,   d.root[2] * sc),
+        anchorOffset: new THREE.Vector3(d.anchor[0] * sc, d.anchor[1] * sc, d.anchor[2] * sc),
         footPos:      new THREE.Vector3(),
         anchorWorld:  new THREE.Vector3(),
         rootWorld:    new THREE.Vector3(),
@@ -293,9 +309,8 @@ export class SpiderLegs {
       }
     }
 
-    // Hard catch-up — if a foot is somehow > 1.2wu from its body-local anchor
-    // (instant teleport, very long rotation, etc.), snap it straight to the
-    // rotated anchor position.
+    // Hard catch-up — snap feet that drifted beyond 1.2× baseline (scaled) after a teleport.
+    const hardSnap = (1.2 * this.sc) ** 2
     const bcos = Math.cos(-bodyRotY)
     const bsin = Math.sin(-bodyRotY)
     const wcos = Math.cos( bodyRotY)
@@ -310,7 +325,7 @@ export class SpiderLegs {
       const az  = leg.anchorOffset.z
       const dx  = blx - ax
       const dz  = blz - az
-      if (dx * dx + dz * dz > 1.2 * 1.2) {
+      if (dx * dx + dz * dz > hardSnap) {
         leg.footPos.x = bodyPos.x + ax * wcos - az * wsin
         leg.footPos.z = bodyPos.z + ax * wsin + az * wcos
         leg.isStepping = false
@@ -325,7 +340,7 @@ export class SpiderLegs {
     // Mark legs that have drifted too far from their anchor (non-animated only)
     for (const leg of this.legs) {
       if (animSet.has(leg.index)) { leg.wantsStep = false; leg.isStepping = false; continue }
-      leg.wantsStep = !leg.isStepping && leg.footPos.distanceTo(leg.anchorWorld) > STEP_THRESHOLD
+      leg.wantsStep = !leg.isStepping && leg.footPos.distanceTo(leg.anchorWorld) > this.stepThresh
     }
 
     // Gait state machine — exclude animated legs so they never block phase transitions
@@ -339,12 +354,10 @@ export class SpiderLegs {
     if (this.phase === 'A') { this.advanceStep(ga, delta); if (ga.every(l => !l.isStepping)) this.phase = 'IDLE' }
     if (this.phase === 'B') { this.advanceStep(gb, delta); if (gb.every(l => !l.isStepping)) this.phase = 'IDLE' }
 
-    // Snap correction — after a sharp turn all anchors shift at once.  Any planted
-    // foot that ended up far from its new anchor (> SNAP_THRESHOLD) is moved
-    // immediately so front legs stay at the front of the spider.
+    // Snap correction — after a sharp turn all anchors shift at once.
     for (const leg of this.legs) {
       if (animSet.has(leg.index) || leg.isStepping) continue
-      if (leg.footPos.distanceTo(leg.anchorWorld) > SNAP_THRESHOLD) {
+      if (leg.footPos.distanceTo(leg.anchorWorld) > this.snapThresh) {
         leg.footPos.copy(leg.anchorWorld)
       }
     }
@@ -455,10 +468,10 @@ export class SpiderLegs {
 
     // Solve IK + position meshes + update colors + sync weapon meshes
     for (const leg of this.legs) {
-      solveTwoBoneIK(leg.rootWorld, leg.footPos, UPPER_LEN, LOWER_LEN, leg.poleDir, this.kneePos)
+      solveTwoBoneIK(leg.rootWorld, leg.footPos, this.upperLen, this.lowerLen, leg.poleDir, this.kneePos)
       // Upper slightly thicker (organic), lower slimmer (bionic)
-      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048)
-      positionCylinder(leg.lower, this.kneePos,  leg.footPos,  0.025)
+      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048 * this.sc)
+      positionCylinder(leg.lower, this.kneePos,  leg.footPos,  0.025 * this.sc)
       leg.knee.position.copy(this.kneePos)
       leg.tip.position.copy(leg.footPos)
       // During animation the tip can rise above 0 — let it (no floor clamp)
@@ -549,9 +562,9 @@ export class SpiderLegs {
 
     // Solve IK + update meshes for every leg
     for (const leg of this.legs) {
-      solveTwoBoneIK(leg.rootWorld, leg.footPos, UPPER_LEN, LOWER_LEN, leg.poleDir, this.kneePos)
-      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048)
-      positionCylinder(leg.lower, this.kneePos,  leg.footPos,  0.025)
+      solveTwoBoneIK(leg.rootWorld, leg.footPos, this.upperLen, this.lowerLen, leg.poleDir, this.kneePos)
+      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048 * this.sc)
+      positionCylinder(leg.lower, this.kneePos,  leg.footPos,  0.025 * this.sc)
       leg.knee.position.copy(this.kneePos)
       leg.tip.position.copy(leg.footPos)
       leg.tip.position.y = Math.max(leg.footPos.y, 0.08)
@@ -580,10 +593,10 @@ export class SpiderLegs {
         bodyPos.z + a.x * sin + a.z * cos
       )
 
-      // Root: body-local, elevated by body mesh height (Round 7 Issue 4: 0.4 → 0.32)
+      // Root: body-local, elevated by body mesh height (scaled by sc)
       leg.rootWorld.set(
         bodyPos.x + r.x * cos - r.z * sin,
-        bodyPos.y + r.y + 0.32,
+        bodyPos.y + r.y + this.rootHOff,
         bodyPos.z + r.x * sin + r.z * cos
       )
 
@@ -603,8 +616,8 @@ export class SpiderLegs {
       leg.stepStart.copy(leg.footPos)
       // Plant target = anchor world + a little ahead in movement direction
       leg.stepTarget.copy(leg.anchorWorld)
-      leg.stepTarget.x += moveDir.x * OVERSHOOT
-      leg.stepTarget.z += moveDir.y * OVERSHOOT
+      leg.stepTarget.x += moveDir.x * this.overshootDist
+      leg.stepTarget.z += moveDir.y * this.overshootDist
       leg.stepTarget.y  = 0
     }
   }
@@ -616,7 +629,7 @@ export class SpiderLegs {
       // Lerp XZ, sine arc in Y
       leg.footPos.lerpVectors(leg.stepStart, leg.stepTarget, leg.stepT)
       leg.footPos.y = leg.stepT < 1
-        ? Math.sin(leg.stepT * Math.PI) * STEP_HEIGHT
+        ? Math.sin(leg.stepT * Math.PI) * this.stepH
         : 0
       if (leg.stepT >= 1) leg.isStepping = false
     }
