@@ -41,7 +41,7 @@ export interface Recipe {
 export const RECIPES: Recipe[] = [
   {
     id:          RecipeType.Sword,
-    displayName: 'Silk Sword',
+    displayName: 'Shard Sword',
     materials:   { [MaterialType.SilkThread]: 3, [MaterialType.ChitinShard]: 2 },
     requiredTier: 0,
     produces:    WeaponType.Sword,

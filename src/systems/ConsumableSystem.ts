@@ -24,44 +24,50 @@ export interface ConsumableRecipe {
   findOnly?:   boolean
 }
 
-// All findOnly for Zone 1 — craftable in later zones per brief.
+// Brewed at the workbench (Brews tab) from colony materials; Tonic III is only
+// ever found in chests.  The Max Potion needs Crystal Dust, which the Roller drops.
 export const CONSUMABLE_RECIPES: ConsumableRecipe[] = [
   {
     id:          ConsumableType.HpPotion,
     displayName: 'HP Potion',
-    materials:   { [MaterialType.SilkThread]: 3, [MaterialType.DriedFungus]: 2 },
-    findOnly:    true,
+    materials:   { [MaterialType.SilkThread]: 2, [MaterialType.DriedFungus]: 1 },
   },
   {
     id:          ConsumableType.StaminaTonicI,
     displayName: 'Stamina Tonic I',
-    materials:   { [MaterialType.BugPartsAnt]: 3, [MaterialType.Stone]: 2 },
-    findOnly:    true,
+    materials:   { [MaterialType.BugPartsAnt]: 2, [MaterialType.WebFluid]: 1 },
   },
   {
     id:          ConsumableType.StaminaTonicII,
     displayName: 'Stamina Tonic II',
-    materials:   { [MaterialType.BugPartsAnt]: 3, [MaterialType.Stone]: 2, [MaterialType.DriedFungus]: 2 },
-    findOnly:    true,
+    materials:   { [MaterialType.BugPartsAnt]: 3, [MaterialType.DriedFungus]: 1, [MaterialType.WebFluid]: 1 },
   },
   {
     id:          ConsumableType.StaminaTonicIII,
     displayName: 'Stamina Tonic III',
     materials:   {},
-    findOnly:    true,  // never craftable
+    findOnly:    true,  // chests only
   },
   {
     id:          ConsumableType.MaxPotion,
     displayName: 'Max Potion',
     materials:   {
-      [MaterialType.SilkThread]:   3,
-      [MaterialType.BugPartsAnt]:  3,
-      [MaterialType.DriedFungus]:  2,
-      [MaterialType.CrystalShard]: 1,
+      [MaterialType.SilkThread]:  3,
+      [MaterialType.BugPartsAnt]: 3,
+      [MaterialType.DriedFungus]: 2,
+      [MaterialType.CrystalDust]: 1,
     },
-    findOnly: true,
   },
 ]
+
+// UI copy + colour + quick-use key for each brew
+export const CONSUMABLE_INFO: Record<ConsumableType, { blurb: string; key: 'C' | 'V' | 'X'; color: string }> = {
+  [ConsumableType.HpPotion]:        { key: 'C', color: '#ff6a5c', blurb: 'Fungus steeped in silk. Restores 40 HP.' },
+  [ConsumableType.StaminaTonicI]:   { key: 'V', color: '#ffc061', blurb: 'Attacks cost a fifth of their stamina for 15 s.' },
+  [ConsumableType.StaminaTonicII]:  { key: 'V', color: '#ffb03a', blurb: 'Attacks cost a fifth of their stamina for 30 s.' },
+  [ConsumableType.StaminaTonicIII]: { key: 'V', color: '#ff9a1a', blurb: 'Attacks cost a fifth of their stamina for 60 s. Never brewed — only found.' },
+  [ConsumableType.MaxPotion]:       { key: 'X', color: '#9fe3ff', blurb: 'Ten seconds of nothing can touch you, and attacks are free.' },
+}
 
 // HP restored by one HP Potion (out of 100 max)
 export const HP_POTION_AMOUNT = 40
@@ -146,6 +152,12 @@ export class ConsumableSystem {
   // ── Effect queries (read each frame to drive webbs + weapon system) ────────
 
   isTonicActive(): boolean    { return this.tonicTimer  > 0 }
+  tonicRemainingMs(): number  { return this.tonicTimer }
+  maxRemainingMs(): number    { return this.maxPotTimer }
+  tonicCount(): number {
+    return this.getAmount(ConsumableType.StaminaTonicI) + this.getAmount(ConsumableType.StaminaTonicII) +
+           this.getAmount(ConsumableType.StaminaTonicIII)
+  }
   isMaxProtActive(): boolean  { return this.maxPotTimer > 0 }
 
   /** Multiplier applied to all weapon stamina costs. 0 during Max Potion, TONIC_DRAIN_MULT during tonics. */

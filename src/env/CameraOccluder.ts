@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { clonePatched } from './Materials'
 
 interface OccluderEntry {
   mesh:  THREE.Object3D
@@ -42,7 +43,7 @@ export class CameraOccluder {
       if (!m.isMesh || !m.material) return
       const list: THREE.Material[] = Array.isArray(m.material) ? m.material : [m.material]
       const cloned = list.map(src => {
-        const c = src.clone()
+        const c = clonePatched(src)
         // Store originals so we can restore when unoccluded
         c.userData._occOrigOpacity     = (c as THREE.MeshStandardMaterial).opacity ?? 1
         c.userData._occOrigTransparent = (c as THREE.MeshStandardMaterial).transparent ?? false
@@ -91,7 +92,8 @@ export class CameraOccluder {
         const origOp = (m.userData._occOrigOpacity as number)    ?? 1
         const origTr = (m.userData._occOrigTransparent as boolean) ?? false
         m.opacity    = origOp * (1 - t) + this.fadeTarget * t
-        m.transparent = t > 0.001 ? true : origTr
+        const tr = t > 0.001 ? true : origTr
+        if (m.transparent !== tr) { m.transparent = tr; m.needsUpdate = true }
         m.depthWrite  = t > 0.5   ? false : true
       }
     }

@@ -1,9 +1,18 @@
 import * as THREE from 'three'
+import { disposeTree } from '../core/dispose'
 import { type CollisionBody, physicsWorld } from '../core/PhysicsWorld'
 import { WeaponType } from '../systems/WeaponSystem'
+import { addRim } from '../env/Materials'
+import { audio } from '../systems/AudioManager'
+
+// Warm silhouette rim for hostiles — reads apart from Webbs' cool rim at a glance
+const ENEMY_RIM = { color: 0xffc8a0, strength: 0.32 }
 
 // Mirror of WeakPointZone from the old Enemy.ts — kept here so WeaponUseSystem3D
 // can import from one place without touching the Phaser file.
+// After a stun ends the enemy can't be stunned again for this long
+const STAGGER_IMMUNITY = 0.6   // s
+
 export const WeakPointZone = {
   Head:       'Head',
   Tail:       'Tail',
@@ -21,6 +30,9 @@ export interface EnemyConfig3D {
   staggerDuration: number   // seconds
   weakPoints?:     WeakPointZone[]
   weakMultiplier?: number
+  // Elongated body: capsule core half-length along local Z (forward) or X.
+  // Omit for round bodies.  Matches the mesh so contacts land where it looks solid.
+  capsule?:        { halfLength: number; axis: 'x' | 'z' }
 }
 
 export abstract class Enemy3D {
@@ -30,16 +42,18 @@ export abstract class Enemy3D {
   hpMax: number
   readonly config: EnemyConfig3D
   staggerTimer    = 0
+  staggerImmuneT  = 0   // after a stun ends, briefly can't be re-stunned
   contactCooldown = 0
   stuckThistles   = 0
-  knockbackTimer  = 0   // seconds remaining in forced-velocity knockback window
-  knockbackVx     = 0   // initial knockback velocity stored for decay
-  knockbackVz     = 0
+  knockbackTimer  = 0   // seconds since a hit shoved it (AI paused, no contact damage)
 
-  // Round 9 Issue 4 — physical hit reaction (visual-only wobble of group).
+  // Directional flinch (visual): the body is shoved and tilted along the blow,
+  // then springs back.  Collision body is unaffected.
   private hitReactionTimer    = 0
   private hitReactionBaseDur  = 0
   private hitReactionAmp      = 0
+  private hitDirX = 0
+  private hitDirZ = 1
 
   // Round 9b — death animation state.  Subclasses override startDeath/updateDeath
   // to provide per-weapon visuals.  isExpired() returns true once duration elapses.
@@ -75,6 +89,7 @@ export abstract class Enemy3D {
     this.hpMax       = config.health
 
     this.group = new THREE.Group()
+    this.group.rotation.order = 'YXZ'   // heading, then flinch tilt in body space
     this.group.position.set(x, 0, z)
     this.group.renderOrder = 10   // renders above transparent walls
     threeScene.add(this.group)
@@ -85,7 +100,10 @@ export abstract class Enemy3D {
       velocity: { x: 0, z: 0 },
       isStatic: false,
       enabled:  true,
-      drag:     6,   // wu/s² ≈ Phaser drag(600,600) at SCALE=0.01
+      drag:     6,   // external-impulse decay (1/s)
+      // Heavier enemies (knockback-resistant) shove the player and resist being shoved.
+      mass:     Math.PI * config.bodyRadius * config.bodyRadius * 20 * (1 + 4 * config.knockbackResist),
+      capsule:  config.capsule,
     })
 
   }
@@ -109,34 +127,50 @@ export abstract class Enemy3D {
       dmg *= this.config.weakMultiplier
     }
     this.hp = Math.max(0, this.hp - dmg)
-    this.staggerTimer = this.config.staggerDuration
-    this._flashTimer  = 0.12
+    this._flashTimer  = 0.12   // stun is separate — see stagger()
     if (this.hp <= 0) this.startDeath(killingWeapon ?? WeaponType.Empty)
   }
 
-  applyKnockback(vx: number, vz: number): void {
-    if (this._dying) return
-    const s = 1 - this.config.knockbackResist
-    this.knockbackVx    = vx * s
-    this.knockbackVz    = vz * s
-    this.knockbackTimer = 0.25
-    this.collisionBody.velocity.x = this.knockbackVx
-    this.collisionBody.velocity.z = this.knockbackVz
+  // Stun from a hit: scaled down by the enemy's resistance, capped by its own
+  // staggerDuration, and followed by STAGGER_IMMUNITY — so a fast weapon can
+  // interrupt an enemy but never hold it stunned forever.
+  stagger(seconds: number): void {
+    if (this.staggerImmuneT > 0 || this.superArmor()) return
+    const s = Math.min(this.config.staggerDuration, seconds * (1 - 0.7 * this.config.knockbackResist))
+    if (s < 0.04) return
+    this.staggerTimer = Math.max(this.staggerTimer, s)
   }
 
-  // Round 9 Issue 4 — start a physical hit-reaction wobble.  Different styles
-  // get different durations and amplitudes so axe slams hit visibly harder
-  // than a stab.  The wobble is a per-frame random XZ offset applied to the
-  // group in syncPosition() — collision body is unaffected.
+  // Override: true while an attack is committed (can't be stunned or shoved out of it)
+  protected superArmor(): boolean { return false }
+
+  // Physical shove: an impulse on the body (decays with drag, blocked by walls,
+  // pushes into other enemies) instead of a forced velocity.  Resistance and
+  // mass both soften it.  Also sets the flinch direction.
+  applyKnockback(vx: number, vz: number): void {
+    if (this._dying || this.superArmor()) return
+    const len = Math.hypot(vx, vz)
+    if (len > 1e-4) { this.hitDirX = vx / len; this.hitDirZ = vz / len }
+    const s = 1 - this.config.knockbackResist
+    this.collisionBody.push(vx * s, vz * s)
+    // The AI pause scales with resistance and respects stun immunity
+    if (this.staggerImmuneT <= 0) this.knockbackTimer = Math.max(this.knockbackTimer, 0.25 * s)
+  }
+
+  // Override for enemies whose body only hurts during an attack (lunge, charge…).
+  dealsContactDamage(): boolean { return true }
+
+  // Directional flinch — heavier weapons shove and tilt the body further and
+  // ring longer.  Direction comes from the last applyKnockback().
   startHitReaction(style: 'small' | 'medium' | 'large' | 'stab' | 'sword' | 'axe'): void {
     let dur = 0.15, amp = 0.05
     switch (style) {
-      case 'stab':   dur = 0.12; amp = 0.04; break
-      case 'small':  dur = 0.15; amp = 0.05; break
-      case 'sword':  dur = 0.20; amp = 0.10; break
-      case 'medium': dur = 0.22; amp = 0.10; break
-      case 'axe':    dur = 0.35; amp = 0.20; break
-      case 'large':  dur = 0.30; amp = 0.15; break
+      case 'stab':   dur = 0.22; amp = 0.07; break
+      case 'small':  dur = 0.25; amp = 0.08; break
+      case 'sword':  dur = 0.32; amp = 0.13; break
+      case 'medium': dur = 0.32; amp = 0.12; break
+      case 'axe':    dur = 0.45; amp = 0.22; break
+      case 'large':  dur = 0.42; amp = 0.18; break
     }
     this.hitReactionTimer   = dur
     this.hitReactionBaseDur = dur
@@ -157,6 +191,7 @@ export abstract class Enemy3D {
     if (this.deathState) { this.updateDeath(delta); return }
 
     this.contactCooldown = Math.max(0, this.contactCooldown - delta)
+    this.staggerImmuneT  = Math.max(0, this.staggerImmuneT - delta)
     if (this.hitReactionTimer > 0) this.hitReactionTimer = Math.max(0, this.hitReactionTimer - delta)
 
     if (this._dying) {
@@ -171,40 +206,69 @@ export abstract class Enemy3D {
       this.setFlashColor(this._flashTimer > 0)
     }
 
-    // ── Knockback window: force decaying velocity, skip AI ─────────────────
+    // ── Knockback window: the impulse carries the body, AI waits ────────────
     if (this.knockbackTimer > 0) {
       this.knockbackTimer = Math.max(0, this.knockbackTimer - delta)
-      const frac = this.knockbackTimer / 0.25   // 1 → 0
-      this.collisionBody.velocity.x = this.knockbackVx * frac
-      this.collisionBody.velocity.z = this.knockbackVz * frac
-      this.staggerTimer = Math.max(0, this.staggerTimer - delta)
+      this.collisionBody.velocity.x = 0
+      this.collisionBody.velocity.z = 0
+      this.tickStagger(delta)
       return
     }
 
-    this.staggerTimer = Math.max(0, this.staggerTimer - delta)
+    this.tickStagger(delta)
     if (this.staggerTimer <= 0) {
       this.updateAI(delta, playerX, playerZ)
+    } else {
+      // Stunned: drop locomotion intent.  Previously the last AI velocity stayed
+      // live, so a beetle hit mid-charge kept charging through its stagger.
+      this.collisionBody.velocity.x = 0
+      this.collisionBody.velocity.z = 0
     }
+  }
+
+  private tickStagger(delta: number): void {
+    if (this.staggerTimer <= 0) return
+    this.staggerTimer = Math.max(0, this.staggerTimer - delta)
+    if (this.staggerTimer <= 0) this.staggerImmuneT = STAGGER_IMMUNITY
   }
 
   // Sync 3D group from physics body — call after physicsWorld.update().
   // Round 9 Issue 4: hit-reaction wobble layered on top (visual only).
   // Round 9b: skip while death animation drives the group transform itself.
+  private rimApplied = false
+
   syncPosition(): void {
+    // Subclasses build their meshes after super(); patch them on the first sync
+    if (!this.rimApplied) { addRim(this.group, ENEMY_RIM); this.rimApplied = true }
+    audio.moveOwner(this, this.collisionBody.x, this.collisionBody.z)   // its loops follow it
     if (this._dying || this.deathState) return
     let ox = 0, oz = 0
     if (this.hitReactionTimer > 0 && this.hitReactionBaseDur > 0) {
-      const k = this.hitReactionTimer / this.hitReactionBaseDur
-      ox = (Math.random() - 0.5) * this.hitReactionAmp * k
-      oz = (Math.random() - 0.5) * this.hitReactionAmp * k
+      // Damped spring: snaps along the blow, overshoots back once, settles
+      const e   = this.hitReactionBaseDur - this.hitReactionTimer
+      const k   = Math.exp(-e * 9) * Math.cos(e * 22)
+      const amp = this.hitReactionAmp * k
+      ox = this.hitDirX * amp
+      oz = this.hitDirZ * amp
+      // Tilt with the push: top of the body leans along the hit direction.
+      // Body-local hit dir (inverse yaw); +x-rotation leans the top toward +Z.
+      const y  = this.group.rotation.y
+      const lx = this.hitDirX * Math.cos(y) - this.hitDirZ * Math.sin(y)
+      const lz = this.hitDirX * Math.sin(y) + this.hitDirZ * Math.cos(y)
+      const tilt = Math.min(0.5, this.hitReactionAmp * 2.4) * k
+      this.group.rotation.x =  lz * tilt
+      this.group.rotation.z = -lx * tilt
+      if (this.hitReactionTimer <= 0.0001) { this.group.rotation.x = 0; this.group.rotation.z = 0 }
     }
-    this.group.position.x = this.collisionBody.x + ox
-    this.group.position.z = this.collisionBody.z + oz
+    this.group.position.x = this.collisionBody.renderX + ox
+    this.group.position.z = this.collisionBody.renderZ + oz
+    this.collisionBody.heading = this.group.rotation.y   // capsules turn with the body
   }
 
   // Remove from scene and physics — call when isExpired().
   cleanup(): void {
-    this.group.removeFromParent()
+    audio.stopOwner(this)
+    disposeTree(this.group)
     physicsWorld.remove(this.collisionBody)
   }
 
@@ -218,6 +282,8 @@ export abstract class Enemy3D {
     this.collisionBody.velocity.x = 0
     this.collisionBody.velocity.z = 0
     this.deathState = { weapon, elapsed: 0, duration: 1.0, phase: 'default' }
+    audio.stopOwner(this)
+    audio.play('small_death', this.collisionBody.x, this.collisionBody.z)   // ants, jumping spiders
   }
 
   // Per-frame death animation tick.  Subclasses override for unique behavior.

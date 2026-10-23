@@ -9,7 +9,8 @@ const CONFIG: EnemyConfig3D = {
   health:          80,
   speed:           0.48,   // 48 px/s × 0.01
   damage:          20,
-  bodyRadius:      0.26,   // 26 px × 0.01
+  bodyRadius:      0.27,   // shell half-width
+  capsule:         { halfLength: 0.07, axis: 'z' },   // shell spans ±0.34 along heading
   knockbackResist: 0.65,
   staggerDuration: 0.70,
   weakPoints:      [WeakPointZone.Underbelly],
@@ -28,7 +29,9 @@ type BeetleState = 'PATROL' | 'WINDUP' | 'CHARGING' | 'RECOVERING'
 
 export class BeetleTank3D extends Enemy3D {
   private state:         BeetleState = 'PATROL'
-  private prevBeetleState: BeetleState = 'PATROL'   // Round 10 — for transition SFX
+  // null so the first frame counts as a transition (PATROL's walk loop used to
+  // never start, because the beetle was born "already" patrolling)
+  private prevBeetleState: BeetleState | null = null   // Round 10 — for transition SFX
   private patrolDir      = 1          // +1 right, -1 left
   private chargeTimer    = 0
   private chargeCooldown = 0
@@ -117,10 +120,10 @@ export class BeetleTank3D extends Enemy3D {
       else if (this.state === 'RECOVERING' && this.prevBeetleState === 'CHARGING') {
         audio.play('beetle_charge_crash', cx, cz)
       }
-      else if (this.state === 'PATROL')   audio.playLoop('beetle_walk', cx, cz)
-      else if (this.state === 'CHARGING') audio.playLoop('beetle_charging', cx, cz)
-      if (this.prevBeetleState === 'PATROL')   audio.stopLoop('beetle_walk')
-      if (this.prevBeetleState === 'CHARGING') audio.stopLoop('beetle_charging')
+      else if (this.state === 'PATROL')   audio.playLoop('beetle_walk', cx, cz, this)
+      else if (this.state === 'CHARGING') audio.playLoop('beetle_charging', cx, cz, this)
+      if (this.prevBeetleState === 'PATROL')   audio.stopLoop('beetle_walk', this)
+      if (this.prevBeetleState === 'CHARGING') audio.stopLoop('beetle_charging', this)
       this.prevBeetleState = this.state
     }
 
@@ -143,7 +146,10 @@ export class BeetleTank3D extends Enemy3D {
         this.collisionBody.velocity.z = 0
 
         const x = this.collisionBody.x
-        if (x > 11.5 || x < -11.5) this.patrolDir *= -1
+        // Set (don't flip) the direction: beetles spawned outside the band
+        // used to reverse every frame and jitter in place.
+        if (x > 11.5) this.patrolDir = -1
+        else if (x < -11.5) this.patrolDir = 1
 
         this.facingAngle    = this.patrolDir > 0 ? Math.PI / 2 : -Math.PI / 2
         this.group.rotation.y = this.facingAngle
@@ -253,6 +259,9 @@ export class BeetleTank3D extends Enemy3D {
   // Round 9b — beetle death animations.  The shell is the centrepiece — each
   // weapon either cracks it, shatters it, flips the beetle off it, or cooks it.
   // ───────────────────────────────────────────────────────────────────────────
+  // The charge is the attack; a patrolling beetle just bumps you
+  override dealsContactDamage(): boolean { return this.state === 'CHARGING' }
+
   override startHitReaction(style: 'small' | 'medium' | 'large' | 'stab' | 'sword' | 'axe'): void {
     super.startHitReaction(style)
     audio.play('beetle_hit', this.collisionBody.x, this.collisionBody.z)
@@ -285,8 +294,7 @@ export class BeetleTank3D extends Enemy3D {
                    : weapon === WeaponType.BoxingGloves  ? 'beetle_death_stab'
                    : weapon === WeaponType.FlameBreather ? 'beetle_death_flame'
                    :                                       'beetle_death_generic'
-    audio.stopLoop('beetle_walk')
-    audio.stopLoop('beetle_charging')
+    audio.stopOwner(this)
     audio.play(deathKey, cx, cz)
 
     switch (weapon) {

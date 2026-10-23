@@ -76,7 +76,8 @@ export class FogOfWarSystem3D {
           float perm  = texture2D(revealTex, uv).r;
           // Once explored, area stays fully clear (no residual fog).
           float reveal = max(live, perm);
-          gl_FragColor = vec4(0.03, 0.02, 0.0, (1.0 - reveal) * 0.98);
+          // Linear colour (the OutputPass encodes to sRGB) — ≈ #0e0c09 on screen
+          gl_FragColor = vec4(0.0045, 0.0037, 0.0027, (1.0 - reveal) * 0.98);
         }
       `,
     })
@@ -90,8 +91,17 @@ export class FogOfWarSystem3D {
     threeScene.add(this.fogMesh)
   }
 
+  private lastStampX = Infinity
+  private lastStampZ = Infinity
+
   update(playerX: number, playerZ: number): void {
     this.fogMat.uniforms.playerPos.value.set(playerX, playerZ)
+    // The reveal canvas only changes when the player moves — re-uploading the
+    // 512×256 texture every frame was a per-frame upload (and a stall on some
+    // mobile GPUs) while standing still.
+    if (Math.hypot(playerX - this.lastStampX, playerZ - this.lastStampZ) < 0.2) return
+    this.lastStampX = playerX
+    this.lastStampZ = playerZ
 
     // Stamp a reveal ellipse at the current player position.
     // The stamp's effective size is slightly larger than the "live" halo so

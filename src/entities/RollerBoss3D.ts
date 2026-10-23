@@ -7,19 +7,25 @@ const PATROL_SPEED = 1.15   // wu/s  (115 px/s × 0.01)
 const CHARGE_SPEED = 3.90   // wu/s  (390 px/s × 0.01)
 const LEFT_WALL    = -9.0
 const RIGHT_WALL   = 9.0
+// Every attack is telegraphed: the Roller crouches (slam) or bunches up (tail)
+// for this long before it commits, so a reading player can dodge.
+const SLAM_WINDUP  = 0.5
+const SWIPE_WINDUP = 0.4
+const SLAM_TRIGGER = 3.0    // wu — starts a slam when the player is this close
 
 const CONFIG: EnemyConfig3D = {
-  health:          100,
+  health:          300,      // was 100: four axe swings ended the fight
   speed:           PATROL_SPEED,
-  damage:          15,
-  bodyRadius:      0.42,
+  damage:          10,       // touching it while it patrols (attacks hit harder)
+  bodyRadius:      0.37,   // body half-depth
+  capsule:         { halfLength: 0.36, axis: 'x' },   // long axis is X (snout/tail): mesh spans ±0.78
   knockbackResist: 0.9,
   staggerDuration: 0.4,
   weakPoints:      ['Head'],
-  weakMultiplier:  2.0,
+  weakMultiplier:  1.5,
 }
 
-type AttackState = 'idle' | 'charging' | 'groundPound' | 'tailSwipe'
+type AttackState = 'idle' | 'slamWindup' | 'charging' | 'groundPound' | 'swipeWindup' | 'tailSwipe'
 
 export class RollerBoss3D extends Enemy3D {
   private facingDir    = 1          // +1 = right (+x), -1 = left (-x)
@@ -27,6 +33,8 @@ export class RollerBoss3D extends Enemy3D {
   private attackTimer  = 0
   private attackCooldown = 0
   private phaseChangeFired = false
+  private slamDirX = 1
+  private slamDirZ = 0
 
   // One-shot event flags — scene reads these each frame and resets after
   justStartedBodySlam     = false
@@ -40,7 +48,7 @@ export class RollerBoss3D extends Enemy3D {
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     super(threeScene, x, z, CONFIG, gradientMap)
     this.buildVisuals()
-    audio.playLoop('boss_idle', x, z)
+    audio.playLoop('boss_idle', x, z, this)
   }
 
   buildVisuals(): void {
@@ -107,6 +115,24 @@ export class RollerBoss3D extends Enemy3D {
     if (this.attackCooldown > 0) this.attackCooldown -= delta
 
     switch (this.attackState) {
+      case 'slamWindup': {
+        // Crouch, locked onto where the player WAS — sidestep to dodge
+        this.attackTimer -= delta
+        const t = Math.min(1, 1 - this.attackTimer / SLAM_WINDUP)
+        this.group.scale.y = 1 - 0.18 * Math.sin(t * Math.PI / 2)
+        if (this.attackTimer <= 0) { this.group.scale.y = 1; this.launchSlam() }
+        return
+      }
+
+      case 'swipeWindup': {
+        this.attackTimer -= delta
+        const t = Math.min(1, 1 - this.attackTimer / SWIPE_WINDUP)
+        this.group.scale.y = 1 - 0.1 * t
+        this.group.scale.z = 1 + 0.14 * t
+        if (this.attackTimer <= 0) { this.group.scale.y = 1; this.group.scale.z = 1; this.releaseSwipe() }
+        return
+      }
+
       case 'charging':
         this.attackTimer -= delta
         if (this.attackTimer <= 0) {
@@ -145,7 +171,8 @@ export class RollerBoss3D extends Enemy3D {
     // Attack decisions (only when cooldown is clear)
     if (this.attackCooldown <= 0) {
       const dx = playerX - this.collisionBody.x
-      if (Math.abs(dx) < 3.0) {
+      const dz = playerZ - this.collisionBody.z
+      if (Math.hypot(dx, dz) < SLAM_TRIGGER) {
         this.doBodySlam(playerX, playerZ)
       } else if (Math.random() < 0.004 * (delta / 0.016)) {
         this.doGroundPound()
@@ -159,11 +186,23 @@ export class RollerBoss3D extends Enemy3D {
     const dx = targetX - this.collisionBody.x
     const dz = targetZ - this.collisionBody.z
     const len = Math.hypot(dx, dz) || 1
-    this.collisionBody.velocity.x = (dx / len) * CHARGE_SPEED
-    this.collisionBody.velocity.z = (dz / len) * CHARGE_SPEED
-    this.attackState    = 'charging'
-    this.attackTimer    = 0.58
+    this.slamDirX = dx / len
+    this.slamDirZ = dz / len
+    if (Math.abs(this.slamDirX) > 0.1) this.facingDir = this.slamDirX > 0 ? 1 : -1   // snout leads
+    this.group.scale.x = this.facingDir
+    this.collisionBody.velocity.x = 0
+    this.collisionBody.velocity.z = 0
+    this.attackState    = 'slamWindup'
+    this.attackTimer    = SLAM_WINDUP
     this.attackCooldown = 2.6
+    audio.play('boss_windup', this.collisionBody.x, this.collisionBody.z)
+  }
+
+  private launchSlam(): void {
+    this.collisionBody.velocity.x = this.slamDirX * CHARGE_SPEED
+    this.collisionBody.velocity.z = this.slamDirZ * CHARGE_SPEED
+    this.attackState = 'charging'
+    this.attackTimer = 0.58
     this.justStartedBodySlam = true
     audio.play('boss_charge', this.collisionBody.x, this.collisionBody.z)
   }
@@ -180,13 +219,28 @@ export class RollerBoss3D extends Enemy3D {
   private doTailSwipe(): void {
     this.collisionBody.velocity.x = 0
     this.collisionBody.velocity.z = 0
-    this.attackState    = 'tailSwipe'
-    this.attackTimer    = 0.5
+    this.attackState    = 'swipeWindup'
+    this.attackTimer    = SWIPE_WINDUP
     this.attackCooldown = 3.2
+    audio.play('boss_windup', this.collisionBody.x, this.collisionBody.z, { rate: 1.25 })
+  }
+
+  private releaseSwipe(): void {
+    this.attackState = 'tailSwipe'
+    this.attackTimer = 0.3
     this.justStartedTailSwipe = true
     this.tailSwipeX = this.collisionBody.x
     this.tailSwipeZ = this.collisionBody.z
   }
+
+  // Committed to a slam (crouch + charge): no stun, no shove out of it.  The
+  // scene used to zero the charge velocity on a hit while the slam stayed
+  // "active", so a motionless, stunned boss still dealt slam damage.
+  protected override superArmor(): boolean {
+    return this.attackState === 'slamWindup' || this.attackState === 'charging'
+  }
+
+  isStunned(): boolean { return this.staggerTimer > 0 || this.knockbackTimer > 0 }
 
   isBodySlamming():   boolean { return this.attackState === 'charging'    }
   isGroundPounding(): boolean { return this.attackState === 'groundPound' }
@@ -200,6 +254,7 @@ export class RollerBoss3D extends Enemy3D {
     if (!this.phaseChangeFired && this.hp <= this.hpMax * 0.5) {
       this.phaseChangeFired = true
       audio.play('boss_phase_change', this.collisionBody.x, this.collisionBody.z)
+      audio.duck(0.35, 1.8)
     }
   }
 
@@ -230,7 +285,7 @@ export class RollerBoss3D extends Enemy3D {
     }
     // Initial impact shake
     Enemy3D.onCameraShake?.(weapon === WeaponType.Axe ? 0.05 : 0.025, 0.4)
-    audio.stopLoop('boss_idle')
+    audio.stopOwner(this)
     audio.play('boss_death', this.collisionBody.x, this.collisionBody.z)
 
     // Per-weapon setup (most just set phase / spawn arrows / discolor)

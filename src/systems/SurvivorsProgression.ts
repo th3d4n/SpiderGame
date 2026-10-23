@@ -1,4 +1,6 @@
 import * as THREE from 'three'
+import { clonePatched } from '../env/Materials'
+import { ACCENT_GAIN } from '../env/ZoneLighting'
 import type { DenHandles } from '../scenes/DenBuilder'
 
 // ─── Lightweight tween helper ─────────────────────────────────────────────────
@@ -151,7 +153,7 @@ export class SurvivorsProgression {
     this.den.junk.traverse(o => {
       if (o.userData.toppled === true) {
         this.tween.to(o.rotation, 'z', 0,    dur)
-        this.tween.to(o.position, 'y', 0.42, dur)
+        this.tween.to(o.position, 'y', (o.userData.uprightY as number | undefined) ?? 0.42, dur)
       }
     })
   }
@@ -162,7 +164,7 @@ export class SurvivorsProgression {
     if (!h) return
 
     // Clone so we don't dirty the shared silk material instance
-    const repairMat = this.den.mat.silk.clone()
+    const repairMat = clonePatched(this.den.mat.silk)
     repairMat.opacity = 0.2   // start barely visible, bloom into pristine
     h.material = repairMat
     this.tween.to(repairMat, 'opacity', 0.85, dur)
@@ -213,7 +215,7 @@ export class SurvivorsProgression {
         const cl = new THREE.PointLight(0xffaa44, 0, 2.5, 2)
         cl.position.set(0, 1.5, 0)   // cake-local space (table at y=0.6 world)
         cake.add(cl)
-        this.tween.to(cl, 'intensity', 1.5, dur)
+        this.tween.to(cl, 'intensity', 1.5 * ACCENT_GAIN.homeBase, dur)   // physical units
       }
       void i   // suppress unused-variable warning
     })
@@ -230,7 +232,7 @@ export class SurvivorsProgression {
       if (mesh.position.y > 0.05) return      // skip non-floor items
       if (n++ % 2 !== 0) return               // only half
       // Clone per-piece so tween is independent
-      const m      = (mesh.material as THREE.MeshToonMaterial).clone()
+      const m      = clonePatched(mesh.material as THREE.MeshToonMaterial)
       m.transparent = true
       m.opacity     = 1.0
       mesh.material = m

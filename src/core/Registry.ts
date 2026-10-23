@@ -26,6 +26,10 @@ export class Registry {
     this.listeners.get(key)?.delete(callback)
   }
 
+  delete(key: string): void {
+    this.data.delete(key)
+  }
+
   has(key: string): boolean {
     return this.data.has(key)
   }

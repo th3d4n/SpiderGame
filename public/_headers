@@ -1,0 +1,14 @@
+# Cloudflare Pages response headers (copied to dist/ by Vite).
+
+# Content-hashed build output (JS + the Rapier .wasm) never changes under the
+# same name — cache it for a year so repeat visits skip the download entirely.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Sounds aren't hashed: cache for a day, serve stale while revalidating.
+/audio/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+# The page itself always revalidates so a new deploy is picked up immediately.
+/
+  Cache-Control: public, max-age=0, must-revalidate

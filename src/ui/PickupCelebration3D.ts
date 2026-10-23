@@ -1,158 +1,165 @@
-import { WeaponType } from '../systems/WeaponSystem'
-import { WEAPON_COLORS, WEAPON_DATA } from '../config/WeaponData'
+import type { WeaponType } from '../systems/WeaponSystem'
+import { WEAPON_STATS } from '../config/WeaponData'
 import { weaponIconSvg } from './WeaponIcon3D'
 import type { InputManager } from '../core/InputManager'
 import type { TextDisplay3D } from './TextDisplay3D'
+import { h, richText } from './theme'
+import { WEAPON_DESCRIPTIONS, weaponColor, weaponName, weaponStatBars, weaponTypeLabel } from './weaponInfo'
 
-const WEAPON_DESCRIPTIONS: Partial<Record<WeaponType, string>> = {
-  [WeaponType.Sword]:         'A blade of woven silk.\nQuick arcing swing, low stamina cost.\nReliable in close quarters.',
-  [WeaponType.Bow]:           'A recurve bow of webbing.\nFires Thistles — gather them in the colony.\nLong range, medium stamina cost.',
-  [WeaponType.Axe]:           'A heavy chitin cleave.\nWide 170° arc, high damage, slow swing.\nCosts stamina — use it to end a fight fast.',
-  [WeaponType.BoxingGloves]:  'A sharpened toothpick.\nFast narrow stab with long reach.\nLowest stamina cost of any weapon.',
-  [WeaponType.Glider]:        'Silk-web wings.\nHold fire to ride air currents across gaps.',
-  [WeaponType.FlameBreather]: 'A repurposed venom gland.\nHold fire to spray a cone of flame.\nDrains energy — not stamina.',
-  [WeaponType.WebLauncher]:   'The Web Thrower.\nFires sticky silk — pull yourself or items\ntoward the anchor point.',
+// ─── Discovery card ───────────────────────────────────────────────────────────
+// Shown after Webbs' lift pose.  Choreography (ms):
+//    0  scrim fades in, light rays start turning
+//   80  icon disc pops in (overshoot), then floats; a shine sweeps across it
+//  300  name reveals letter by letter
+//  650  type chip + stat bars grow in, description rises
+//  900  prompt appears — the card can't be dismissed before this
+//  out  card lifts and fades (240 ms) before the next step runs
+
+export type DiscoveryVariant = 'found' | 'crafted' | 'gift'
+
+const EYEBROW: Record<DiscoveryVariant, string> = {
+  found:   'New discovery',
+  crafted: 'Forged at the workbench',
+  gift:    'A gift, unwrapped',
 }
 
-// Round 6 Issue 1 — discovery card is now player-dismissed (Space/M).
-// MIN_VISIBLE_MS keeps an accidental keypress at the moment of opening from
-// closing the card instantly.
-const MIN_VISIBLE_MS = 400
+const MIN_VISIBLE_MS = 900
+const OUT_MS         = 240
+
+const STYLE = /* css */`
+.nl-disc-wrap { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:160; }
+.nl-disc-rays { position:absolute; width:900px; height:900px; left:50%; top:42%; margin:-450px 0 0 -450px; border-radius:50%;
+  background: repeating-conic-gradient(from 0deg, var(--c) 0deg 5deg, transparent 5deg 18deg);
+  -webkit-mask: radial-gradient(circle, #000 0%, transparent 62%); mask: radial-gradient(circle, #000 0%, transparent 62%);
+  opacity:.16; animation: nl-spin 40s linear infinite, nl-fade-in 600ms ease both; }
+.nl-disc { position:relative; width:440px; padding:34px 40px 26px; display:flex; flex-direction:column; align-items:center; text-align:center;
+  animation: nl-up 420ms var(--nl-ease) both; }
+.nl-disc.out { animation: nl-disc-out ${OUT_MS}ms ease-in both; }
+@keyframes nl-disc-out { to { opacity:0; transform: translateY(-14px) scale(.97) } }
+.nl-disc .eyebrow { color: var(--c); margin-bottom: 18px; }
+.nl-disc .medal { position:relative; width:150px; height:150px; border-radius:50%; display:grid; place-items:center; overflow:hidden; margin-bottom:18px;
+  background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--c) 35%, transparent), rgba(10,8,6,.9) 70%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent), 0 0 50px color-mix(in srgb, var(--c) 35%, transparent);
+  animation: nl-pop 620ms var(--nl-ease-back) 80ms both; }
+.nl-disc .medal svg { animation: nl-float 2.6s ease-in-out 700ms infinite; filter: drop-shadow(0 6px 14px rgba(0,0,0,.6)); }
+.nl-disc .medal::after { content:''; position:absolute; top:-20%; bottom:-20%; width:34%; left:0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent); animation: nl-shine 1.1s ease-in-out 650ms both; }
+.nl-disc .ripple { position:absolute; width:150px; height:150px; border-radius:50%; border:2px solid var(--c); top:34px; left:50%; margin-left:-75px;
+  animation: nl-ripple 900ms ease-out 120ms both; pointer-events:none; }
+.nl-disc .name { font-size: 30px; line-height: 1.15; margin-bottom: 10px; color: var(--nl-text); }
+.nl-disc .name span { display:inline-block; animation: nl-letter 380ms var(--nl-ease) both; white-space: pre; }
+.nl-disc .meta { display:flex; gap:8px; justify-content:center; margin-bottom:16px; animation: nl-up 360ms var(--nl-ease) 650ms both; }
+.nl-disc .desc { font-size: 13px; line-height: 1.65; color: var(--nl-dim); margin: 14px 0 18px; animation: nl-up 360ms var(--nl-ease) 760ms both; }
+.nl-disc .bars { width: 100%; animation: nl-up 360ms var(--nl-ease) 650ms both; }
+.nl-disc .prompt { opacity:0; transition: opacity 300ms; }
+.nl-disc .prompt.on { opacity:1; animation: nl-blink 1.6s ease-in-out 300ms infinite; }
+`
 
 export class PickupCelebration3D {
   private overlay: HTMLElement
-  private panel:   HTMLDivElement
+  private wrap:    HTMLDivElement
+  private card:    HTMLDivElement | null = null
+  private prompt:  HTMLElement | null = null
+  private closing  = false
 
   isOpen   = false
   onClose?: () => void
 
   private openedAtMs = 0   // wall-clock timestamp when shown — not affected by delta clamping
 
-  // Round 6 Issue 1: constructor still accepts a TextDisplay3D for backwards
-  // compatibility with callers, but the value is no longer used internally —
-  // PresentationPhase now owns the tutorial follow-up.
+  // TextDisplay3D kept in the signature for callers; PresentationPhase owns the
+  // tutorial follow-up.
   constructor(menuOverlay: HTMLElement, _textDisplay: TextDisplay3D) {
     this.overlay = menuOverlay
-    this.panel   = document.createElement('div')
-    this.panel.style.display = 'none'
-
-    if (!document.getElementById('celeb-styles')) {
-      const style = document.createElement('style')
-      style.id = 'celeb-styles'
-      style.textContent = [
-        '@keyframes celeb-pop {',
-        '  0%   { transform: scale(0); opacity: 0; }',
-        '  60%  { transform: scale(1.25); opacity: 1; }',
-        '  100% { transform: scale(1); opacity: 1; }',
-        '}',
-        '@keyframes celeb-bob {',
-        '  0%,100% { transform: translateY(0) rotate(-5deg); }',
-        '  50%     { transform: translateY(-10px) rotate(5deg); }',
-        '}',
-        '@keyframes celeb-glow {',
-        '  0%,100% { box-shadow: 0 0 20px currentColor; }',
-        '  50%     { box-shadow: 0 0 60px currentColor; }',
-        '}',
-        '@keyframes celeb-blink {',
-        '  0%,100% { opacity: 1; } 50% { opacity: 0.35; }',
-        '}',
-      ].join('\n')
-      document.head.appendChild(style)
+    this.wrap    = h('div', 'nl-disc-wrap') as HTMLDivElement
+    this.wrap.style.display = 'none'
+    if (!document.getElementById('nl-disc-style')) {
+      const st = h('style'); st.id = 'nl-disc-style'; st.textContent = STYLE
+      document.head.appendChild(st)
     }
-
-    menuOverlay.appendChild(this.panel)
+    menuOverlay.appendChild(this.wrap)
   }
 
-  show(
-    weaponType:       WeaponType,
-    _tutorialPages?:  string[],
-    _tutorialTitle?:  string,
-    _tutorialAccent?: string,
-  ): void {
-    this.openedAtMs = performance.now()   // WALL CLOCK — not affected by delta
+  show(weaponType: WeaponType, variant: DiscoveryVariant = 'found'): void {
+    this.openedAtMs = performance.now()
+    this.closing    = false
+    const c = weaponColor(weaponType)
 
-    const colorNum = WEAPON_COLORS[weaponType]
-    const colorHex = `#${colorNum.toString(16).padStart(6, '0')}`
-    const name     = WEAPON_DATA.get(weaponType)?.name ?? weaponType
-    const desc     = WEAPON_DESCRIPTIONS[weaponType] ?? ''
+    this.wrap.innerHTML = ''
+    this.wrap.style.setProperty('--c', c)
+    this.wrap.appendChild(h('div', 'nl-scrim'))
+    this.wrap.appendChild(h('div', 'nl-disc-rays'))
 
-    this.panel.innerHTML = ''
-    this.panel.style.cssText = [
-      'display:flex; flex-direction:column; align-items:center; justify-content:center;',
-      'position:absolute; inset:0; background:rgba(0,0,0,0.84); z-index:150;',
-      'font-family:monospace;',
-    ].join('')
+    const card = h('div', 'nl-panel nl-disc') as HTMLDivElement
+    card.appendChild(h('div', 'nl-eyebrow eyebrow', `★  ${EYEBROW[variant]}  ★`))
+    const medal = h('div', 'medal')
+    medal.innerHTML = weaponIconSvg(weaponType, c, 92)
+    card.appendChild(medal)
+    card.appendChild(h('div', 'ripple'))
 
-    const box = document.createElement('div')
-    box.style.cssText = [
-      `border:1.5px solid ${colorHex};`,
-      'background:#0d0d1a; padding:36px 48px 28px;',
-      'display:flex; flex-direction:column; align-items:center; width:400px;',
-      `animation: celeb-glow 2s ease-in-out infinite;`,
-      `color: ${colorHex};`,   // for currentColor in box-shadow
-    ].join('')
+    const name = h('div', 'nl-title name')
+    ;[...weaponName(weaponType)].forEach((ch, i) => {
+      const s = h('span', '', ch)
+      s.style.animationDelay = `${300 + i * 28}ms`
+      name.appendChild(s)
+    })
+    card.appendChild(name)
 
-    const header = document.createElement('div')
-    header.style.cssText = 'color:#aabbcc; font-size:11px; letter-spacing:3px; margin-bottom:24px;'
-    header.textContent = '★  NEW DISCOVERY  ★'
+    const meta = h('div', 'meta')
+    meta.innerHTML = `<span class="nl-chip">${weaponTypeLabel(weaponType)}</span><span class="nl-chip">Range <b>${WEAPON_STATS[weaponType]?.range ?? '—'}</b></span>`
+    card.appendChild(meta)
 
-    // Big animated icon — pop in, then bob
-    const iconWrap = document.createElement('div')
-    iconWrap.style.cssText = [
-      'position:relative; width:120px; height:120px;',
-      'display:flex; align-items:center; justify-content:center;',
-      'margin-bottom:24px;',
-      `background:radial-gradient(circle, ${colorHex}33 0%, transparent 70%);`,
-      'border-radius:50%;',
-      'animation: celeb-pop 600ms ease-out 0ms both, celeb-bob 1.8s ease-in-out 600ms infinite;',
-    ].join('')
-    iconWrap.innerHTML = weaponIconSvg(weaponType, colorHex, 80)
+    const bars = h('div', 'bars')
+    bars.appendChild(weaponStatBars(weaponType, 700))
+    card.appendChild(bars)
 
-    const itemName = document.createElement('div')
-    itemName.style.cssText = `color:${colorHex}; font-size:22px; letter-spacing:2px; margin-bottom:14px; text-align:center; font-weight:bold;`
-    itemName.textContent = name
+    const desc = h('div', 'desc')
+    desc.innerHTML = richText(WEAPON_DESCRIPTIONS[weaponType] ?? '')
+    card.appendChild(desc)
 
-    const descEl = document.createElement('div')
-    descEl.style.cssText = 'color:#aabbcc; font-size:12px; line-height:1.7; text-align:center; margin-bottom:24px; white-space:pre-wrap;'
-    descEl.textContent = desc
+    this.prompt = h('div', 'nl-hints prompt')
+    this.prompt.innerHTML = '<span><span class="nl-key">Space</span> continue</span>'
+    card.appendChild(this.prompt)
 
-    const prompt = document.createElement('div')
-    prompt.style.cssText = 'color:#556677; font-size:11px; animation:celeb-blink 1.4s ease-in-out infinite;'
-    prompt.textContent = '[ Space ] continue'
-
-    box.appendChild(header)
-    box.appendChild(iconWrap)
-    box.appendChild(itemName)
-    box.appendChild(descEl)
-    box.appendChild(prompt)
-    this.panel.appendChild(box)
-
+    this.wrap.appendChild(card)
+    this.card = card
+    this.wrap.style.display = 'flex'
     this.overlay.style.display = 'block'
     this.isOpen = true
   }
 
-  // Round 6 Issue 1: discovery card waits for player input rather than auto-dismissing.
-  // MIN_VISIBLE_MS gate prevents an in-flight Space press (from the Webbs pose phase)
-  // from closing the card instantly.
+  // Player-dismissed; MIN_VISIBLE_MS stops an in-flight key press from the pose
+  // phase closing the card before it has even landed.
   update(input: InputManager, _delta: number): void {
-    if (!this.isOpen) return
+    if (!this.isOpen || this.closing) return
     const elapsedMs = performance.now() - this.openedAtMs
     if (elapsedMs < MIN_VISIBLE_MS) return
-    if (input.justDown('Space') || input.justDown('KeyM') || input.justDown('Escape')) this.dismiss()
+    this.prompt?.classList.add('on')
+    if (input.justDown('Space') || input.justDown('KeyM') || input.justDown('Escape') || input.justDown('Enter')) this.dismiss()
   }
 
   close(): void {
-    this.panel.style.display = 'none'
-    this.overlay.style.display = 'none'
-    this.isOpen = false
+    this.hide()
     this.onClose?.()
   }
 
   private dismiss(): void {
-    this.panel.style.display   = 'none'
+    this.closing = true
+    this.card?.classList.add('out')
+    this.wrap.style.transition = `opacity ${OUT_MS}ms ease-in`
+    this.wrap.style.opacity = '0'
+    window.setTimeout(() => {
+      this.hide()
+      this.onClose?.()   // PresentationPhase owns the tutorial follow-up
+    }, OUT_MS)
+  }
+
+  private hide(): void {
+    this.wrap.style.display = 'none'
+    this.wrap.style.opacity = '1'
+    this.wrap.style.transition = ''
     this.overlay.style.display = 'none'
-    this.isOpen = false
-    // Round 6 Issue 1: PresentationPhase owns the tutorial follow-up — just notify.
-    this.onClose?.()
+    this.isOpen  = false
+    this.closing = false
   }
 }

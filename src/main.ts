@@ -3,12 +3,18 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { FXAAPass } from 'three/examples/jsm/postprocessing/FXAAPass.js'
+import { detectQualityTier, QUALITY, DynamicResolution } from './core/Quality'
+import { InkOutlinePass } from './core/InkOutlinePass'
 import { CameraOccluder } from './env/CameraOccluder'
+import { CameraRig } from './core/CameraRig'
+import { ZoneLighting } from './env/ZoneLighting'
 import { InputManager } from './core/InputManager'
 import { physicsWorld } from './core/PhysicsWorld'
 import { Webbs3D } from './entities/Webbs3D'
 import { Enemy3D } from './entities/Enemy3D'
-import { audio } from './systems/AudioManager'
+import { audio, type ImpactKind } from './systems/AudioManager'
 import { HomeBaseScene3D } from './scenes/HomeBaseScene3D'
 import { AntColonyScene3D } from './scenes/AntColonyScene3D'
 import { BossRollerScene3D } from './scenes/BossRollerScene3D'
@@ -26,21 +32,38 @@ import { CraftingMenu3D } from './ui/CraftingMenu3D'
 import { TextDisplay3D, type TextDisplayData } from './ui/TextDisplay3D'
 import { PickupCelebration3D } from './ui/PickupCelebration3D'
 import { PickupNotification3D } from './ui/PickupNotification3D'
-import { ConsumableSystem } from './systems/ConsumableSystem'
+import { ConsumableSystem, ConsumableType, CONSUMABLE_NAMES, CONSUMABLE_INFO } from './systems/ConsumableSystem'
+import { QuickItems } from './ui/QuickItems'
+import { EndingCard } from './ui/EndingCard'
+import { TouchControls, type TouchMenuMode } from './ui/TouchControls'
 import { saveSystem } from './systems/SaveSystem'
 import { SurvivorsProgression } from './systems/SurvivorsProgression'
+import { installTheme } from './ui/theme'
+import { TitleMenu, PauseMenu } from './ui/Menus'
+import { DamageNumbers } from './ui/DamageNumbers'
+
+installTheme()   // one stylesheet for every menu, overlay and HUD element
+
+// Rapier ships as WASM — it must finish loading before any scene builds colliders.
+await physicsWorld.init()
 
 // ─── Renderer ────────────────────────────────────────────────────────────────
 
 const CANVAS_W = 1280
 const CANVAS_H = 720
 
-const renderer = new THREE.WebGLRenderer({ antialias: true })
+const qualityTier = detectQualityTier()
+const quality     = QUALITY[qualityTier]
+
+// No MSAA on the canvas: everything is drawn into the composer's targets, so
+// the canvas only ever receives the final full-screen quad — its MSAA buffer
+// cost memory/bandwidth and smoothed nothing.  FXAA (last pass) does the job.
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
 renderer.setSize(CANVAS_W, CANVAS_H)
-renderer.setPixelRatio(window.devicePixelRatio)
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality.maxPixelRatio))
 renderer.setClearColor(0x000000)
 renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFSoftShadowMap
+renderer.shadowMap.type = THREE.PCFShadowMap   // PCFSoft is deprecated in r184 (falls back to PCF anyway)
 renderer.toneMapping = THREE.ACESFilmicToneMapping
 
 document.getElementById('game-container')!.appendChild(renderer.domElement)
@@ -52,37 +75,25 @@ const composer = new EffectComposer(renderer)
 // ─── Scene ────────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene()
-// Initial atmosphere = homeBase. transitionTo() switches these per zone.
-scene.fog        = new THREE.FogExp2(0x140d0a, 0.015)
-scene.background = new THREE.Color(0x0a0705)
+// Fog, background and exposure come from the zone lighting preset (env/ZoneLighting).
 
-// ─── Isometric Camera ─────────────────────────────────────────────────────────
+// ─── Camera (perspective iso rig — see core/CameraRig.ts) ────────────────────
 
-const FRUSTUM = 36   // was 8; widened for DEN_RADIUS=52 (shows ~70% of den at zoom=2)
-const aspect  = CANVAS_W / CANVAS_H
-
-const camera = new THREE.OrthographicCamera(
-  -FRUSTUM * aspect,  FRUSTUM * aspect,
-   FRUSTUM,          -FRUSTUM,
-  0.1, 200
-)
-
-const CAM_OFFSET = new THREE.Vector3(18, 18, 18)
-camera.position.copy(CAM_OFFSET)
-camera.lookAt(0, 0, 0)
-camera.zoom = 2.0          // Round 6 Issue 8: closer default view
-camera.updateProjectionMatrix()
+const rig    = new CameraRig(CANVAS_W / CANVAS_H, 2.4)
+const camera = rig.camera
 
 // ─── Warm grade + vignette shader ────────────────────────────────────────────
 // warmth uniform is zone-switched in transitionTo(): 0.12 for homeBase, 0 elsewhere.
-// OutputPass deliberately omitted — renderer.toneMapping = ACESFilmicToneMapping
-// handles that already; adding OutputPass would double-apply tone mapping.
+// Tone mapping + sRGB output happen in the final OutputPass.  (three r153+ only
+// applies renderer.toneMapping when drawing straight to the screen — through the
+// composer the game was displaying raw linear colour: no ACES, no sRGB encode,
+// everything far darker than authored, and toneMappingExposure did nothing.)
 const GradeVignetteShader = {
   uniforms: {
     tDiffuse: { value: null },
     warmth:   { value: 0.12 },   // start warm — game opens in home base
     vignette: { value: 0.85 },   // corner darkening strength
-    lift:     { value: 0.02 },   // keep blacks from crushing fully
+    lift:     { value: 0.0025 }, // keep blacks from crushing fully (linear — ≈ 0.05 after sRGB encode)
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -98,7 +109,8 @@ const GradeVignetteShader = {
       c.b -= warmth * 0.4 * c.b;
       c.rgb += lift;
       vec2 d = vUv - 0.5;
-      float v = smoothstep(0.8, vignette * 0.35, dot(d, d) * 2.4);
+      // (edge0 < edge1 — the reversed form is undefined in GLSL ES and some mobile drivers flip it)
+      float v = 1.0 - smoothstep(vignette * 0.35, 0.8, dot(d, d) * 2.4);
       c.rgb *= mix(1.0, v, 0.9);
       gl_FragColor = c;
     }
@@ -107,14 +119,58 @@ const GradeVignetteShader = {
 
 // Wire composer passes now that camera exists
 composer.addPass(new RenderPass(scene, camera))
-composer.addPass(new UnrealBloomPass(
+// Toon ink outlines on everything, from scene depth (before bloom so ink stays crisp)
+InkOutlinePass.attachDepth(composer.renderTarget1, composer.renderTarget2)
+const inkPass = new InkOutlinePass(camera)
+inkPass.uniforms.thickness.value = 1.25 * Math.min(window.devicePixelRatio, 2)
+composer.addPass(inkPass)
+const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(CANVAS_W, CANVAS_H),
   0.35,   // strength — keep subtle so toon look is preserved
   0.4,    // radius
   0.75,   // threshold — only the most emissive objects (portals, pickups) bloom
-))
+)
+bloomPass.enabled = quality.bloom
+composer.addPass(bloomPass)
 const gradePass = new ShaderPass(GradeVignetteShader)
 composer.addPass(gradePass)
+composer.addPass(new OutputPass())
+composer.addPass(new FXAAPass())   // after tone mapping/sRGB, where FXAA expects its input
+
+// ─── Fit to window ────────────────────────────────────────────────────────────
+// The game keeps its 1280×720 logical layout (HUD is authored in those pixels);
+// the container is CSS-scaled to fit the window and the render resolution
+// follows the displayed size (capped) so it stays crisp without overdrawing.
+// Render scale = min(dpr × CSS scale, tier cap) × dynamic-resolution factor.
+const dynamicRes = new DynamicResolution(quality.minScale, () => fitToWindow())
+let fittedK = -1, fittedPr = -1
+function fitToWindow(): void {
+  const vw = document.documentElement.clientWidth  || window.innerWidth
+  const vh = document.documentElement.clientHeight || window.innerHeight
+  const k  = Math.min(vw / CANVAS_W, vh / CANVAS_H)
+  const pr = Math.min(window.devicePixelRatio * k, quality.maxPixelRatio) * dynamicRes.scale
+  if (k !== fittedK) {
+    fittedK = k
+    document.getElementById('game-container')!.style.transform = `scale(${k})`
+  }
+  if (Math.abs(pr - fittedPr) < 1e-3) return   // render targets only reallocate on a real change
+  fittedPr = pr
+  renderer.setPixelRatio(pr)
+  composer.setPixelRatio(pr)
+  composer.setSize(CANVAS_W, CANVAS_H)
+  inkPass.uniforms.thickness.value = 1.25 * pr
+}
+// resize, ResizeObserver and visualViewport often fire together — fit once per frame
+let fitQueued = false
+function requestFit(): void {
+  if (fitQueued) return
+  fitQueued = true
+  requestAnimationFrame(() => { fitQueued = false; fitToWindow() })
+}
+window.addEventListener('resize', requestFit)
+new ResizeObserver(requestFit).observe(document.documentElement)   // catches resizes the event misses
+window.visualViewport?.addEventListener('resize', requestFit)
+fitToWindow()
 // Expose to SurvivorsProgression for warmth tweening
 scene.userData.gradePass      = gradePass
 scene.userData.homeBaseWarmth = 0.12   // mutable; updated by SurvivorsProgression on warmth steps
@@ -123,6 +179,7 @@ scene.userData.homeBaseWarmth = 0.12   // mutable; updated by SurvivorsProgressi
 
 const gradientData = new Uint8Array([64, 64, 64, 255, 160, 160, 160, 255, 255, 255, 255, 255])
 const gradientMap  = new THREE.DataTexture(gradientData, 3, 1, THREE.RGBAFormat)
+gradientMap.userData.shared = true   // every toon material in every zone uses it
 // NearestFilter is REQUIRED — LinearFilter blurs the bands back into smooth shading
 gradientMap.minFilter     = THREE.NearestFilter
 gradientMap.magFilter     = THREE.NearestFilter
@@ -131,20 +188,10 @@ gradientMap.needsUpdate   = true
 
 // ─── Primary lighting (shared across scenes) ──────────────────────────────────
 
-const dirLight = new THREE.DirectionalLight(0xffeedd, 1.0)
-dirLight.position.set(10, 20, 10)
-dirLight.castShadow = true
-dirLight.shadow.mapSize.set(2048, 2048)
-dirLight.shadow.camera.near = 0.5
-dirLight.shadow.camera.far  = 80
-dirLight.shadow.camera.left = dirLight.shadow.camera.bottom = -25
-dirLight.shadow.camera.right = dirLight.shadow.camera.top  =  25
-dirLight.shadow.bias = -0.0004   // reduces shadow acne across all zones
-scene.add(dirLight)
-
-const fillLight = new THREE.DirectionalLight(0x223366, 0.25)
-fillLight.position.set(-8, 6, -8)
-scene.add(fillLight)
+// Key light (shadow box follows the player — it used to be a fixed ±25 box at the
+// origin, so most of the 104-wu den had no shadows), ambient, player lantern, fog
+// and exposure — all per zone, from one preset table.
+const lighting = new ZoneLighting(scene, renderer, quality.shadowMap).apply('homeBase', 2.4, scene.userData.homeBaseWarmth as number)
 
 // ─── Boot: restore save before constructing scenes ───────────────────────────
 
@@ -152,22 +199,56 @@ saveSystem.load()
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 
-const WEBBS_SCALE = 2.4   // tune by eye vs. workbench height (D: Webbs scale pass)
-const webbs = new Webbs3D(scene, HomeBaseScene3D.SPAWN_X, 0, gradientMap, WEBBS_SCALE)
-webbs.group.scale.setScalar(WEBBS_SCALE)   // scale body meshes to match leg IK scale
+// Creature scale per zone.  Each zone is authored at its own world scale — the den
+// was enlarged 5× (DEN_SCALE) while the colony and boss arena keep the original
+// units their corridors, enemies and attack ranges were tuned for.  A single global
+// Webbs scale made him 5–7× wider than colony enemies and wider than the corridors.
+const ZONE_SCALE = { homeBase: 2.4, antColony: 1.0, bossRoller: 1.0 } as const
+
+function applyZoneScale(zone: keyof typeof ZONE_SCALE): void {
+  const s = ZONE_SCALE[zone]
+  webbs.setScale(s)
+  rig.setScale(s)   // view distance follows creature scale → same on-screen size
+}
+
+const webbs = new Webbs3D(scene, HomeBaseScene3D.SPAWN_X, 0, gradientMap, ZONE_SCALE.homeBase)
+
+// Dev-only console handle for physics/visual debugging (stripped from prod builds).
+if (import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>).__nolegs = { webbs, physicsWorld, camera, rig, scene, renderer, composer, inkPass, audio, quality: { tier: qualityTier, ...quality }, dynamicRes }
+}
+
+// Dev-only collider overlay — F9 toggles a wireframe of every physics shape so
+// collider-vs-visual mismatches are visible while playtesting.
+const physicsDebug = new THREE.LineSegments(
+  new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, opacity: 0.8 }),
+)
+physicsDebug.frustumCulled = false
+physicsDebug.renderOrder   = 999
+physicsDebug.visible       = false
+scene.add(physicsDebug)
+if (import.meta.env.DEV) {
+  window.addEventListener('keydown', e => { if (e.code === 'F9') physicsDebug.visible = !physicsDebug.visible })
+}
+function updatePhysicsDebug(): void {
+  if (!physicsDebug.visible) return
+  const { vertices, colors } = physicsWorld.debugLines()
+  physicsDebug.geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3))
+  physicsDebug.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4))
+}
 webbs.group.renderOrder = 10   // renders above transparent corridor walls
 
 // ─── Combat system ────────────────────────────────────────────────────────────
 
 const weaponUseSystem = new WeaponUseSystem3D(scene)
 const webLauncher     = new WebLauncherSystem3D(scene)
+if (import.meta.env.DEV) {
+  Object.assign((window as unknown as Record<string, object>).__nolegs, { webLauncher, weaponUseSystem, enemies: () => activeScene.enemies, goto: (z: ZoneId) => transitionTo(z), scene3d: () => activeScene })
+}
 const particles       = new ParticleBurstSystem3D(scene)
 const consumables     = new ConsumableSystem()
 
-// ─── Player point light (zone-aware intensity) ────────────────────────────────
-
-const playerLight = new THREE.PointLight(0xffddaa, 0.1, 4.5)
-scene.add(playerLight)
 
 // ─── Registry defaults (new game only) ───────────────────────────────────────
 
@@ -187,6 +268,13 @@ if (!saveSystem.hasSave()) {
 
   if (registry.get<boolean>('webThrowerFound')) webbs.hasWebLauncher = true
 
+  // Saves from before legs-per-boss: a beaten Roller is worth its leg
+  if (!registry.get<string[]>('bossesDefeated') && (registry.get<number>('bossesBeaten') ?? 0) > 0) {
+    registry.set('bossesDefeated', ['roller'])
+    registry.set('bossesBeaten', 1)
+    registry.set('legTier', Math.max(1, registry.get<number>('legTier') ?? 0))
+  }
+
   const tier = registry.get<number>('legTier') ?? 0
   webbs.weaponSystem.setLegTier(tier)
   webbs.legs.setLegTier(tier)
@@ -203,12 +291,146 @@ if (!saveSystem.hasSave()) {
   if (savedConsumables) consumables.restoreFromSnapshot(savedConsumables)
 }
 
+// ─── Death ────────────────────────────────────────────────────────────────────
+function startDeath(): void {
+  dyingT = 0
+  registry.set('deaths', (registry.get<number>('deaths') ?? 0) + 1)
+  webbs.startDying()
+  webLauncher.release()
+  weaponUseSystem.stopFlame()
+  hud.flashDamageVignette()
+  cameraShakeRemaining = 0.3
+  cameraShakeIntensity = 0.02
+}
+
+// ─── Touch ────────────────────────────────────────────────────────────────────
+// Which control set the touch layer shows this frame.
+function touchMode(): TouchMenuMode {
+  if (mainMenuActive || endingCard.isOpen) return 'hidden'              // their buttons are tappable
+  if (textDisplay.isOpen)       return 'text'                            // tap = next, Skip = close
+  if (pickupCelebration.isOpen) return 'card'                            // tap = dismiss
+  if (equipScreen.isOpen || craftingMenu.isOpen || pauseMenu.isOpen) return 'panel'   // Back = Esc
+  if (gamePaused || transitioning || dyingT >= 0 || endingPhase !== 'none') return 'hidden'
+  return 'play'
+}
+
+// Touch has no cursor: aim at the closest enemy within reach, favouring ones
+// in front of Webbs; with nothing near, aim where he's facing.
+const AUTO_AIM_RANGE = 5   // creature-scale units
+const _touchAim = new THREE.Vector3()
+function touchAimPoint(): THREE.Vector3 {
+  const x = webbs.collisionBody.x, z = webbs.collisionBody.z, s = webbs.scale
+  const fl = Math.hypot(webbs.facingX, webbs.facingZ) || 1
+  const fx = webbs.facingX / fl, fz = webbs.facingZ / fl
+  let bx = 0, bz = 0, best = Infinity
+  for (const e of (activeScene as { enemies: Enemy3D[] }).enemies) {
+    if (e.isDead() || !e.collisionBody.enabled) continue
+    const dx = e.collisionBody.x - x, dz = e.collisionBody.z - z
+    const d = Math.hypot(dx, dz)
+    if (d > AUTO_AIM_RANGE * s) continue
+    const score = d * (1.6 - (dx * fx + dz * fz) / (d || 1))   // near and in front wins
+    if (score < best) { best = score; bx = e.collisionBody.x; bz = e.collisionBody.z }
+  }
+  return best < Infinity ? _touchAim.set(bx, 0, bz) : _touchAim.set(x + fx * 3 * s, 0, z + fz * 3 * s)
+}
+
+// ─── Brews ────────────────────────────────────────────────────────────────────
+function drank(type: ConsumableType, effect: string): void {
+  audio.play('potion_drink')
+  pickupNotify.notify(CONSUMABLE_NAMES[type], effect, CONSUMABLE_INFO[type].color)
+  registry.set('brewsUsed', (registry.get<number>('brewsUsed') ?? 0) + 1)
+}
+
+// What else a (non-mimic) chest holds: often a heal, sometimes a tonic, and
+// rarely the Tonic III that can't be brewed.
+function rollChestBrew(): ConsumableType | null {
+  const r = Math.random()
+  if (r < 0.30) return ConsumableType.HpPotion
+  if (r < 0.45) return ConsumableType.StaminaTonicI
+  if (r < 0.50) return ConsumableType.StaminaTonicIII
+  return null
+}
+
+// ─── Ending ───────────────────────────────────────────────────────────────────
+// Runs under the arrival blackout: Webbs stands by the hearth; the den is one
+// survivor-level "colder" so tickEnding() can play the family's return.
+function startEnding(): void {
+  pendingEnding = false
+  endingPhase   = 'warming'
+  endingT       = 0
+  endingWarmed  = false
+  webbs.placeAt(-5.5, 2.5)
+  webbs.group.rotation.y = Math.PI / 2   // facing the hearth and the returning family
+  rig.snapTo(-5.5, 2.5)
+}
+
+function tickEnding(dt: number): void {
+  endingT += dt
+  gamePaused = true
+  if (!endingWarmed && endingT >= 1.4 && !transitioning) {
+    endingWarmed = true
+    denProgression?.applyState(registry.get<number>('bossesBeaten') ?? 1, false)   // stool, hammock, hearth, family
+    audio.play('celeb_swell')
+  }
+  if (endingT >= 5.0 && !transitioning) {
+    endingPhase = 'story'
+    textDisplay.show(ENDING_TEXT)
+  }
+}
+
+function showEndingCard(): void {
+  endingPhase = 'card'
+  const unique = new Set(registry.get<string[]>('weaponInventory') ?? [])
+  if (registry.get<boolean>('webThrowerFound')) unique.add('WebLauncher')
+  endingCard.show({
+    xp:         xpSystem.total,
+    weapons:    unique.size,
+    clues:      (registry.get<number[]>('cluesFoundIds') ?? []).length,
+    cluesTotal: 3,
+    brews:      registry.get<number>('brewsUsed') ?? 0,
+    falls:      registry.get<number>('deaths') ?? 0,
+  })
+}
+// ─── Bosses → legs ────────────────────────────────────────────────────────────
+// Each distinct boss beaten grows Webbs one leg tier (unlocking two weapon slots
+// and that tier's weapons).  Counted by boss id so re-fighting can't farm tiers;
+// `bossesBeaten` (read by the den's survivor progression) follows the same count.
+function awardBossLeg(bossId: string): void {
+  const beaten = registry.get<string[]>('bossesDefeated') ?? []
+  if (beaten.includes(bossId)) return
+  beaten.push(bossId)
+  registry.set('bossesDefeated', beaten)
+  registry.set('bossesBeaten', beaten.length)
+  const tier = Math.min(3, beaten.length)
+  if (tier <= (registry.get<number>('legTier') ?? 0)) return
+  registry.set('legTier', tier)
+  webbs.weaponSystem.setLegTier(tier)
+  webbs.legs.setLegTier(tier)
+  hud.toast(`A new leg grows — leg tier ${tier}. Two more weapon slots, and new recipes at the workbench.`, 'good', 5200)
+}
+
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
 const menuOverlay    = document.getElementById('menu-overlay')!
 const hud            = new HudSystem()
+if (import.meta.env.DEV) Object.assign((window as unknown as Record<string, object>).__nolegs, { hud, consumables, ui: () => ({ craftingMenu, presentation, pickupCelebration, textDisplay, equipScreen, pauseMenu }) })
 const equipScreen    = new EquipScreen3D(menuOverlay)
 const craftingMenu   = new CraftingMenu3D(menuOverlay)
+craftingMenu.consumables = consumables
+const quickItems     = new QuickItems()
+const endingCard     = new EndingCard(document.getElementById('game-container')!)
+endingCard.onKeepExploring = () => {
+  endingPhase = 'none'
+  registry.set('endingSeen', true)
+  persist()
+  gamePaused = anyOverlayOpen()
+  hud.toast('The den is warmer now. The tunnels are yours to explore.', 'good', 4200)
+}
+endingCard.onTitle = () => {
+  registry.set('endingSeen', true)
+  persist(true)
+  window.location.reload()
+}
 const textDisplay    = new TextDisplay3D(menuOverlay)
 const pickupCelebration = new PickupCelebration3D(menuOverlay, textDisplay)
 const pickupNotify   = new PickupNotification3D()
@@ -216,20 +438,61 @@ const presentation   = new PresentationPhase()
 // Round 7 Issue 1: hide the HTML overlay during Phase 1 so the player sees pure 3D.
 presentation.hideOverlay = () => { menuOverlay.style.display = 'none' }
 
+// Write live state into the registry and save.  Called on overlay closes, zone
+// changes, the autosave tick and when the tab is hidden/closed — not only on zone
+// changes as before, so a closed tab no longer loses pickups, XP or equips.
+let saveSuppressed = false   // the dev wipe sets this so pagehide can't re-save
+function persist(leaving = false): void {
+  if (mainMenuActive || saveSuppressed) return
+  // The colony's explored-map canvas is only serialised on zone teardown; when
+  // the tab is closing, grab it now (toDataURL is a few ms — not every autosave).
+  if (leaving && currentZone === 'antColony') {
+    const fog = (activeScene as AntColonyScene3D).fog.serialize()
+    if (fog) registry.set('fogReveal_antColony', fog)
+  }
+  registry.set('health', webbs.isDying || webbs.hp <= 0 ? webbs.hpMax : webbs.hp)   // deaths cost nothing
+  registry.set('weaponSlots', webbs.weaponSystem.getAllSlots())
+  registry.set('consumableInventory', consumables.getInventorySnapshot())
+  registry.set('totalXp', xpSystem.total)
+  saveSystem.save()
+}
+window.addEventListener('pagehide', () => persist(true))
+document.addEventListener('visibilitychange', () => { if (document.hidden) persist(true) })
+const AUTOSAVE_EVERY = 15   // s of play
+let autosaveT = 0
+
+// True while any overlay owns the screen — closing one must not unpause
+// the game under another.
+function anyOverlayOpen(): boolean {
+  return equipScreen.isOpen || craftingMenu.isOpen || textDisplay.isOpen || pickupCelebration.isOpen ||
+         pauseMenu.isOpen || presentation.isActive() || endingCard.isOpen || endingPhase !== 'none'
+}
+
 let gamePaused     = true   // stays true until main menu is dismissed
 let mainMenuActive = true
-equipScreen.onClose  = () => { gamePaused = false }
+equipScreen.onClose  = () => { persist(); gamePaused = anyOverlayOpen() }
 craftingMenu.onClose = () => {
-  registry.set('consumableInventory', consumables.getInventorySnapshot())
-  saveSystem.save()
-  gamePaused = false
+  persist()
+  // A first-ever craft hands off to the discovery presentation — stay paused
+  if (!presentation.isActive()) gamePaused = false
 }
+const pauseMenu = new PauseMenu(menuOverlay, {
+  isMuted:     () => audio.isMuted(),
+  toggleSound: () => toggleSound(),
+  quitToTitle: () => {
+    persist(true)
+    window.location.reload()
+  },
+})
+pauseMenu.onClose = () => { gamePaused = anyOverlayOpen() }
 textDisplay.onClose  = () => {
   if (presentation.isActive()) {
     presentation.onTutorialCardClosed()
     return
   }
-  gamePaused = false
+  if (endingPhase === 'story') { showEndingCard(); return }
+  persist()   // story beats (card read, clue found) count as progress
+  gamePaused = anyOverlayOpen()
   if (pendingTransitionResume) {
     transitioning = false   // Round 6 Issue 2: clear stuck transition flag
     pendingTransitionResume()
@@ -246,10 +509,10 @@ pickupCelebration.onClose = () => {
 }
 
 // Wire the three-phase presentation hooks
-presentation.onShowDiscoveryCard = (wt) => {
+presentation.onShowDiscoveryCard = (wt, variant) => {
   // Phase 2 — purely the discovery card; no tutorial chained inside this overlay.
   audio.play('celeb_burst')   // Round 10
-  pickupCelebration.show(wt)
+  pickupCelebration.show(wt, variant)
 }
 presentation.onShowTutorialCard = (wt) => {
   audio.play('celeb_tutorial')   // Round 10
@@ -261,6 +524,7 @@ presentation.onShowTutorialCard = (wt) => {
   else presentation.onTutorialCardClosed()
 }
 presentation.onComplete = () => {
+  persist()   // a found/crafted/gifted item is saved the moment its reveal ends
   gamePaused = false
   celebZoom  = false
 }
@@ -273,7 +537,7 @@ craftingMenu.onFirstDiscover = (wt) => {
   celebZoom   = true
   audio.play('celeb_swell')   // Round 10 — opening swell into discovery
   audio.play('crafting_complete')
-  presentation.start(wt, webbs, particles)
+  presentation.start(wt, webbs, particles, 'crafted')
   xpSystem.award('craft')
 }
 
@@ -289,7 +553,24 @@ const OPENING_INTRO: TextDisplayData = {
     'They never got the chance to see.',
   ],
   title:       '— NO LEG LEFT TO STAND ON —',
-  accentColor: '#9966cc',
+  accentColor: '#c8a8ff',
+  style:       'story',
+}
+
+// Chapter-one ending — plays once, back in the den after the Roller falls.
+const ENDING_TEXT: TextDisplayData = {
+  pages: [
+    'The tunnels are quiet now.\n\nWhatever rolled through them\nwill not roll back.',
+    'Webbs follows the silk markers home.\n\nSomeone has walked them since.\nThey are brighter than he left them.',
+    'Three of them are waiting in the Den.\n\nThey look at his legs for a long time.\nNone of them say "broken".',
+    'Someone has righted the stool.\nSomeone has mended the hammock.\n\nThe hearth is lit.',
+    'His mother is not among them.',
+    'The smallest one presses a thread into his leg —\nher silk, spun to rest, not to bind.\n\nIt runs on, deeper. Toward the Hive.',
+    'Eight legs.\nAll of them his.\n\nHe goes on.',
+  ],
+  title:       '— HOME, FOR NOW —',
+  accentColor: '#ffb35c',
+  style:       'story',
 }
 
 const COLONY_INTRO: TextDisplayData = {
@@ -341,6 +622,9 @@ scene.add(cursorMesh)
 // ─── Input ────────────────────────────────────────────────────────────────────
 
 const input = new InputManager(renderer.domElement)
+const touch          = new TouchControls(document.getElementById('game-container')!, input)
+quickItems.onUse = (k) => { const code = `Key${k}`; input.press(code); requestAnimationFrame(() => input.release(code)) }
+hud.onSlotTap = (i) => { if (webbs.weaponSystem.isSlotUnlocked(i)) { lastActiveSlot = i; audio.play('ui_hover') } }
 
 // ─── Mouse-wheel zoom ─────────────────────────────────────────────────────────
 // Round 6 Issue 8: wheel adjusts a separate `userZoom`; the game loop lerps the
@@ -365,17 +649,16 @@ type ZoneId = 'homeBase' | 'antColony' | 'bossRoller'
 type ActiveScene = HomeBaseScene3D | AntColonyScene3D | BossRollerScene3D
 
 let activeScene: ActiveScene = new HomeBaseScene3D(scene, gradientMap)
+lighting.calibrateAccents('homeBase')
 let currentZone: ZoneId = 'homeBase'
 let transitioning = false
 let pendingTransitionResume: (() => void) | null = null
 let lastActiveSlot = 0   // slot fired by left-click; updated whenever a number key fires
 
-// Camera occluder — fades burrow mounds AND octagon wall panels blocking Webbs.
+// Camera occluder — fades ANY tall den geometry that blocks the view of Webbs.
 // Recreated with each HomeBaseScene3D instance.
 let cameraOccluder: CameraOccluder | null = new CameraOccluder(camera)
-cameraOccluder.registerGroup((activeScene as HomeBaseScene3D).denHandles.walls)
-cameraOccluder.register((activeScene as HomeBaseScene3D).antEntranceGroup)
-for (const p of (activeScene as HomeBaseScene3D).wallPanels) cameraOccluder.register(p)
+for (const m of (activeScene as HomeBaseScene3D).getOccluderMeshes()) cameraOccluder.register(m)
 
 // Den progression — tracks survivors returning after boss defeats.
 // Recreated each time HomeBaseScene3D is created; disposed on zone exit.
@@ -388,19 +671,14 @@ denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
 
 weaponUseSystem.setEnemies((activeScene as HomeBaseScene3D).enemies)
 webLauncher.setEnemies((activeScene as HomeBaseScene3D).enemies)
-webLauncher.setWallHitTest((x, z) => (activeScene as HomeBaseScene3D).webWallHitTest(x, z))
 hud.setZoneLabel('HOME BASE')
 
-async function transitionTo(zone: ZoneId): Promise<void> {
+async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () => void } = {}): Promise<void> {
   if (transitioning) return
   transitioning = true
   gamePaused    = true
 
-  registry.set('health', webbs.hp)
-  registry.set('weaponSlots', webbs.weaponSystem.getAllSlots())
-  registry.set('consumableInventory', consumables.getInventorySnapshot())
-  registry.set('totalXp', xpSystem.total)   // Round 8 Issue 8: persist XP
-  saveSystem.save()
+  persist()
 
   webLauncher.release()
   webLauncher.clearWraps()
@@ -422,22 +700,17 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         activeScene = s
         weaponUseSystem.setEnemies(s.enemies)
         webLauncher.setEnemies(s.enemies)
-        webLauncher.setWallHitTest((x, z) => s.webWallHitTest(x, z))
-        webbs.collisionBody.x = HomeBaseScene3D.SPAWN_X
-        webbs.collisionBody.z = 0
-        webbs.collisionBody.velocity.x = 0
-        webbs.collisionBody.velocity.z = 0
-        camera.position.set(HomeBaseScene3D.SPAWN_X + CAM_OFFSET.x, CAM_OFFSET.y, CAM_OFFSET.z)
+        applyZoneScale('homeBase')
+        webbs.placeAt(HomeBaseScene3D.SPAWN_X, 0)
+        rig.snapTo(HomeBaseScene3D.SPAWN_X, 0)
         hud.setZoneLabel('HOME BASE')
         hud.hideBossHp()
         webbs.floorType = 'dirt'
         // Rebuild per-scene systems for the new HomeBaseScene3D instance
         cameraOccluder = new CameraOccluder(camera)
-        cameraOccluder.registerGroup(s.denHandles.walls)
-        cameraOccluder.register(s.antEntranceGroup)
-        for (const p of s.wallPanels) cameraOccluder.register(p)
+        for (const m of s.getOccluderMeshes()) cameraOccluder.register(m)
         denProgression = new SurvivorsProgression(s.denHandles, scene, s.warmPools)
-        denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
+        denProgression.applyState(Math.max(0, (registry.get<number>('bossesBeaten') ?? 0) - (pendingEnding ? 1 : 0)))
         break
       }
       case 'antColony': {
@@ -445,15 +718,12 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         activeScene = s
         weaponUseSystem.setEnemies(s.enemies)
         webLauncher.setEnemies(s.enemies)
-        webLauncher.setWallHitTest((x, z) => s.webWallHitTest(x, z))
         const fromBoss = currentZone === 'bossRoller'
         const spawnX   = fromBoss ? AntColonyScene3D.SPAWN_FROM_BOSS_X : AntColonyScene3D.SPAWN_FROM_HOME_X
         const spawnZ   = fromBoss ? s.getBossPortalZ() : 0
-        webbs.collisionBody.x = spawnX
-        webbs.collisionBody.z = spawnZ
-        webbs.collisionBody.velocity.x = 0
-        webbs.collisionBody.velocity.z = 0
-        camera.position.set(spawnX + CAM_OFFSET.x, CAM_OFFSET.y, spawnZ + CAM_OFFSET.z)
+        applyZoneScale('antColony')
+        webbs.placeAt(spawnX, spawnZ)
+        rig.snapTo(spawnX, spawnZ)
         hud.setZoneLabel('ZONE 1 — ANT COLONY')
         hud.hideBossHp()
         webbs.floorType = 'stone'
@@ -464,16 +734,9 @@ async function transitionTo(zone: ZoneId): Promise<void> {
         activeScene = s
         weaponUseSystem.setEnemies(s.enemies)
         webLauncher.setEnemies(s.enemies)
-        webLauncher.setWallHitTest((x, z) => s.webWallHitTest(x, z))
-        webbs.collisionBody.x = BossRollerScene3D.SPAWN_X
-        webbs.collisionBody.z = BossRollerScene3D.SPAWN_Z
-        webbs.collisionBody.velocity.x = 0
-        webbs.collisionBody.velocity.z = 0
-        camera.position.set(
-          BossRollerScene3D.SPAWN_X + CAM_OFFSET.x,
-          CAM_OFFSET.y,
-          BossRollerScene3D.SPAWN_Z + CAM_OFFSET.z,
-        )
+        applyZoneScale('bossRoller')
+        webbs.placeAt(BossRollerScene3D.SPAWN_X, BossRollerScene3D.SPAWN_Z)
+        rig.snapTo(BossRollerScene3D.SPAWN_X, BossRollerScene3D.SPAWN_Z)
         registry.set('bossPortalZ', undefined)   // next colony visit re-randomizes portal
         hud.setZoneLabel('BOSS CHAMBER')
         webbs.floorType = 'stone'
@@ -482,26 +745,17 @@ async function transitionTo(zone: ZoneId): Promise<void> {
     }
 
     currentZone = zone
+    // Zone atmosphere (lights, fog, background, exposure, warm grade) — applied
+    // during the blackout so the fade-in already shows the new zone's light.
+    lighting.apply(zone, ZONE_SCALE[zone],
+      zone === 'homeBase' ? (scene.userData.homeBaseWarmth as number) ?? 0.12 : undefined)
+    lighting.calibrateAccents(zone)
+    audio.setRoom(zone)
     const savedHp = registry.get<number>('health')
     if (savedHp !== undefined) webbs.hp = Math.max(1, savedHp)
-  }, ZONE_TITLES[zone])
+    opts.onSwitch?.()   // runs under the blackout
+  }, opts.title ?? ZONE_TITLES[zone])
 
-  // ── Zone atmosphere: fog, background, warm grade ────────────────────────────
-  const fog = scene.fog as THREE.FogExp2
-  if (zone === 'homeBase') {
-    fog.color.setHex(0x140d0a);  fog.density = 0.015
-    scene.background = new THREE.Color(0x0a0705)
-    gradePass.uniforms['warmth'].value = (scene.userData.homeBaseWarmth as number) ?? 0.12
-  } else if (zone === 'antColony') {
-    fog.color.setHex(0x050a05);  fog.density = 0.012
-    scene.background = new THREE.Color(0x03050a)
-    gradePass.uniforms['warmth'].value = 0.0
-  } else {
-    // bossRoller
-    fog.color.setHex(0x000000);  fog.density = 0.008
-    scene.background = new THREE.Color(0x000000)
-    gradePass.uniforms['warmth'].value = 0.0
-  }
 
   if (zone === 'antColony' && !registry.get<boolean>('antColonyFirstVisit')) {
     registry.set('antColonyFirstVisit', true)
@@ -512,7 +766,7 @@ async function transitionTo(zone: ZoneId): Promise<void> {
   }
 
   transitioning = false
-  gamePaused    = false
+  gamePaused    = anyOverlayOpen()
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -523,12 +777,9 @@ function isMeleeWeapon(wt: WeaponType): boolean {
 
 // Round 6 Issue 8 / Round 8 Issue 6: smooth zoom lerp toward celebration override.
 // Celebration zoom bumped 2.8 → 4.2 so the presented item is clearly readable.
-function tickZoom(): void {
-  const target = celebZoom ? 4.2 : userZoom
-  if (Math.abs(camera.zoom - target) > 0.002) {
-    camera.zoom += (target - camera.zoom) * 0.08
-    camera.updateProjectionMatrix()
-  }
+function tickZoom(delta: number): void {
+  rig.zoomTarget = celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom
+  rig.tickZoom(delta)
 }
 
 // ─── Round 8 Issue 8: XP system + HUD counter ────────────────────────────────
@@ -538,9 +789,7 @@ xpSystem.total = registry.get<number>('totalXp') ?? 0
 xpValueEl.textContent = String(xpSystem.total)
 xpSystem.onGain = (amount, source) => {
   xpValueEl.textContent = String(xpSystem.total)
-  xpValueEl.style.color = '#ffff88'
-  setTimeout(() => { xpValueEl.style.color = '#aaffaa' }, 300)
-  pickupNotify.notify(`+${amount} XP`, source, '#aaffaa')
+  hud.xpPop(amount)
   // Round 10 — XP gain SFX: combo if a kill chain is rolling, otherwise small.
   if (source === 'kill' || source === 'boss_kill') audio.play('xp_gain_combo')
   else                                              audio.play('xp_gain_small')
@@ -548,9 +797,27 @@ xpSystem.onGain = (amount, source) => {
 
 // ─── Combat callbacks ─────────────────────────────────────────────────────────
 
-weaponUseSystem.onOutOfAmmo = () => hud.flashBossMessage('NO THISTLE SEEDS')
+weaponUseSystem.onOutOfAmmo = () => hud.toast('Out of thistle seeds — gather more in the colony', 'warn')
 
 // Round 9 Issue 4 — splatter particles fire from the weapon system on hit.
+// ─── Hit feel ─────────────────────────────────────────────────────────────────
+// Hit-stop: the world nearly freezes for a few frames on impact (the camera keeps
+// shaking through it) — the single biggest "it connected" cue.
+const HIT_STOP_SCALE = 0.04
+let   hitStopT       = 0
+function hitStop(seconds: number): void { hitStopT = Math.max(hitStopT, seconds) }
+const damageNumbers = new DamageNumbers()
+// Synth weight under the sampled hit, by weapon
+const IMPACT_WEIGHT: Partial<Record<WeaponType, ImpactKind>> = {
+  [WeaponType.Sword]: 'medium', [WeaponType.Axe]: 'heavy',
+  [WeaponType.BoxingGloves]: 'light', [WeaponType.Bow]: 'light',
+}
+weaponUseSystem.onHit = (e) => {
+  hitStop(e.hitStop)
+  audio.impact(e.kill ? 'kill' : e.weak ? 'weak' : IMPACT_WEIGHT[e.weapon] ?? 'light', e.x, e.z)
+  damageNumbers.spawn(e.x, e.y + 0.4 * webbs.scale, e.z, e.damage, { weak: e.weak, kill: e.kill })
+}
+
 weaponUseSystem.onSpawnHitParticles = (x, y, z, color, count) => {
   particles.burst(new THREE.Vector3(x, y, z), color, count, 3.0, 0.06)
 }
@@ -566,34 +833,75 @@ Enemy3D.onDeathParticles = (x, y, z, color, count, kind) => {
 // ─── Game Loop ────────────────────────────────────────────────────────────────
 
 const clock        = new THREE.Clock()
-const camLookTarget = new THREE.Vector3()
 let cameraShakeRemaining = 0
 let cameraShakeIntensity = 0
 
 // Round 9b — global camera shake hook (boss death scenes call this).
+// Death-scene values were authored as world-unit jitter for the old ortho camera;
+// the rig scales shake by view distance, so they're normalised here.
 Enemy3D.onCameraShake = (intensity, duration) => {
-  cameraShakeIntensity = intensity
+  cameraShakeIntensity = intensity * 0.25
   cameraShakeRemaining = duration
+  hitStop(0.08)
 }
 
 // Round 10 — Audio mute toggle wiring.
 const audioToggle = document.getElementById('audio-toggle') as HTMLButtonElement | null
-if (audioToggle) {
-  audioToggle.addEventListener('click', () => {
-    if (audio.isMuted()) { audio.unmute(); audioToggle.textContent = 'SOUND ON' }
-    else                 { audio.mute();   audioToggle.textContent = 'SOUND OFF' }
-  })
+function toggleSound(): void {
+  if (audio.isMuted()) audio.unmute()
+  else                 audio.mute()
+  if (audioToggle) audioToggle.textContent = audio.isMuted() ? 'SOUND OFF' : 'SOUND ON'
 }
+audioToggle?.addEventListener('click', toggleSound)
+if (audioToggle) audioToggle.textContent = audio.isMuted() ? 'SOUND OFF' : 'SOUND ON'   // mute persists
 let celebZoom        = false   // true while pickup celebration is open
+let audioMuffled     = false
+let victoryPending   = false   // boss beaten; the exit transition is queued
+// Death beat: on the killing blow the world drops to slow motion while Webbs
+// curls up, then fades to a "limps home" card.  No penalty — he wakes in the
+// den with everything refilled.
+const DEATH_BEAT  = 1.3    // s (real time) before the fade starts
+const DEATH_SLOW  = 0.3    // world time scale during the beat
+const DEATH_CARD  = 'Webbs limps home  —  Home Base'
+let   dyingT      = -1
+// Chapter-one ending: 'warming' (den comes back to life around Webbs) →
+// 'story' (ENDING_TEXT) → 'card' (EndingCard).  Plays once (`endingSeen`).
+let endingPhase: 'none' | 'warming' | 'story' | 'card' = 'none'
+let endingT       = 0
+let endingWarmed  = false
+let pendingEnding = false   // set by the boss victory; the den is built one step colder
+let audioHushed      = false
+const menuFocus      = new THREE.Vector3()
 let energyWasDepleted = false
 
 function gameLoop() {
   requestAnimationFrame(gameLoop)
-  const delta = Math.min(clock.getDelta(), 0.1)
+  const rawDelta = Math.min(clock.getDelta(), 0.1)
+  if (quality.dynamicRes) dynamicRes.sample(rawDelta)
+  let delta = rawDelta
+  if (hitStopT > 0) { hitStopT -= rawDelta; delta = rawDelta * HIT_STOP_SCALE }
+  autosaveT += rawDelta
+  if (autosaveT >= AUTOSAVE_EVERY && !gamePaused && !transitioning && dyingT < 0) { autosaveT = 0; persist() }
+  if (endingPhase === 'warming') tickEnding(rawDelta)
+  if (dyingT >= 0) {
+    dyingT += rawDelta
+    delta *= DEATH_SLOW
+    if (dyingT >= DEATH_BEAT && !transitioning) {
+      webbs.hp = webbs.hpMax   // saved as full health: dying costs nothing
+      void transitionTo('homeBase', { title: DEATH_CARD, onSwitch: () => { webbs.resetAfterDeath(); dyingT = -1 } })
+    }
+  }
 
   // ── HUD tick ─────────────────────────────────────────────────────────────
 
   hud.tickBossMsg(delta)
+
+  // Mix state: pause menu muffles the world; story/discovery screens sit the
+  // ambience back so their stings and text read.
+  const muffled = pauseMenu.isOpen || dyingT >= 0
+  if (muffled !== audioMuffled) { audioMuffled = muffled; audio.setMuffled(muffled) }
+  const hushed = textDisplay.isOpen || pickupCelebration.isOpen || presentation.isActive() || dyingT >= 0
+  if (hushed !== audioHushed) { audioHushed = hushed; audio.setAmbienceLevel(hushed ? 0.45 : 1) }
 
   // ── Lantern flicker + den progression ────────────────────────────────────────
   if (currentZone === 'homeBase') {
@@ -611,6 +919,11 @@ function gameLoop() {
   // ── Main menu: render background but skip all game input ─────────────────
 
   if (mainMenuActive) {
+    // Slow drift across the den behind the title menu
+    const t = clock.elapsedTime * 0.06
+    menuFocus.set(Math.cos(t) * 14 - 4, 0, Math.sin(t) * 10)
+    rig.update(delta, menuFocus)
+    lighting.update(menuFocus.x, 0, menuFocus.z, webbs.scale, rig.viewDistance, delta)
     input.endFrame()
     composer.render()
     return
@@ -623,23 +936,32 @@ function gameLoop() {
     webbs.updateLegs(0)        // celebration pose every frame while paused
     particles.update(delta)    // particle burst must animate through pause
   }
-  // Camera zoom lerp must run even when paused so celebration zoom is visible
-  tickZoom()
+  // Camera zoom must ease even when paused so the celebration close-up is visible
+  tickZoom(delta)
 
   // ── Menu input (runs even when paused) ───────────────────────────────────
 
-  if (equipScreen.isOpen)            equipScreen.update(input)
+  if (endingCard.isOpen)             endingCard.update(input)
+  else if (equipScreen.isOpen)       equipScreen.update(input)
   else if (craftingMenu.isOpen)      craftingMenu.update(input)
   else if (pickupCelebration.isOpen) pickupCelebration.update(input, delta)
   else if (textDisplay.isOpen)       textDisplay.update(input)
-  else if (!celebZoom) {
-    // ── Dev restart (Backtick) — clears save and reloads ────────────────────
-    if (input.justDown('Backquote')) {
+  else if (pauseMenu.isOpen)         pauseMenu.update(input)
+  else if (!celebZoom && dyingT < 0 && !transitioning) {
+    if (input.justDown('Escape')) {
+      pauseMenu.show()
+      gamePaused = true
+    }
+
+    // ── Dev restart (Backtick) — clears save and reloads (dev builds only:
+    // the key sits next to the slot-1 hotkey) ───────────────────────────────
+    if (import.meta.env.DEV && input.justDown('Backquote')) {
+      saveSuppressed = true
       saveSystem.deleteSave()
       window.location.reload()
     }
 
-    if (input.justDown('KeyI')) {
+    if (input.justDown('KeyI') && !gamePaused) {
       equipScreen.show(webbs)
       gamePaused = true
     }
@@ -669,7 +991,7 @@ function gameLoop() {
     }
     hud.setInteractHint(hintText)
 
-    if (input.justDown('KeyE')) {
+    if (input.justDown('KeyE') && !gamePaused) {
       if (currentZone === 'homeBase') {
         const hbs = activeScene as HomeBaseScene3D
         if (hbs.nearToothpick(px, pz)) {
@@ -701,7 +1023,7 @@ function gameLoop() {
             registry.set('tutorialWebLauncherSeen', true)
             // Round 6 Issue 1: three-phase presentation kicks off Webbs's lift pose
             gamePaused = true; celebZoom = true
-            presentation.start(WeaponType.WebLauncher, webbs, particles)
+            presentation.start(WeaponType.WebLauncher, webbs, particles, 'gift')
           } else {
             pickupNotify.notify('Web Launcher', 'already found', '#ddeeff')
           }
@@ -736,8 +1058,13 @@ function gameLoop() {
               pickupNotify.notify(result.mat, `×${result.qty}`, '#88aa44')
               audio.play('pickup_notify')
               xpSystem.award('pickup')
+              const brew = rollChestBrew()
+              if (brew) {
+                consumables.addConsumable(brew, 1)
+                pickupNotify.notify(CONSUMABLE_NAMES[brew], '×1', CONSUMABLE_INFO[brew].color)
+              }
             } else {
-              hud.flashBossMessage("IT'S A MIMIC!")
+              hud.toast("It's a mimic!", 'danger')
             }
           } else {
             const hpIdx = acs.nearHpModule(px, pz)
@@ -761,22 +1088,35 @@ function gameLoop() {
     }
 
     // ── Consumable hotkeys ───────────────────────────────────────────────
-    if (input.justDown('KeyC')) {
-      const heal = consumables.tryHpPotion()
-      if (heal !== null) webbs.hp = Math.min(webbs.hpMax, webbs.hp + heal)
-      else hud.flashBossMessage('No HP Potions')
+    if (dyingT < 0 && input.justDown('KeyC')) {
+      if (consumables.getAmount(ConsumableType.HpPotion) <= 0) hud.toast('No HP potions — brew them at a workbench', 'warn')
+      else if (webbs.hp >= webbs.hpMax) hud.toast('Already at full health', 'info')
+      else {
+        const heal = consumables.tryHpPotion() ?? 0
+        webbs.hp = Math.min(webbs.hpMax, webbs.hp + heal)
+        drank(ConsumableType.HpPotion, `+${heal} HP`)
+      }
     }
-    if (input.justDown('KeyV')) {
-      if (consumables.tryTonic() === null) hud.flashBossMessage('No Stamina Tonics')
+    if (dyingT < 0 && input.justDown('KeyV')) {
+      const next = consumables.getAmount(ConsumableType.StaminaTonicIII) > 0 ? ConsumableType.StaminaTonicIII
+                 : consumables.getAmount(ConsumableType.StaminaTonicII)  > 0 ? ConsumableType.StaminaTonicII
+                 : ConsumableType.StaminaTonicI
+      const ms = consumables.tryTonic()
+      if (ms === null) hud.toast('No stamina tonics — brew them at a workbench', 'warn')
+      else drank(next, `${Math.round(ms / 1000)} s of light swings`)
     }
-    if (input.justDown('KeyX')) {
-      if (!consumables.tryMaxPotion()) hud.flashBossMessage('No Max Potions')
+    if (dyingT < 0 && input.justDown('KeyX')) {
+      if (!consumables.tryMaxPotion()) hud.toast('No max potions — they need Crystal Dust', 'warn')
+      else drank(ConsumableType.MaxPotion, '10 s untouchable')
     }
   }
 
   // ── HUD (always) ────────────────────────────────────────────────────────
+  hud.setActiveSlot(lastActiveSlot)
 
   hud.update(webbs)
+  quickItems.update(consumables)
+  touch.update({ mode: touchMode(), weapon: webbs.weaponSystem.getSlot(lastActiveSlot), interact: hud.currentInteract, web: webbs.hasWebLauncher })
 
   // ── Pause gate ───────────────────────────────────────────────────────────
 
@@ -788,7 +1128,7 @@ function gameLoop() {
 
   // ── Zone exit / portal checks ────────────────────────────────────────────
 
-  if (!transitioning) {
+  if (!transitioning && dyingT < 0) {
     const px = webbs.collisionBody.x
 
     if (currentZone === 'homeBase') {
@@ -809,8 +1149,12 @@ function gameLoop() {
   physicsWorld.update(delta)
   webbs.syncPosition()
 
-  // Round 10 — listener follows player so 3D positional audio pans correctly.
-  audio.setListenerPosition(webbs.collisionBody.x, webbs.collisionBody.z)
+  // Listener follows the player; panning uses the camera's right vector, and
+  // distance is measured in creature-scale units (den 2.4, colony 1.0).
+  {
+    const m = camera.matrixWorld.elements
+    audio.setListener(webbs.collisionBody.x, webbs.collisionBody.z, m[0], m[2], webbs.scale)
+  }
 
   // Low-HP heartbeat: loop while HP < 30%, stop otherwise.
   const hpFrac = webbs.hp / webbs.hpMax
@@ -877,22 +1221,30 @@ function gameLoop() {
     }
   }
 
+  // Snapshot who is alive BEFORE weapons run, so this frame's weapon kills
+  // count for XP (taking it after the weapon section missed every one).
+  const enemiesBefore = currentZone !== 'bossRoller'
+    ? (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies.filter(e => !e.isDead())
+    : []
+
   // ── Weapon attack — runs BEFORE enemy AI so hit detection sees this frame's swing ──
 
-  const aimPos = input.mouseToWorld(camera, CANVAS_W, CANVAS_H)
+  const aimPos = input.touchActive ? touchAimPoint() : input.mouseToWorld(camera)
   const aimDx  = aimPos.x - webbs.collisionBody.x
   const aimDz  = aimPos.z - webbs.collisionBody.z
 
-  if (input.mouseJustClicked()) {
+  if (dyingT < 0 && (input.mouseJustClicked() || input.justDown('TouchAttack'))) {
     const activeWeapon = webbs.weaponSystem.getSlot(lastActiveSlot)
+    const fired0 = weaponUseSystem.shotsFired
     weaponUseSystem.activateWeapon(lastActiveSlot, webbs, { dx: aimDx, dz: aimDz })
-    if (currentZone === 'bossRoller' && isMeleeWeapon(activeWeapon)) {
+    // Rock reflects ride on a swing that actually happened (not on cooldown/winded)
+    if (weaponUseSystem.shotsFired > fired0 && currentZone === 'bossRoller' && isMeleeWeapon(activeWeapon)) {
       ;(activeScene as BossRollerScene3D).tryReflect(webbs, aimDx, aimDz)
     }
   }
 
   // Right-click / Q — Web Launcher
-  if (input.rightMouseJustClicked() || input.justDown('KeyQ')) {
+  if (dyingT < 0 && (input.rightMouseJustClicked() || input.justDown('KeyQ'))) {
     webLauncher.onQPressed(webbs, { dx: aimDx, dz: aimDz })
   }
 
@@ -901,7 +1253,8 @@ function gameLoop() {
   // FlameBreather: continuous while key held — skip justDown handling for that slot
   let flameKeyHeld = false
   for (let i = 0; i < 8; i++) {
-    if (webbs.weaponSystem.getSlot(i) === WeaponType.FlameBreather && input.isDown(SLOT_KEYS[i])) {
+    const flameHeld = input.isDown(SLOT_KEYS[i]) || (i === lastActiveSlot && input.isDown('TouchAttack'))
+    if (dyingT < 0 && webbs.weaponSystem.getSlot(i) === WeaponType.FlameBreather && flameHeld) {
       weaponUseSystem.tickFlame(i, webbs, delta)
       lastActiveSlot = i
       flameKeyHeld = true
@@ -911,12 +1264,13 @@ function gameLoop() {
   if (!flameKeyHeld && weaponUseSystem.isFlameActive()) weaponUseSystem.stopFlame()
 
   for (let i = 0; i < 8; i++) {
-    if (input.justDown(SLOT_KEYS[i])) {
+    if (dyingT < 0 && input.justDown(SLOT_KEYS[i])) {
       const slotWeapon = webbs.weaponSystem.getSlot(i)
       if (slotWeapon === WeaponType.FlameBreather) continue
       lastActiveSlot = i   // pressing a number key makes that slot the left-click default
+      const fired0 = weaponUseSystem.shotsFired
       weaponUseSystem.activateWeapon(i, webbs, { dx: aimDx, dz: aimDz })
-      if (currentZone === 'bossRoller' && isMeleeWeapon(slotWeapon)) {
+      if (weaponUseSystem.shotsFired > fired0 && currentZone === 'bossRoller' && isMeleeWeapon(slotWeapon)) {
         ;(activeScene as BossRollerScene3D).tryReflect(webbs, aimDx, aimDz)
       }
     }
@@ -936,10 +1290,6 @@ function gameLoop() {
   // ── Enemy / scene update ─────────────────────────────────────────────────
 
   if (currentZone !== 'bossRoller') {
-    // Round 8 Issue 8: snapshot which enemies were alive before the scene tick
-    // so we can detect new kills and award XP.
-    const enemiesBefore = (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies.filter(e => !e.isDead())
-
     activeScene.updateEnemies(delta, webbs.collisionBody.x, webbs.collisionBody.z)
 
     // Detect kills (alive previously, now dead) and award XP
@@ -951,31 +1301,29 @@ function gameLoop() {
       if (enemy.isDead() || enemy.contactCooldown > 0) continue
       if (enemy.staggerTimer > 0)   continue   // Round 6 Issue 3: stunned enemies do no contact damage
       if (enemy.knockbackTimer > 0) continue   // ditto — knockbacked enemies are flailing
-      const dx = webbs.collisionBody.x - enemy.collisionBody.x
-      const dz = webbs.collisionBody.z - enemy.collisionBody.z
-      const touchDist = webbs.collisionBody.radius + enemy.config.bodyRadius + 0.05
-      if (dx * dx + dz * dz < touchDist * touchDist) {
-        webbs.damage(enemy.config.damage)
+      if (!enemy.dealsContactDamage()) continue  // only real attacks (lunge, charge, leap) hurt
+      if (physicsWorld.touching(webbs.collisionBody, enemy.collisionBody, 0.05)) {
         enemy.contactCooldown = 0.75
-        // Player damage feedback
-        hud.flashDamageVignette()
-        cameraShakeRemaining = 0.09
-        cameraShakeIntensity = 0.005
-        // Push player away from enemy
-        const dlen = Math.hypot(dx, dz) || 1
-        webbs.collisionBody.velocity.x += (dx / dlen) * 3.5
-        webbs.collisionBody.velocity.z += (dz / dlen) * 3.5
+        const landed = webbs.damage(enemy.config.damage, { fromX: enemy.collisionBody.x, fromZ: enemy.collisionBody.z })
+        if (landed) {
+          hud.flashDamageVignette()
+          cameraShakeRemaining = 0.16
+          cameraShakeIntensity = 0.012
+          hitStop(0.07)
+          audio.impact('hurt', webbs.collisionBody.x, webbs.collisionBody.z)
+          damageNumbers.spawn(webbs.collisionBody.x, webbs.group.position.y + 0.9 * webbs.scale, webbs.collisionBody.z,
+            enemy.config.damage, { hurt: true })
+        }
       }
     }
   } else {
     const bs     = activeScene as BossRollerScene3D
     const result = bs.update(delta, webbs, weaponUseSystem, hud, webLauncher.isAttachedToWall())
+    webLauncher.setEnemies(bs.enemies)   // the boss swaps its list between phases
 
-    if (result === 'victory' && !transitioning) {
+    if (result === 'victory' && !transitioning && !victoryPending) {
       xpSystem.award('boss_kill')
-      // Increment boss counter — SurvivorsProgression reads it on next homeBase entry
-      registry.set('bossesBeaten', (registry.get<number>('bossesBeaten') ?? 0) + 1)
-      saveSystem.save()
+      awardBossLeg('roller')
       if (bs.pendingLoot) {
         const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
         for (const [mat, qty] of Object.entries(bs.pendingLoot)) {
@@ -984,20 +1332,29 @@ function gameLoop() {
         registry.set('craftingInventory', inv)
         bs.pendingLoot = null
       }
-      setTimeout(() => transitionTo('antColony'), 2000)
-      transitioning = true
-    } else if (result === 'defeat' && !transitioning) {
-      webbs.hp = webbs.hpMax
-      transitionTo('homeBase')
+      persist()   // after the loot lands
+      // Let the victory beat play, then leave.  (transitionTo() sets
+      // `transitioning` itself — setting it here made the call a no-op.)
+      victoryPending = true
+      setTimeout(() => {
+        victoryPending = false
+        if (!registry.get<boolean>('endingSeen')) {
+          pendingEnding = true
+          void transitionTo('homeBase', { title: 'Ant Tunnels Cleared  —  Home', onSwitch: startEnding })
+        } else {
+          void transitionTo('antColony')
+        }
+      }, 2000)
+    } else if (result === 'defeat' && !transitioning && !victoryPending && dyingT < 0) {
+      startDeath()
     }
   }
 
   // ── Player death (non-boss zones) ────────────────────────────────────────
 
-  if (webbs.hp <= 0 && !transitioning) {
-    webbs.hp = webbs.hpMax
-    transitionTo('homeBase')
-  }
+  // The boss is already beaten: nothing left in the arena gets to kill him
+  if (victoryPending && webbs.hp <= 0) webbs.hp = 1
+  if (webbs.hp <= 0 && !transitioning && dyingT < 0) startDeath()
 
   webbs.updateLegs(delta)
 
@@ -1014,9 +1371,9 @@ function gameLoop() {
     if (deadEndResult) {
       if (deadEndResult.type === 'spike') {
         webbs.damage(deadEndResult.damage)
-        pickupNotify.notify('SPIKE TRAP', `-${deadEndResult.damage} HP`, '#ff2222')
+        hud.toast(`Spike trap!  −${deadEndResult.damage} HP`, 'danger')
       } else if (deadEndResult.type === 'ambush') {
-        pickupNotify.notify('AMBUSH!', 'Enemies spawned', '#ff6622')
+        hud.toast('Ambush!', 'danger')
       } else if (deadEndResult.type === 'loot') {
         const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
         inv[deadEndResult.mat] = (inv[deadEndResult.mat] ?? 0) + deadEndResult.qty
@@ -1036,58 +1393,47 @@ function gameLoop() {
 
   // ── Camera follow ────────────────────────────────────────────────────────
 
-  camLookTarget.set(webbs.group.position.x, 0, webbs.group.position.z)
-  camera.position.lerp(
-    new THREE.Vector3(
-      webbs.group.position.x + CAM_OFFSET.x,
-      CAM_OFFSET.y,
-      webbs.group.position.z + CAM_OFFSET.z
-    ),
-    0.1
-  )
-  camera.lookAt(camLookTarget)
-
-  // Round 6 Issue 8: lerp toward the celebration zoom override OR the user's
-  // wheel-set zoom otherwise.  Updated outside the pause gate via tickZoom().
-  tickZoom()
-
+  // Follow with a lean toward the cursor; zoom target follows the celebration
+  // override or the wheel (rig.update eases both, plus any shake).
+  rig.zoomTarget = celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom
   if (cameraShakeRemaining > 0) {
-    cameraShakeRemaining -= delta
-    const s = cameraShakeIntensity
-    camera.position.x += (Math.random() - 0.5) * s
-    camera.position.z += (Math.random() - 0.5) * s
+    rig.shake(cameraShakeIntensity, cameraShakeRemaining)
+    cameraShakeRemaining = 0
   }
+  rig.update(rawDelta, webbs.group.position, aimPos)
+  damageNumbers.update(camera, CANVAS_W, CANVAS_H)
+  inkPass.setFocusDistance(rig.viewDistance)
+  lighting.update(webbs.group.position.x, webbs.group.position.y, webbs.group.position.z, webbs.scale, rig.viewDistance, delta)
 
   // ── Mouse cursor ─────────────────────────────────────────────────────────
 
-  const worldMouse = input.mouseToWorld(camera, CANVAS_W, CANVAS_H)
+  const worldMouse = input.mouseToWorld(camera)
   cursorMesh.position.x = worldMouse.x
   cursorMesh.position.z = worldMouse.z
 
-  // ── Player light (zone-aware) ────────────────────────────────────────────
 
-  playerLight.position.set(webbs.group.position.x, 0.7, webbs.group.position.z)
-  playerLight.intensity = currentZone === 'antColony' ? 0.8
-                        : currentZone === 'bossRoller' ? 0.0
-                        : 0.1
-
+  updatePhysicsDebug()
   input.endFrame()
   composer.render()
 }
 
 // ─── Title Menu ───────────────────────────────────────────────────────────────
 
-function dismissTitleMenu(el: HTMLElement): void {
-  el.style.opacity = '0'
-  setTimeout(() => { el.style.display = 'none' }, 420)
+function dismissTitleMenu(): void {
   mainMenuActive = false
 }
 
-function initNewGame(el: HTMLElement): void {
+function initNewGame(): void {
   audio.play('ui_title_new_game')
   // Wipe save + reset all in-memory state
   saveSystem.deleteSave()
+  saveSystem.resetRegistry()   // every saved field, not just the ones listed below
   registry.set('legTier', 0)
+  registry.set('bossesDefeated', [])
+  webbs.weaponSystem.setLegTier(0)
+  webbs.legs.setLegTier(0)
+  consumables.restoreFromSnapshot({})
+  scene.userData.homeBaseWarmth = 0.12   // the den's survivor warmth starts cold again
   registry.set('weaponInventory', [])
   registry.set('craftingInventory', { SilkThread: 5, ChitinShard: 5, WebFluid: 4 })
   registry.set('openingCutsceneSeen', false)
@@ -1105,7 +1451,7 @@ function initNewGame(el: HTMLElement): void {
   xpValueEl.textContent = '0'
   webbs.hasWebLauncher = false
   for (let i = 0; i < 8; i++) webbs.weaponSystem.unequip(i)
-  webbs.resetHp()
+  webbs.resetAfterDeath()   // full reset: HP, stamina, energy, lockouts
 
   // Bug 1: destroy the stale scene (built at page-load against old registry state)
   // and rebuild a fresh HomeBaseScene3D so all pickups and objects appear correctly.
@@ -1115,35 +1461,32 @@ function initNewGame(el: HTMLElement): void {
   denProgression?.dispose(); denProgression = null
   activeScene.destroy()
   const freshHbs = new HomeBaseScene3D(scene, gradientMap)
+  lighting.apply('homeBase', ZONE_SCALE.homeBase, scene.userData.homeBaseWarmth as number)
+  lighting.calibrateAccents('homeBase')
   activeScene  = freshHbs
   currentZone  = 'homeBase'
   weaponUseSystem.setEnemies(freshHbs.enemies)
   webLauncher.setEnemies(freshHbs.enemies)
-  webLauncher.setWallHitTest((x, z) => freshHbs.webWallHitTest(x, z))
-  webbs.collisionBody.x = HomeBaseScene3D.SPAWN_X
-  webbs.collisionBody.z = 0
-  webbs.collisionBody.velocity.x = 0
-  webbs.collisionBody.velocity.z = 0
-  camera.position.set(HomeBaseScene3D.SPAWN_X + CAM_OFFSET.x, CAM_OFFSET.y, CAM_OFFSET.z)
+  applyZoneScale('homeBase')
+  webbs.placeAt(HomeBaseScene3D.SPAWN_X, 0)
+  rig.snapTo(HomeBaseScene3D.SPAWN_X, 0)
   cameraOccluder = new CameraOccluder(camera)
-  cameraOccluder.registerGroup(freshHbs.denHandles.walls)
-  cameraOccluder.register(freshHbs.antEntranceGroup)
-  for (const p of freshHbs.wallPanels) cameraOccluder.register(p)
+  for (const m of freshHbs.getOccluderMeshes()) cameraOccluder.register(m)
   denProgression = new SurvivorsProgression(freshHbs.denHandles, scene, freshHbs.warmPools)
   denProgression.applyState(0)
 
-  dismissTitleMenu(el)
+  dismissTitleMenu()
   registry.set('openingCutsceneSeen', true)
   textDisplay.show(OPENING_INTRO)
 }
 
-function initContinue(el: HTMLElement): void {
+function initContinue(): void {
   audio.play('ui_title_continue')
   // User just interacted — AudioContext is now unlocked. The HomeBaseScene3D
   // constructor's playLoop('amb_homebase') call fired before user interaction
   // and was silently dropped, so we must retry it here.
   audio.playLoop('amb_homebase')
-  dismissTitleMenu(el)
+  dismissTitleMenu()
   if (!registry.get<boolean>('openingCutsceneSeen')) {
     registry.set('openingCutsceneSeen', true)
     textDisplay.show(OPENING_INTRO)
@@ -1152,71 +1495,13 @@ function initContinue(el: HTMLElement): void {
   }
 }
 
-const mainMenuEl = (() => {
-  const el = document.createElement('div')
-  el.style.cssText = [
-    'position:absolute; inset:0; background:#0a0a14; z-index:200;',
-    'display:flex; flex-direction:column; align-items:center; justify-content:center;',
-    'font-family:monospace; transition:opacity 0.4s;',
-  ].join('')
-
-  const style = document.createElement('style')
-  style.textContent = [
-    '@keyframes mm-blink { 0%,100%{opacity:1} 50%{opacity:0} }',
-    '.mm-btn { font-family:monospace; font-size:15px; letter-spacing:3px; padding:11px 38px;',
-    '  border:1px solid; background:#0d0d1a; cursor:pointer; transition:all 0.12s; }',
-    '.mm-btn:hover { background:#1a1a2e; }',
-    '.mm-btn.active { color:#aaaacc; border-color:#44447a; }',
-    '.mm-btn.inactive { color:#3a3a55; border-color:#22223a; cursor:default; }',
-  ].join('\n')
-  document.head.appendChild(style)
-
-  const title = document.createElement('div')
-  title.style.cssText = 'color:#ffffff; font-size:26px; letter-spacing:4px; text-transform:uppercase; margin-bottom:8px;'
-  title.textContent = 'NO LEG LEFT TO STAND ON'
-
-  const sub = document.createElement('div')
-  sub.style.cssText = 'color:#5555aa; font-size:12px; letter-spacing:3px; margin-bottom:52px;'
-  sub.textContent = 'NoLegs'
-
-  const btnWrap = document.createElement('div')
-  btnWrap.style.cssText = 'display:flex; flex-direction:column; align-items:center; gap:14px;'
-
-  const newBtn = document.createElement('div')
-  newBtn.className = 'mm-btn active'
-  newBtn.textContent = 'NEW GAME'
-  newBtn.addEventListener('click', () => initNewGame(el))
-  newBtn.addEventListener('keydown', (e) => { if (e.code === 'Space' || e.code === 'Enter') initNewGame(el) })
-
-  const hasSave = saveSystem.hasSave()
-  const contBtn = document.createElement('div')
-  contBtn.className = `mm-btn ${hasSave ? 'active' : 'inactive'}`
-  contBtn.textContent = 'CONTINUE'
-  if (hasSave) {
-    contBtn.addEventListener('click', () => initContinue(el))
-  }
-
-  btnWrap.appendChild(newBtn)
-  btnWrap.appendChild(contBtn)
-  el.appendChild(title)
-  el.appendChild(sub)
-  el.appendChild(btnWrap)
-  document.getElementById('game-container')!.appendChild(el)
-  return el
-})()
+new TitleMenu(document.getElementById('game-container')!, {
+  hasSave:    saveSystem.hasSave(),
+  onNew:      () => initNewGame(),
+  onContinue: () => initContinue(),
+})
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 gameLoop()
-
-// Keyboard navigation for title menu (Space on New Game when no save, or use mouse)
-window.addEventListener('keydown', function onSpace(e: KeyboardEvent) {
-  if (!mainMenuActive) { window.removeEventListener('keydown', onSpace); return }
-  if (e.code !== 'Space' && e.code !== 'Enter') return
-  window.removeEventListener('keydown', onSpace)
-  if (saveSystem.hasSave()) {
-    initContinue(mainMenuEl)
-  } else {
-    initNewGame(mainMenuEl)
-  }
-})
+requestAnimationFrame(() => audio.preload())   // after the first frame: sounds don't compete with the boot download

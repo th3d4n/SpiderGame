@@ -1,4 +1,8 @@
 import * as THREE from 'three'
+import { addRim } from '../env/Materials'
+
+// Cool silhouette rim for Webbs — matches his icy eye glow
+export const WEBBS_RIM = { color: 0xa8d8ff, strength: 0.45 }
 import { WeaponType } from '../systems/WeaponSystem'
 import type { WeaponSystem } from '../systems/WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
@@ -7,11 +11,25 @@ import { WEAPON_COLORS } from '../config/WeaponData'
 const UPPER_LEN      = 0.55
 const LOWER_LEN      = 0.55
 
-// ─── Gait constants (base values) ─────────────────────────────────────────────
-const STEP_DURATION  = 0.10   // seconds per step swing (time-based, no scale)
-const STEP_HEIGHT    = 0.18   // world units of arc lift
-const STEP_THRESHOLD = 0.20   // distance before a foot triggers a step
-const SNAP_THRESHOLD = 0.85   // hard snap when foot drifts this far
+// ─── Gait constants (distances are base values, × SpiderLegs.sc) ─────────────
+// Fore/aft excursion budget: a mid leg reaches only ~0.55 (× sc) ahead/behind
+// its anchor before the IK over-stretches.  Webbs covers ~5 body lengths/s, so at
+// speed the gait must be RHYTHMIC — one group lifts as the other lands — keeping
+// each foot within ±v·T/2 of its anchor.  At a walk it waits for real drift.
+const STEP_TIME_SLOW = 0.17    // swing duration at a crawl (s)
+const STEP_TIME_FAST = 0.10    // swing duration at full speed (s)
+const SETTLE_TIME    = 0.20    // unhurried re-plant once standing still
+const RUN_SPEED      = 5.4     // wu/s per unit scale — Webbs' top speed
+const STEP_HEIGHT    = 0.16    // arc lift for a full-length step
+const STEP_THRESHOLD = 0.20    // drift before a foot wants to step at a walk …
+const STEP_THRESH_RUN = 0.05   // … shrinking to this at full speed (rhythmic alternation)
+const SETTLE_THRESH  = 0.07    // drift worth tidying once stopped
+const RESCUE_DIST    = 0.85    // drift that forces an emergency step (was a teleport)
+const TELEPORT_DIST  = 1.40    // body jumped this far in a frame → re-seat all feet
+const TURN_CARRY     = 0.55    // share of body yaw that pivots planted feet (spin-in-place slip)
+const MAX_TILT       = 0.30    // rad — body pitch/roll clamp
+const LEAN_PER_ACCEL = 0.0022  // rad per wu/s² (scale-normalised) of lean into acceleration
+const ATTACK_LEAN    = 0.10    // rad lean toward an active strike
 
 // ─── Leg anchor data (body-local, unscaled) ───────────────────────────────────
 // 4L + 4R, anchored on the SIDES (±X) but with a WIDE fore-aft (±Z) fan so the
@@ -50,6 +68,15 @@ export function createFuzzyBodyTexture(): THREE.DataTexture {
   tex.repeat.set(2, 2)
   tex.needsUpdate = true
   return tex
+}
+
+// One fuzz texture for every leg of every rig.  Was one per leg, rebuilt on each
+// zone change (the rig is rebuilt when creature scale changes) and never
+// disposed: +8 GPU textures per trip.
+let _legFuzz: THREE.DataTexture | null = null
+function legFuzzTexture(): THREE.DataTexture {
+  if (!_legFuzz) { _legFuzz = createFuzzyBodyTexture(); _legFuzz.userData.shared = true }
+  return _legFuzz
 }
 
 // ─── Module-level scratch vectors (avoid per-frame allocations) ───────────────
@@ -115,25 +142,45 @@ interface Leg {
   group: 'A' | 'B'
   rootOffset: THREE.Vector3    // body-local root attachment
   anchorOffset: THREE.Vector3  // body-local ideal foot rest position
-  footPos: THREE.Vector3       // current foot world position
-  anchorWorld: THREE.Vector3   // anchor mapped to world space each frame
-  rootWorld: THREE.Vector3     // root mapped to world space each frame
+  plant: THREE.Vector3         // gait-owned foot: planted, or mid-swing
+  foot: THREE.Vector3          // final IK target (plant blended with any attack pose)
+  anchorWorld: THREE.Vector3   // anchor on the floor, world space, this frame
+  rootWorld: THREE.Vector3     // root on the (tilted) body, world space, this frame
   poleDir: THREE.Vector3       // knee bend direction (updated each frame)
-  isStepping: boolean
-  stepT: number                // 0 → 1 progress through current step
+  swinging: boolean
+  swingT: number               // 0 → 1 progress through the current swing
+  swingDur: number             // seconds for this swing (speed-dependent)
+  swingH: number               // arc height for this swing (step-length dependent)
   stepStart: THREE.Vector3
   stepTarget: THREE.Vector3
-  wantsStep: boolean
   upper: THREE.Mesh  // organic segment: body color
   knee:  THREE.Mesh  // hinge joint sphere
   lower: THREE.Mesh  // bionic segment: tier/weapon color
   tip:   THREE.Mesh  // foot sphere: weapon color
 }
 
-type GaitPhase = 'IDLE' | 'A' | 'B'
+type GroupId = 'A' | 'B'
+
+// Body pose produced by the legs each frame — Webbs3D applies it to its group.
+export interface BodyPose {
+  y:     number   // world Y of the body group (floor under the feet + gait motion)
+  pitch: number   // local X rotation (nose down = +)
+  roll:  number   // local Z rotation (+X side up = +)
+}
 
 // ─── SpiderLegs ───────────────────────────────────────────────────────────────
 export type SwingStyle = 'thrust' | 'sword' | 'axe' | 'stab' | 'spray'
+
+// Live state of a weapon strike, for hit detection that follows the visible
+// weapon: where the tip is now, where it was last frame, and how far through
+// the swing it is (WeaponUseSystem3D decides which part of t is "active").
+export interface Strike {
+  style: SwingStyle
+  t:     number
+  x: number; y: number; z: number          // tip now (world)
+  px: number; py: number; pz: number       // tip last frame
+  dirX: number; dirZ: number               // swing facing (unit)
+}
 
 interface LegAnim {
   elapsed:     number
@@ -152,30 +199,56 @@ function wrapAngle(a: number): number {
   return a
 }
 
+const clamp01    = (v: number) => Math.max(0, Math.min(1, v))
+const smoothstep = (t: number) => t * t * (3 - 2 * t)
+
+// Attack poses fade in from the walking stance and back out into it: 12% / 20%
+// of the swing, but never quicker than 70 / 80 ms so short stabs don't pop.
+function attackWeight(t: number, dur: number): number {
+  const tin  = Math.min(0.40, Math.max(0.12, 0.07 / dur))
+  const tout = Math.min(0.45, Math.max(0.20, 0.08 / dur))
+  if (t < tin)      return smoothstep(t / tin)
+  if (t > 1 - tout) return smoothstep((1 - t) / tout)
+  return 1
+}
+
 export class SpiderLegs {
   private legs:         Leg[]   = []
   private animStates:   Array<LegAnim | null> = Array(8).fill(null)
-  private phase:        GaitPhase = 'IDLE'
   private kneePos       = new THREE.Vector3()
+  private prevFoot:     THREE.Vector3[] = Array.from({ length: 8 }, () => new THREE.Vector3())
   private gradientMap:  THREE.Texture
   private currentTier   = 0
   private slotWeapons:  WeaponType[]              = Array(8).fill(WeaponType.Empty)
   private weaponMeshes: Array<THREE.Group | null> = Array(8).fill(null)
+
+  // Body kinematics, estimated from the transform handed in each frame
+  private lastBodyPos      = new THREE.Vector3()
   private lastBodyRotation = 0
-  // Body-speed tracking → anticipatory step targets (keeps feet within reach when
-  // Webbs moves fast; otherwise the plant lands behind the receding anchor and the
-  // lower leg stretches past its length at diagonal headings → "detach + hop").
-  private lastBodyPos = new THREE.Vector3()
-  private bodySpeed   = 0
+  private velX = 0; private velZ = 0     // smoothed world velocity (wu/s)
+  private accX = 0; private accZ = 0     // smoothed world acceleration (wu/s²)
+  private yawRate   = 0                  // smoothed rad/s
+  private stillTime = 0
+  private lastGroup: GroupId | null = null
+  private settled = new Set<GroupId>()   // groups already re-planted since stopping
+
+  readonly pose: BodyPose = { y: 0, pitch: 0, roll: 0 }
+  // 0..1 death curl: body sinks and rolls onto its side, feet draw in under it
+  // (knees fold high — how a spider actually curls up).
+  collapse = 0
+  private bodyQuat  = new THREE.Quaternion()
+  private bodyEuler = new THREE.Euler(0, 0, 0, 'YXZ')
+
   threeScene: THREE.Scene
+  // Floor-height sampler — feet plant on the real terrain, not y=0.
+  ground: (x: number, z: number) => number = () => 0
+  // Fired when a tetrapod group lands while moving (footstep audio, dust).
+  onStep: ((x: number, z: number) => void) | null = null
 
   // Per-instance scaled constants (multiplied by constructor `scale` param)
   private readonly sc:           number
   private readonly upperLen:     number
   private readonly lowerLen:     number
-  private readonly stepH:        number
-  private readonly stepThresh:   number
-  private readonly snapThresh:   number
   private readonly rootHOff:     number   // body-height offset for root world Y
   private readonly maxLead:      number   // cap on anticipatory plant distance
 
@@ -185,14 +258,12 @@ export class SpiderLegs {
     this.sc            = scale
     this.upperLen      = UPPER_LEN      * scale
     this.lowerLen      = LOWER_LEN      * scale
-    this.stepH         = STEP_HEIGHT    * scale
-    this.stepThresh    = STEP_THRESHOLD * scale
-    this.snapThresh    = SNAP_THRESHOLD * scale
     this.rootHOff      = 0.32           * scale
-    // Never plant further ahead than ~45% of total reach — keeps the foot inside
-    // the leg's working envelope even at top speed.
-    this.maxLead       = (UPPER_LEN + LOWER_LEN) * 0.45 * scale
+    // Never plant further ahead than 0.40 — keeps the foot inside the leg's
+    // working envelope even at top speed (see excursion budget above).
+    this.maxLead       = 0.40 * scale
     this.buildLegs()
+    for (const l of this.legs) for (const m of [l.upper, l.knee, l.lower, l.tip]) addRim(m, WEBBS_RIM)
   }
 
   private buildLegs(): void {
@@ -205,7 +276,7 @@ export class SpiderLegs {
         new THREE.MeshStandardMaterial({
           color: 0x6a4d8a,
           roughness: 0.95,
-          map: createFuzzyBodyTexture(),
+          map: legFuzzTexture(),
         }),
       )
       const lower = new THREE.Mesh(
@@ -241,15 +312,17 @@ export class SpiderLegs {
         group:        d.group,
         rootOffset:   new THREE.Vector3(d.root[0] * sc,   d.root[1] * sc,   d.root[2] * sc),
         anchorOffset: new THREE.Vector3(d.anchor[0] * sc, d.anchor[1] * sc, d.anchor[2] * sc),
-        footPos:      new THREE.Vector3(),
+        plant:        new THREE.Vector3(),
+        foot:         new THREE.Vector3(),
         anchorWorld:  new THREE.Vector3(),
         rootWorld:    new THREE.Vector3(),
         poleDir:      new THREE.Vector3(),
-        isStepping:   false,
-        stepT:        0,
+        swinging:     false,
+        swingT:       0,
+        swingDur:     STEP_TIME_SLOW,
+        swingH:       0,
         stepStart:    new THREE.Vector3(),
         stepTarget:   new THREE.Vector3(),
-        wantsStep:    false,
         upper, knee, lower, tip,
       })
     }
@@ -257,12 +330,17 @@ export class SpiderLegs {
 
   // Snap all feet to resting world positions — call once after placing the body.
   initFeetAt(bodyPos: THREE.Vector3, bodyRotY: number): void {
-    this.updateWorldVecs(bodyPos, bodyRotY)
+    this.updateAnchors(bodyPos.x, bodyPos.z, bodyRotY)
     for (const leg of this.legs) {
-      leg.footPos.copy(leg.anchorWorld)
+      leg.plant.copy(leg.anchorWorld)
+      leg.foot.copy(leg.anchorWorld)
+      leg.swinging = false
     }
     this.lastBodyPos.set(bodyPos.x, bodyPos.y, bodyPos.z)
-    this.bodySpeed = 0
+    this.lastBodyRotation = bodyRotY
+    this.velX = this.velZ = this.accX = this.accZ = this.yawRate = 0
+    this.pose.y = this.ground(bodyPos.x, bodyPos.z)
+    this.pose.pitch = this.pose.roll = 0
   }
 
   // Trigger a one-shot punch/thrust animation on a specific leg.
@@ -273,9 +351,22 @@ export class SpiderLegs {
     this.animStates[legIndex] = { elapsed: 0, duration: durationSec, facingX, facingZ, attackRange, style }
   }
 
+  strike(slot: number): Strike | null {
+    const a = this.animStates[slot]
+    if (!a) return null
+    const f  = this.legs[slot].foot
+    const p  = this.prevFoot[slot]
+    const fl = Math.hypot(a.facingX, a.facingZ) || 1
+    return {
+      style: a.style, t: Math.min(1, a.elapsed / a.duration),
+      x: f.x, y: f.y, z: f.z, px: p.x, py: p.y, pz: p.z,
+      dirX: a.facingX / fl, dirZ: a.facingZ / fl,
+    }
+  }
+
   // Round 9 Issue 3 — convenience wrapper for weapon swings.  Per-style durations
-  // match the visuals in the weapon-anim loop below.  attackRange = 1.1wu so the
-  // weapon tip lands well in front of Webbs at the slam point.
+  // match the visuals in attackPath().  attackRange = 1.1wu so the weapon tip
+  // lands well in front of Webbs at the slam point.
   startWeaponSwing(legIndex: number, style: 'sword' | 'axe' | 'stab' | 'spray', facingX: number, facingZ: number): void {
     const dur = style === 'sword' ? 0.30
               : style === 'axe'   ? 0.40
@@ -284,233 +375,238 @@ export class SpiderLegs {
     this.triggerAnim(legIndex, dur, facingX, facingZ, 1.1, style)
   }
 
-  // Main per-frame update — call after physicsWorld has settled body position.
-  update(
-    delta: number,
-    bodyPos: THREE.Vector3,
-    bodyRotY: number,
-    moveDir: THREE.Vector2,
-    weaponSystem: WeaponSystem
-  ): void {
-    this.updateWorldVecs(bodyPos, bodyRotY)
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Main per-frame update — call after the body's XZ has been synced from physics.
+  // Pipeline: kinematics → gait (plant feet) → body pose from feet → roots on the
+  // posed body → attack blending → IK.  Webbs3D then applies `pose` to its group.
+  // ─────────────────────────────────────────────────────────────────────────────
+  update(delta: number, bodyPos: THREE.Vector3, bodyRotY: number, weaponSystem: WeaponSystem): void {
+    const dt = Math.max(delta, 1e-4)
+    const sc = this.sc
 
-    // Body-speed estimate (wu/s) from frame displacement — drives anticipatory
-    // foot plants in startStep().  Smoothed so a single jittery frame can't spike it.
-    if (delta > 0.0001) {
-      const inst = Math.hypot(bodyPos.x - this.lastBodyPos.x, bodyPos.z - this.lastBodyPos.z) / delta
-      this.bodySpeed += (inst - this.bodySpeed) * 0.4
-    }
+    // ── 1. Kinematics ───────────────────────────────────────────────────────────
+    const jump = Math.hypot(bodyPos.x - this.lastBodyPos.x, bodyPos.z - this.lastBodyPos.z)
+    if (jump > TELEPORT_DIST * sc) this.initFeetAt(bodyPos, bodyRotY)   // zone entry / respawn
+
+    const instVx = (bodyPos.x - this.lastBodyPos.x) / dt
+    const instVz = (bodyPos.z - this.lastBodyPos.z) / dt
+    const kv  = Math.min(1, dt * 20)
+    const pvx = this.velX, pvz = this.velZ
+    this.velX += (instVx - this.velX) * kv
+    this.velZ += (instVz - this.velZ) * kv
+    const ka = Math.min(1, dt * 8)
+    this.accX += ((this.velX - pvx) / dt - this.accX) * ka
+    this.accZ += ((this.velZ - pvz) / dt - this.accZ) * ka
+    const yawDelta = wrapAngle(bodyRotY - this.lastBodyRotation)
+    this.yawRate += (yawDelta / dt - this.yawRate) * Math.min(1, dt * 15)
     this.lastBodyPos.set(bodyPos.x, bodyPos.y, bodyPos.z)
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Round 9 Issue 1 — proper rotation-tracking model.
-    //
-    // The Round 8 single-frame snap-on-45° threshold missed any rotation that
-    // was spread across multiple frames (e.g. 30°/frame × 3 frames = 90° total,
-    // each individual frame still under 45° so no snap fired). Result: legs lag
-    // behind cumulatively and the "front legs become back legs" visual returns.
-    //
-    // Fix: continuously rotate every foot's world position around the body
-    // centre by the same delta the BODY rotated this frame. This keeps each
-    // foot's body-local position constant during rotation, so the IK never
-    // bridges a stretched gap and the leg layout stays locked to the body.
-    // Stepping/gait runs on top of this for natural translation motion.
-    // ─────────────────────────────────────────────────────────────────────────
-    const rotDelta = wrapAngle(bodyRotY - this.lastBodyRotation)
-    if (Math.abs(rotDelta) > 0.0001) {
-      const rc = Math.cos(rotDelta)
-      const rs = Math.sin(rotDelta)
-      for (const leg of this.legs) {
-        const lx = leg.footPos.x - bodyPos.x
-        const lz = leg.footPos.z - bodyPos.z
-        leg.footPos.x = bodyPos.x + lx * rc - lz * rs
-        leg.footPos.z = bodyPos.z + lx * rs + lz * rc
-      }
-    }
-
-    // Hard catch-up — snap feet that drifted beyond 1.2× baseline (scaled) after a teleport.
-    const hardSnap = (1.2 * this.sc) ** 2
-    const bcos = Math.cos(-bodyRotY)
-    const bsin = Math.sin(-bodyRotY)
-    const wcos = Math.cos( bodyRotY)
-    const wsin = Math.sin( bodyRotY)
-    for (const leg of this.legs) {
-      const lfx = leg.footPos.x - bodyPos.x
-      const lfz = leg.footPos.z - bodyPos.z
-      // Un-rotate by body rotation → body-local foot position
-      const blx = lfx * bcos - lfz * bsin
-      const blz = lfx * bsin + lfz * bcos
-      const ax  = leg.anchorOffset.x
-      const az  = leg.anchorOffset.z
-      const dx  = blx - ax
-      const dz  = blz - az
-      if (dx * dx + dz * dz > hardSnap) {
-        leg.footPos.x = bodyPos.x + ax * wcos - az * wsin
-        leg.footPos.z = bodyPos.z + ax * wsin + az * wcos
-        leg.isStepping = false
-      }
-    }
     this.lastBodyRotation = bodyRotY
 
-    // Animated legs are fully excluded from the gait machine this frame
-    const activeAnims = this.animStates.map((s, i) => s !== null ? i : -1).filter(i => i >= 0)
-    const animSet     = new Set(activeAnims)
+    const speed  = Math.hypot(this.velX, this.velZ)
+    const run    = clamp01(speed / (RUN_SPEED * sc))
+    const moving = speed > 0.15 * sc || Math.abs(this.yawRate) > 0.8
+    this.stillTime = moving ? 0 : this.stillTime + dt
 
-    // Mark legs that have drifted too far from their anchor (non-animated only)
-    for (const leg of this.legs) {
-      if (animSet.has(leg.index)) { leg.wantsStep = false; leg.isStepping = false; continue }
-      leg.wantsStep = !leg.isStepping && leg.footPos.distanceTo(leg.anchorWorld) > this.stepThresh
-    }
-
-    // Gait state machine — exclude animated legs so they never block phase transitions
-    const ga = this.legs.filter(l => l.group === 'A' && !animSet.has(l.index))
-    const gb = this.legs.filter(l => l.group === 'B' && !animSet.has(l.index))
-
-    if (this.phase === 'IDLE') {
-      if (ga.some(l => l.wantsStep)) { this.startStep(ga, moveDir); this.phase = 'A' }
-      else if (gb.some(l => l.wantsStep)) { this.startStep(gb, moveDir); this.phase = 'B' }
-    }
-    if (this.phase === 'A') { this.advanceStep(ga, delta); if (ga.every(l => !l.isStepping)) this.phase = 'IDLE' }
-    if (this.phase === 'B') { this.advanceStep(gb, delta); if (gb.every(l => !l.isStepping)) this.phase = 'IDLE' }
-
-    // Snap correction — after a sharp turn all anchors shift at once.
-    for (const leg of this.legs) {
-      if (animSet.has(leg.index) || leg.isStepping) continue
-      if (leg.footPos.distanceTo(leg.anchorWorld) > this.snapThresh) {
-        leg.footPos.copy(leg.anchorWorld)
+    // ── 2. Pivot slip — planted feet drag a little with fast body turns ─────────
+    // (The rest of a turn is taken up by stepping, so feet stay planted instead
+    // of the whole leg set spinning rigidly with the body.)
+    if (Math.abs(yawDelta) > 1e-4) {
+      const a  = yawDelta * TURN_CARRY
+      const rc = Math.cos(a), rs = Math.sin(a)
+      for (const leg of this.legs) {
+        if (leg.swinging) continue
+        const lx = leg.plant.x - bodyPos.x
+        const lz = leg.plant.z - bodyPos.z
+        leg.plant.x = bodyPos.x + lx * rc + lz * rs
+        leg.plant.z = bodyPos.z - lx * rs + lz * rc
       }
     }
 
-    // Apply weapon animation — large forward thrust + weapon mesh visual
-    for (let i = 0; i < this.legs.length; i++) {
-      const anim = this.animStates[i]
+    this.updateAnchors(bodyPos.x, bodyPos.z, bodyRotY)
+
+    // ── 3. Gait — alternating tetrapod, speed-scaled ────────────────────────────
+    const animSet = new Set<number>()
+    for (let i = 0; i < 8; i++) if (this.animStates[i]) animSet.add(i)
+    // Hard turns sweep the outer feet faster than the body travels, so turning
+    // quickens and shortens the steps (a spider pivots with rapid little steps).
+    const turn     = clamp01(Math.abs(this.yawRate) / 6)
+    const stepTime = (STEP_TIME_SLOW + (STEP_TIME_FAST - STEP_TIME_SLOW) * run) * (1 - 0.3 * turn)
+    const thresh   = moving
+      ? (STEP_THRESHOLD + (STEP_THRESH_RUN - STEP_THRESHOLD) * Math.max(run, turn)) * sc
+      : SETTLE_THRESH * sc
+    if (moving) this.settled.clear()
+
+    // Emergency re-plant (replaces the old visible teleport-snap)
+    for (const leg of this.legs) {
+      if (leg.swinging || animSet.has(leg.index)) continue
+      if (this.drift(leg) > RESCUE_DIST * sc) this.startStep([leg], stepTime * 0.7, bodyRotY, moving)
+    }
+
+    const groupA  = this.legs.filter(l => l.group === 'A' && !animSet.has(l.index))
+    const groupB  = this.legs.filter(l => l.group === 'B' && !animSet.has(l.index))
+    const overlap = 0.10 * run   // a running group may lift just before the other plants
+    const wants = (g: Leg[]): boolean => {
+      if (!moving && this.stillTime < 0.08) return false   // let the body settle first
+      let u = 0
+      for (const l of g) if (!l.swinging) u = Math.max(u, this.drift(l) / thresh)
+      return u >= 1
+    }
+    const progress = (g: Leg[]): number => {
+      let p = 1
+      for (const l of g) if (l.swinging) p = Math.min(p, l.swingT)
+      return p
+    }
+    const tryStart = (g: Leg[], other: Leg[], id: GroupId): boolean => {
+      if (g.some(l => l.swinging) || !wants(g) || progress(other) < 1 - overlap) return false
+      // Strict alternation while walking; a group may repeat only when the other
+      // group has nothing to fix (settle steps, one-sided drift).
+      if (this.lastGroup === id && moving && wants(other)) return false
+      // Standing still: each group tidies its stance once, then holds — no fidgeting.
+      if (!moving && this.settled.has(id)) return false
+      this.startStep(g, moving ? stepTime : SETTLE_TIME, bodyRotY, moving)
+      this.lastGroup = id
+      if (!moving) this.settled.add(id)
+      return true
+    }
+    if (this.lastGroup === 'A') { if (!tryStart(groupB, groupA, 'B')) tryStart(groupA, groupB, 'A') }
+    else                        { if (!tryStart(groupA, groupB, 'A')) tryStart(groupB, groupA, 'B') }
+
+    let swingFrac = 0
+    let landed = 0, landX = 0, landZ = 0
+    for (const leg of this.legs) {
+      if (!leg.swinging) continue
+      this.advanceStep(leg, dt)
+      swingFrac += Math.sin(leg.swingT * Math.PI) / 4   // ≈1 when a full group is mid-air
+      if (!leg.swinging) { landed++; landX += leg.plant.x; landZ += leg.plant.z }
+    }
+    if (landed >= 2 && moving) this.onStep?.(landX / landed, landZ / landed)
+
+    // ── 4. Body pose from the planted feet ──────────────────────────────────────
+    // Terrain read from where the feet stand (a lifted foot contributes its
+    // landing point, so a swing never raises or tips the body).
+    const fy = (idx: number[]) => idx.reduce((s, i) => {
+      const l = this.legs[i]
+      return s + (l.swinging ? l.stepTarget.y : l.plant.y)
+    }, 0) / idx.length
+    const front = fy([0, 1]), back = fy([6, 7])
+    const left  = fy([0, 2, 4, 6]), right = fy([1, 3, 5, 7])
+    const feetY = fy([0, 1, 2, 3, 4, 5, 6, 7])
+    const floorY = this.ground(bodyPos.x, bodyPos.z)
+    const pitchTerrain = -Math.atan2(front - back, 1.44 * sc)
+    const rollTerrain  =  Math.atan2(right - left, 1.5 * sc)
+
+    // Lean into acceleration: nose dips accelerating forward, body leans toward a
+    // sideways push.  Body-local axes: forward = (sin y, cos y), +X = (cos y, -sin y).
+    const fwdX = Math.sin(bodyRotY), fwdZ = Math.cos(bodyRotY)
+    const rgtX = Math.cos(bodyRotY), rgtZ = -Math.sin(bodyRotY)
+    const aF = (this.accX * fwdX + this.accZ * fwdZ) / sc
+    const aR = (this.accX * rgtX + this.accZ * rgtZ) / sc
+    let pitch = pitchTerrain + aF * LEAN_PER_ACCEL
+    let roll  = rollTerrain  - aR * LEAN_PER_ACCEL
+    // Lean toward any active strike
+    for (const anim of this.animStates) {
       if (!anim) continue
-      anim.elapsed += delta
+      const w  = attackWeight(Math.min(anim.elapsed / anim.duration, 1), anim.duration) * ATTACK_LEAN
+      const fl = Math.hypot(anim.facingX, anim.facingZ) || 1
+      pitch += w * (anim.facingX * fwdX + anim.facingZ * fwdZ) / fl
+      roll  -= w * (anim.facingX * rgtX + anim.facingZ * rgtZ) / fl
+    }
+    pitch = Math.max(-MAX_TILT, Math.min(MAX_TILT, pitch))
+    roll  = Math.max(-MAX_TILT, Math.min(MAX_TILT, roll))
+
+    // Height: between the floor under the body and the feet, crouching a touch
+    // when running and dipping while a group is airborne (less support).
+    let targetY = floorY + (feetY - floorY) * 0.6
+                  - 0.03 * sc * run
+                  - 0.025 * sc * swingFrac * (0.4 + 0.6 * run)
+    if (this.collapse > 0) {
+      const c = this.collapse
+      targetY += (floorY + 0.1 * sc - targetY) * c
+      roll  += 0.5 * c
+      pitch += 0.12 * c
+    }
+    const kp = Math.min(1, dt * 14)
+    const kr = Math.min(1, dt * 10)
+    this.pose.y     += (targetY - this.pose.y) * kp
+    this.pose.pitch += (pitch - this.pose.pitch) * kr
+    this.pose.roll  += (roll  - this.pose.roll)  * kr
+
+    // ── 5. Roots on the posed body ──────────────────────────────────────────────
+    this.bodyEuler.set(this.pose.pitch, bodyRotY, this.pose.roll, 'YXZ')
+    this.bodyQuat.setFromEuler(this.bodyEuler)
+    for (const leg of this.legs) {
+      _sv1.set(leg.rootOffset.x, leg.rootOffset.y + this.rootHOff, leg.rootOffset.z).applyQuaternion(this.bodyQuat)
+      leg.rootWorld.set(bodyPos.x + _sv1.x, this.pose.y + _sv1.y, bodyPos.z + _sv1.z)
+    }
+
+    // ── 6. Attack poses, blended over the gait foot ─────────────────────────────
+    const maxR = (this.upperLen + this.lowerLen) * 0.95
+    for (const leg of this.legs) this.prevFoot[leg.index].copy(leg.foot)
+    for (const leg of this.legs) {
+      const anim = this.animStates[leg.index]
+      if (!anim) {
+        // Reach safety: never let the gait foot stretch the leg past its length
+        const dRF = leg.plant.distanceTo(leg.rootWorld)
+        if (dRF > maxR) leg.plant.lerpVectors(leg.rootWorld, leg.plant, maxR / dRF)
+        leg.foot.copy(leg.plant)
+        continue
+      }
+      anim.elapsed += dt
       const t = Math.min(anim.elapsed / anim.duration, 1)
-      const leg = this.legs[i]
-      const wMesh = this.weaponMeshes[i]
+      const wMesh = this.weaponMeshes[leg.index]
       if (t >= 1) {
-        this.animStates[i] = null
+        this.animStates[leg.index] = null
         leg.tip.visible = true
         leg.tip.scale.setScalar(1.0)
         if (wMesh) wMesh.visible = false
+        leg.foot.copy(leg.plant)
         continue
       }
+      this.attackPath(leg, anim, t, bodyPos, floorY, _sv2)
+      leg.foot.lerpVectors(leg.plant, _sv2, attackWeight(t, anim.duration))
+
       const flen = Math.hypot(anim.facingX, anim.facingZ) || 1
-      const fx   = anim.facingX / flen
-      const fz   = anim.facingZ / flen
-
-      // ─── Style-specific foot path ──────────────────────────────────────────
-      // All weapons converge on a single impact point in front of the body so
-      // the weapon tip lands at the same world location regardless of which
-      // leg-slot fired.  Lateral anchor offsets are cancelled out.
-      if (anim.style === 'sword') {
-        // Overhead slam: WINDUP up+back → SLAM down+forward → RETURN to anchor.
-        const ix = bodyPos.x + fx * anim.attackRange
-        const iz = bodyPos.z + fz * anim.attackRange
-        if (t < 0.30) {
-          const wt = t / 0.30
-          leg.footPos.set(
-            bodyPos.x - fx * 0.25 * wt,
-            0.05 + 0.85 * wt,
-            bodyPos.z - fz * 0.25 * wt,
-          )
-        } else if (t < 0.65) {
-          const st  = (t - 0.30) / 0.35
-          const ets = st * st                        // ease-in: slow rise then crash
-          const sx  = bodyPos.x - fx * 0.25
-          const sz  = bodyPos.z - fz * 0.25
-          leg.footPos.set(
-            sx + (ix - sx) * ets,
-            0.85 + (0.05 - 0.85) * ets,
-            sz + (iz - sz) * ets,
-          )
-        } else {
-          const rt = (t - 0.65) / 0.35
-          leg.footPos.set(
-            ix + (leg.anchorWorld.x - ix) * rt,
-            0.05 + (1 - rt) * 0.15,                  // small arc on return
-            iz + (leg.anchorWorld.z - iz) * rt,
-          )
-        }
-      } else if (anim.style === 'axe') {
-        // Horizontal 180° sweep — foot arcs sideways at constant radius around body.
-        const baseAng    = Math.atan2(fx, fz)
-        const swingAng   = -Math.PI / 2 + Math.PI * t        // -90° → +90°
-        const a          = baseAng + swingAng
-        const SWEEP_DIST = anim.attackRange
-        leg.footPos.set(
-          bodyPos.x + Math.sin(a) * SWEEP_DIST,
-          0.20 + Math.sin(t * Math.PI) * 0.30,               // gentle up-arc during sweep
-          bodyPos.z + Math.cos(a) * SWEEP_DIST,
-        )
-      } else if (anim.style === 'stab') {
-        // Quick lunge forward then back — peak extension at t=0.5.
-        const stabT = t < 0.5 ? (t / 0.5) : (1 - (t - 0.5) / 0.5)
-        const STAB_DIST = anim.attackRange * 0.95
-        leg.footPos.set(
-          bodyPos.x + fx * STAB_DIST * stabT,
-          0.10,
-          bodyPos.z + fz * STAB_DIST * stabT,
-        )
-      } else {
-        // Default 'thrust' / 'spray' — Round 7-style fan-out from anchor.
-        const thrust = Math.sin(t * Math.PI)
-        const ax = bodyPos.x + fx * anim.attackRange
-        const az = bodyPos.z + fz * anim.attackRange
-        leg.footPos.set(
-          leg.anchorWorld.x + thrust * (ax - leg.anchorWorld.x),
-          thrust * 0.4,
-          leg.anchorWorld.z + thrust * (az - leg.anchorWorld.z),
-        )
-      }
-      leg.isStepping = false
-
       if (wMesh) {
         // Show weapon mesh at the tip, oriented toward the attack direction
         wMesh.visible = true
-        wMesh.position.copy(leg.footPos)
-        _sv1.set(fx, 0, fz)
-        if (_sv1.lengthSq() > 0.0001) {
-          _quat.setFromUnitVectors(_forwardZ, _sv1)
-          wMesh.quaternion.copy(_quat)
-        }
-        // Hide the tip sphere — weapon mesh is the visual
+        wMesh.position.copy(leg.foot)
+        _sv1.set(anim.facingX / flen, 0, anim.facingZ / flen)
+        _quat.setFromUnitVectors(_forwardZ, _sv1)
+        wMesh.quaternion.copy(_quat)
         leg.tip.visible = false
       } else {
-        // No weapon mesh: fall back to scaled tip sphere (use sin-pulse t).
-        const pulse = Math.sin(t * Math.PI)
+        // No weapon mesh: fall back to scaled tip sphere (sin-pulse t).
         leg.tip.visible = true
-        leg.tip.scale.setScalar(1.0 + pulse * 3.0)
+        leg.tip.scale.setScalar(1.0 + Math.sin(t * Math.PI) * 3.0)
       }
     }
 
-    // Hard reach clamp — guarantee the foot stays inside the leg's working
-    // envelope so the lower segment can never stretch into a "detached" look.
-    // Skip animated legs (attacks deliberately extend the reach).
-    const maxR = (this.upperLen + this.lowerLen) * 0.95
-    for (const leg of this.legs) {
-      if (this.animStates[leg.index]) continue
-      const dRF = leg.footPos.distanceTo(leg.rootWorld)
-      if (dRF > maxR) leg.footPos.lerpVectors(leg.rootWorld, leg.footPos, maxR / dRF)
+    // Death curl: feet pulled in under the body and up to it
+    if (this.collapse > 0) {
+      for (const leg of this.legs) {
+        _sv2.set(bodyPos.x + (leg.rootWorld.x - bodyPos.x) * 0.45,
+                 this.pose.y + 0.04 * sc,
+                 bodyPos.z + (leg.rootWorld.z - bodyPos.z) * 0.45)
+        leg.foot.lerp(_sv2, this.collapse)
+      }
     }
 
-    // Solve IK + position meshes + update colors + sync weapon meshes
+    // ── 7. IK + meshes + colors + weapons ───────────────────────────────────────
     for (const leg of this.legs) {
-      solveTwoBoneIK(leg.rootWorld, leg.footPos, this.upperLen, this.lowerLen, leg.poleDir, this.kneePos)
+      // Knee bends outward and up; the lift grows with horizontal reach so wide
+      // stances get the high arched knees of a real spider.
+      const ox = leg.foot.x - bodyPos.x, oz = leg.foot.z - bodyPos.z
+      leg.poleDir.set(ox, 0.6 * Math.hypot(ox, oz) + 0.3 * sc, oz).normalize()
+      solveTwoBoneIK(leg.rootWorld, leg.foot, this.upperLen, this.lowerLen, leg.poleDir, this.kneePos)
       // Upper slightly thicker (organic), lower slimmer (bionic)
-      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048 * this.sc)
-      positionCylinder(leg.lower, this.kneePos,  leg.footPos,  0.025 * this.sc)
+      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048 * sc)
+      positionCylinder(leg.lower, this.kneePos,  leg.foot,     0.025 * sc)
       leg.knee.position.copy(this.kneePos)
-      leg.tip.position.copy(leg.footPos)
-      // During animation the tip can rise above 0 — let it (no floor clamp)
-      if (!this.animStates[leg.index]) {
-        leg.tip.position.y = Math.max(leg.footPos.y + 0.08, 0.08)
-      }
+      leg.tip.position.copy(leg.foot)
+      if (!this.animStates[leg.index]) leg.tip.position.y = leg.foot.y + 0.08 * sc
 
       const weaponType  = weaponSystem.getSlot(leg.index)
       const weaponColor = WEAPON_COLORS[weaponType] ?? 0x444444
-      // Tip = weapon color
       ;(leg.tip.material as THREE.MeshToonMaterial).color.setHex(weaponColor)
       // Lower = weapon color when equipped, tier color when empty
       const lowerColor = weaponType !== WeaponType.Empty
@@ -518,24 +614,20 @@ export class SpiderLegs {
         : TIER_COLORS[this.currentTier]
       ;(leg.lower.material as THREE.MeshStandardMaterial).color.setHex(lowerColor)
 
-      // Round 8 Issue 4: weapon mesh stays visible at the foot at rest, not just
-      // during attack animation.  Orient the weapon to point outward from body.
+      // Weapon mesh stays visible at the foot at rest, pointing outward from the body.
       this.syncWeaponMesh(leg.index, weaponType)
       const wm = this.weaponMeshes[leg.index]
       if (wm && !this.animStates[leg.index]) {
         if (weaponType !== WeaponType.Empty) {
           wm.visible = true
-          wm.position.copy(leg.footPos)
-          wm.position.y = Math.max(leg.footPos.y + 0.04, 0.04)
-          const dxw = leg.footPos.x - bodyPos.x
-          const dzw = leg.footPos.z - bodyPos.z
-          const lw  = Math.hypot(dxw, dzw)
+          wm.position.copy(leg.foot)
+          wm.position.y = leg.foot.y + 0.04 * sc
+          const lw = Math.hypot(ox, oz)
           if (lw > 0.001) {
-            _sv1.set(dxw / lw, 0, dzw / lw)
+            _sv1.set(ox / lw, 0, oz / lw)
             _quat.setFromUnitVectors(_forwardZ, _sv1)
             wm.quaternion.copy(_quat)
           }
-          // Tip sphere hidden when weapon is shown
           leg.tip.visible = false
         } else {
           wm.visible = false
@@ -545,58 +637,103 @@ export class SpiderLegs {
     }
   }
 
-  // Round 7 Issue 1 — three-phase celebration pose:
-  //   T=0.0–0.3s : body rotates toward camera (handled by Webbs3D)
-  //   T=0.3–0.7s : front two legs lift from ground to peak height
-  //   T=0.7s+    : legs hold raised position with gentle bob
-  // Camera is at world (+X, +Y, +Z), so "toward camera" in XZ is +X +Z.  Once
-  // Webbs has rotated to face the camera, the front anatomical legs (i=6,7) sit
-  // on the camera-facing side and lift to display the item.
-  updateCelebrationPose(bodyPos: THREE.Vector3, elapsedMs: number): void {
-    // Anchor positions for the 6 planted legs must follow the rotating body.
-    // We re-derive the current rotation from the group via the legs' anchors —
-    // but since Webbs3D writes this.group.rotation.y each frame, we pass the
-    // same camera-facing rotation here.
-    const CAM_X = 18, CAM_Z = 18
-    const camLen  = Math.hypot(CAM_X, CAM_Z)
-    const camDirX = CAM_X / camLen
-    const camDirZ = CAM_Z / camLen
-    const targetRot = Math.atan2(-camDirX, -camDirZ)
-    const rotT      = Math.min(elapsedMs / 300, 1)
-    // For planted legs we only need the rotated anchors; lerp from 0 → targetRot to match Webbs3D.
-    const bodyRotY = targetRot * rotT
-    this.updateWorldVecs(bodyPos, bodyRotY)
-
-    // Leg lift gate: starts after the rotation completes (300ms), peaks at 700ms.
-    const liftT  = Math.max(0, Math.min((elapsedMs - 300) / 400, 1))
-    const liftY  = 0.05 + liftT * 0.55 + Math.sin(elapsedMs / 1000 * 2) * 0.04
-    const reachX = bodyPos.x + liftT * 0.45 * camDirX
-    const reachZ = bodyPos.z + liftT * 0.45 * camDirZ
-    const spread = 0.3
-
-    for (const leg of this.legs) {
-      if (leg.index === 6) {
-        // Front-left (body local -X, -Z) — in world after rotation, sits more in +Z direction
-        leg.footPos.set(reachX - spread * camDirZ, liftY, reachZ + spread * camDirX)
-      } else if (leg.index === 7) {
-        // Front-right (body local +X, -Z) — sits more in +X direction
-        leg.footPos.set(reachX + spread * camDirZ, liftY, reachZ - spread * camDirX)
+  // Style-specific weapon-tip path (world space) at progress t.  Every weapon
+  // converges on one impact point in front of the body so the tip lands at the
+  // same world location regardless of which leg-slot fired.
+  private attackPath(leg: Leg, anim: LegAnim, t: number, bodyPos: THREE.Vector3, gy: number, out: THREE.Vector3): void {
+    const hs   = this.sc
+    const flen = Math.hypot(anim.facingX, anim.facingZ) || 1
+    const fx   = anim.facingX / flen
+    const fz   = anim.facingZ / flen
+    if (anim.style === 'sword') {
+      // Overhead slam: WINDUP up+back → SLAM down+forward → RETURN toward the stance foot.
+      const ix = bodyPos.x + fx * anim.attackRange
+      const iz = bodyPos.z + fz * anim.attackRange
+      if (t < 0.30) {
+        const wt = smoothstep(t / 0.30)
+        out.set(bodyPos.x - fx * 0.25 * wt, gy + (0.05 + 0.85 * wt) * hs, bodyPos.z - fz * 0.25 * wt)
+      } else if (t < 0.65) {
+        const st  = (t - 0.30) / 0.35
+        const ets = st * st                        // ease-in: slow rise then crash
+        const sx  = bodyPos.x - fx * 0.25
+        const sz  = bodyPos.z - fz * 0.25
+        out.set(sx + (ix - sx) * ets, gy + (0.85 + (0.05 - 0.85) * ets) * hs, sz + (iz - sz) * ets)
       } else {
-        // All other legs planted at their rotated anchor positions
-        leg.footPos.copy(leg.anchorWorld)
-        leg.footPos.y = 0
+        const rt = smoothstep((t - 0.65) / 0.35)
+        out.set(ix + (leg.plant.x - ix) * rt, gy + (0.05 + (1 - rt) * 0.15) * hs, iz + (leg.plant.z - iz) * rt)
       }
-      leg.isStepping = false
+    } else if (anim.style === 'axe') {
+      // Horizontal 180° sweep — foot arcs sideways at constant radius around body.
+      const a = Math.atan2(fx, fz) - Math.PI / 2 + Math.PI * smoothstep(t)
+      out.set(
+        bodyPos.x + Math.sin(a) * anim.attackRange,
+        gy + (0.20 + Math.sin(t * Math.PI) * 0.30) * hs,
+        bodyPos.z + Math.cos(a) * anim.attackRange,
+      )
+    } else if (anim.style === 'stab') {
+      // Quick lunge forward then back — fast out, slower recovery.
+      const stabT = t < 0.4 ? smoothstep(t / 0.4) : 1 - smoothstep((t - 0.4) / 0.6)
+      const d = anim.attackRange * 0.95 * stabT
+      out.set(bodyPos.x + fx * d, gy + 0.10 * hs, bodyPos.z + fz * d)
+    } else {
+      // Default 'thrust' / 'spray' — fan out from the stance foot to the aim point.
+      const thrust = Math.sin(t * Math.PI)
+      const ax = bodyPos.x + fx * anim.attackRange
+      const az = bodyPos.z + fz * anim.attackRange
+      out.set(
+        leg.plant.x + thrust * (ax - leg.plant.x),
+        gy + thrust * 0.4 * hs,
+        leg.plant.z + thrust * (az - leg.plant.z),
+      )
+    }
+  }
+
+  // Round 7 Issue 1 — three-phase celebration pose:
+  //   T=0.0–0.3s : body rotates toward camera (Webbs3D drives bodyRotY)
+  //   T=0.3–0.7s : the two front legs lift from the ground to peak height
+  //   T=0.7s+    : legs hold the item up with a gentle bob
+  updateCelebrationPose(bodyPos: THREE.Vector3, bodyRotY: number, camDirX: number, camDirZ: number, elapsedMs: number): void {
+    const sc = this.sc
+    this.updateAnchors(bodyPos.x, bodyPos.z, bodyRotY)
+
+    const gy = this.ground(bodyPos.x, bodyPos.z)
+    this.pose.y = gy
+    this.pose.pitch = this.pose.roll = 0
+    this.bodyEuler.set(0, bodyRotY, 0, 'YXZ')
+    this.bodyQuat.setFromEuler(this.bodyEuler)
+    for (const leg of this.legs) {
+      _sv1.set(leg.rootOffset.x, leg.rootOffset.y + this.rootHOff, leg.rootOffset.z).applyQuaternion(this.bodyQuat)
+      leg.rootWorld.set(bodyPos.x + _sv1.x, gy + _sv1.y, bodyPos.z + _sv1.z)
     }
 
-    // Solve IK + update meshes for every leg
+    const liftT  = Math.max(0, Math.min((elapsedMs - 300) / 400, 1))
+    const liftY  = gy + (0.05 + liftT * 0.55 + Math.sin(elapsedMs / 1000 * 2) * 0.04) * sc
+    const reachX = bodyPos.x + liftT * 0.45 * sc * camDirX
+    const reachZ = bodyPos.z + liftT * 0.45 * sc * camDirZ
+    const rgtX = Math.cos(bodyRotY), rgtZ = -Math.sin(bodyRotY)   // body-local +X in world
+    const spread = 0.3 * sc
+
     for (const leg of this.legs) {
-      solveTwoBoneIK(leg.rootWorld, leg.footPos, this.upperLen, this.lowerLen, leg.poleDir, this.kneePos)
-      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048 * this.sc)
-      positionCylinder(leg.lower, this.kneePos,  leg.footPos,  0.025 * this.sc)
+      leg.plant.copy(leg.anchorWorld)    // every leg re-plants from its anchor afterwards
+      leg.swinging = false
+      if (leg.index <= 1) {
+        // Front pair (L1 / R1) raise the item toward the camera
+        const side = Math.sign(leg.anchorOffset.x)
+        _sv2.set(reachX + rgtX * side * spread, liftY, reachZ + rgtZ * side * spread)
+        leg.foot.lerpVectors(leg.anchorWorld, _sv2, smoothstep(liftT))
+      } else {
+        leg.foot.copy(leg.anchorWorld)   // anchorWorld.y is already the floor
+      }
+    }
+
+    for (const leg of this.legs) {
+      leg.poleDir.set(leg.foot.x - bodyPos.x, 0.6, leg.foot.z - bodyPos.z).normalize()
+      solveTwoBoneIK(leg.rootWorld, leg.foot, this.upperLen, this.lowerLen, leg.poleDir, this.kneePos)
+      positionCylinder(leg.upper, leg.rootWorld, this.kneePos, 0.048 * sc)
+      positionCylinder(leg.lower, this.kneePos,  leg.foot,     0.025 * sc)
       leg.knee.position.copy(this.kneePos)
-      leg.tip.position.copy(leg.footPos)
-      leg.tip.position.y = Math.max(leg.footPos.y, 0.08)
+      leg.tip.position.copy(leg.foot)
+      leg.tip.position.y = leg.foot.y + 0.08 * sc
     }
   }
 
@@ -605,66 +742,66 @@ export class SpiderLegs {
     this.currentTier = Math.max(0, Math.min(3, tier))
   }
 
+  get legTier(): number { return this.currentTier }
+
   // ── Private helpers ──────────────────────────────────────────────────────────
 
-  // Compute world-space anchor, root, and pole for all legs given body transform.
-  private updateWorldVecs(bodyPos: THREE.Vector3, rotY: number): void {
+  // Horizontal distance from a foot's plant to where it would ideally stand.
+  private drift(leg: Leg): number {
+    return Math.hypot(leg.plant.x - leg.anchorWorld.x, leg.plant.z - leg.anchorWorld.z)
+  }
+
+  // World-space floor anchors for every leg, given the body XZ and yaw
+  // (THREE yaw convention: local (x, z) → (x cos + z sin, −x sin + z cos)).
+  private updateAnchors(bx: number, bz: number, rotY: number): void {
     const cos = Math.cos(rotY)
     const sin = Math.sin(rotY)
     for (const leg of this.legs) {
-      const a = leg.anchorOffset
-      const r = leg.rootOffset
-
-      // Anchor: body-local XZ rotated into world, Y=0 (ground)
-      leg.anchorWorld.set(
-        bodyPos.x + a.x * cos - a.z * sin,
-        0,
-        bodyPos.z + a.x * sin + a.z * cos
-      )
-
-      // Root: body-local, elevated by body mesh height (scaled by sc)
-      leg.rootWorld.set(
-        bodyPos.x + r.x * cos - r.z * sin,
-        bodyPos.y + r.y + this.rootHOff,
-        bodyPos.z + r.x * sin + r.z * cos
-      )
-
-      // Pole: outward from body center toward foot, biased upward so knee lifts
-      leg.poleDir.set(
-        leg.footPos.x - bodyPos.x,
-        0.6,
-        leg.footPos.z - bodyPos.z
-      ).normalize()
+      const a   = leg.anchorOffset
+      const awx = bx + a.x * cos + a.z * sin
+      const awz = bz - a.x * sin + a.z * cos
+      leg.anchorWorld.set(awx, this.ground(awx, awz), awz)
     }
   }
 
-  private startStep(group: Leg[], moveDir: THREE.Vector2): void {
-    // Anticipatory plant: lead the anchor by the distance the body will travel
-    // during the swing (speed × STEP_DURATION), so the foot lands AT the anchor
-    // when the body catches up rather than behind it.  moveDir is unit-length.
-    const lead = Math.min(this.bodySpeed * STEP_DURATION, this.maxLead)
+  // Lift `group` and swing each foot to where its anchor WILL be: the body's
+  // travel during the swing, plus half a stance ahead (so the foot passes under
+  // its anchor mid-stance), rotated by the predicted yaw.  Only the ahead-of-anchor
+  // part is capped — capping the travel too made feet land already behind.
+  private startStep(group: Leg[], dur: number, bodyRotY: number, moving: boolean): void {
+    let lx = 0, lz = 0
+    if (moving) {   // settle steps plant exactly on the anchor (no residual-velocity lead)
+      let ax = this.velX * dur * 0.5, az = this.velZ * dur * 0.5
+      const al = Math.hypot(ax, az)
+      if (al > this.maxLead) { ax *= this.maxLead / al; az *= this.maxLead / al }
+      lx = this.velX * dur + ax
+      lz = this.velZ * dur + az
+    }
+    const yaw = bodyRotY + (moving ? this.yawRate * dur * 0.8 : 0)
+    const cos = Math.cos(yaw), sin = Math.sin(yaw)
     for (const leg of group) {
-      leg.isStepping = true
-      leg.stepT      = 0
-      leg.stepStart.copy(leg.footPos)
-      leg.stepTarget.copy(leg.anchorWorld)
-      leg.stepTarget.x += moveDir.x * lead
-      leg.stepTarget.z += moveDir.y * lead
-      leg.stepTarget.y  = 0
+      if (leg.swinging) continue
+      const a  = leg.anchorOffset
+      const tx = this.lastBodyPos.x + a.x * cos + a.z * sin + lx
+      const tz = this.lastBodyPos.z - a.x * sin + a.z * cos + lz
+      leg.stepStart.copy(leg.plant)
+      leg.stepTarget.set(tx, this.ground(tx, tz), tz)
+      const len = Math.hypot(tx - leg.plant.x, tz - leg.plant.z)
+      leg.swingH   = STEP_HEIGHT * this.sc * Math.max(0.35, Math.min(1.2, len / (0.4 * this.sc)))
+      leg.swingDur = dur
+      leg.swingT   = 0
+      leg.swinging = true
     }
   }
 
-  private advanceStep(group: Leg[], delta: number): void {
-    for (const leg of group) {
-      if (!leg.isStepping) continue
-      leg.stepT = Math.min(1, leg.stepT + delta / STEP_DURATION)
-      // Lerp XZ, sine arc in Y
-      leg.footPos.lerpVectors(leg.stepStart, leg.stepTarget, leg.stepT)
-      leg.footPos.y = leg.stepT < 1
-        ? Math.sin(leg.stepT * Math.PI) * this.stepH
-        : 0
-      if (leg.stepT >= 1) leg.isStepping = false
-    }
+  // Ease the foot across (accelerate off the ground, decelerate into the plant)
+  // with a lift that peaks early: snappy pick-up, soft set-down.
+  private advanceStep(leg: Leg, dt: number): void {
+    leg.swingT = Math.min(1, leg.swingT + dt / leg.swingDur)
+    const t = leg.swingT
+    leg.plant.lerpVectors(leg.stepStart, leg.stepTarget, smoothstep(t))
+    if (t < 1) leg.plant.y += Math.sin(Math.PI * Math.pow(t, 0.75)) * leg.swingH
+    else       leg.swinging = false
   }
 
   // ── Weapon mesh helpers ──────────────────────────────────────────────────────
@@ -686,6 +823,8 @@ export class SpiderLegs {
     this.slotWeapons[index] = type
     const mesh = this.buildWeaponMesh(type)
     if (mesh) {
+      addRim(mesh, WEBBS_RIM)
+      mesh.scale.setScalar(this.sc)
       mesh.visible = false
       this.threeScene.add(mesh)
       this.weaponMeshes[index] = mesh

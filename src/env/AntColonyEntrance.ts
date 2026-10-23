@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { DenMaterials } from '../scenes/DenBuilder'
+import { clonePatched } from './Materials'
 import { DEN_RADIUS } from './denScale'
 
 export interface AntEntranceResult {
@@ -56,7 +57,7 @@ export function buildAntColonyEntrance(
   // ── Throat: sloped tube receding west into the earth ───────────────────────
   // BackSide so we see the inner wall.
   // CLONED material — must not mutate shared mat.earthDark (used by mounds, wicks, etc.)
-  const throatMat   = mat.earthDark.clone()
+  const throatMat   = clonePatched(mat.earthDark)
   throatMat.side    = THREE.BackSide
   const throat      = new THREE.Mesh(
     new THREE.CylinderGeometry(3.2 * S, 5.5 * S, throatLen, 24, 1, true),

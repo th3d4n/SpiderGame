@@ -1,4 +1,7 @@
 import * as THREE from 'three'
+import { disposeTree } from '../core/dispose'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { surface, PALETTE, clonePatched } from '../env/Materials'
 import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import type { Enemy3D } from '../entities/Enemy3D'
 import { CentipedeAmbusher3D } from '../entities/CentipedeAmbusher3D'
@@ -223,6 +226,8 @@ function jitterZ(cz: number, range = 0.8): number {
 }
 
 
+const _wallM = new THREE.Matrix4()
+
 export class AntColonyScene3D {
   static readonly LEFT  = -W / 2          // -20
   static readonly RIGHT =  W / 2          // +20
@@ -244,8 +249,6 @@ export class AntColonyScene3D {
   private tracked:       THREE.Object3D[] = []
   private wallBodies:    CollisionBody[]  = []
   private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; capMat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
-  // Round 9 Issue 5: AABBs for the new maze walls — used by webWallHitTest.
-  private mazeWallAabbs: Array<{ cx: number; cz: number; hw: number; hh: number }> = []
   // Round 10 — adaptive ambience zone (entry / mid / deep) follows player X.
   // Empty string = uninitialised; tickVisuals will start the correct one on
   // the first frame rather than playing mid briefly then switching.
@@ -282,12 +285,12 @@ export class AntColonyScene3D {
       minZ: AntColonyScene3D.BACK  + 0.3,
       maxZ: AntColonyScene3D.FRONT - 0.3,
     }
-    physicsWorld.circularBound = null   // ant colony uses box bounds, not circular
 
     this.buildGround()
     this.buildOuterWalls()
     // Round 9 Issue 5: replaced 4-divider corridor grid with a proper maze.
     this.buildMazeWalls()
+    this.flushWallBatch()   // all wall boxes → one mesh per material
     this.buildLandmarks()
     this.buildPortals()
 
@@ -324,8 +327,8 @@ export class AntColonyScene3D {
   // ── Ground (5 corridor bands + connecting passages) ───────────────────────────
 
   private buildGround(): void {
-    const mat     = new THREE.MeshToonMaterial({ color: 0x0e0a06, gradientMap: this.gradientMap })
-    const patchMat = new THREE.MeshBasicMaterial({ color: 0x1c1208 })
+    const mat      = surface({ color: PALETTE.colonyFloor, tex: 'dirt', texScale: 0.45, gradientMap: this.gradientMap })
+    const patchMat = surface({ color: PALETTE.colonyPatch, tex: 'dirt', texScale: 0.9, gradientMap: this.gradientMap })
 
     // Floor per corridor
     for (const cz of CZ) {
@@ -365,8 +368,8 @@ export class AntColonyScene3D {
   // ── Outer walls (N + S perimeter) ─────────────────────────────────────────────
 
   private buildOuterWalls(): void {
-    const wm = new THREE.MeshToonMaterial({ color: 0x1a1008, gradientMap: this.gradientMap })
-    const cm = new THREE.MeshToonMaterial({ color: 0x2a1a0e, gradientMap: this.gradientMap })
+    const wm = surface({ color: PALETTE.colonyWall, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap })
+    const cm = surface({ color: PALETTE.colonyCap,  tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap })
 
     // Round 8 Issue 9: crooked back + front walls
     this.addCrookedWallSegment(
@@ -387,7 +390,7 @@ export class AntColonyScene3D {
     this.addBox(0.6, 0.12, D + 0.6, AntColonyScene3D.LEFT,  WALL_H + 0.06, 0, cm)
 
     // Stalactites along south back wall
-    const stalMat = new THREE.MeshToonMaterial({ color: 0x1a0e04, gradientMap: this.gradientMap })
+    const stalMat = surface({ color: PALETTE.colonyStal, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
     for (let sx = -18; sx <= 18; sx += 4) {
       const h = 0.25 + Math.random() * 0.4
       const s = new THREE.Mesh(new THREE.ConeGeometry(0.07, h, 6), stalMat)
@@ -396,7 +399,7 @@ export class AntColonyScene3D {
     }
 
     // Stone bumps at wall base (both sides)
-    const stoneMat = new THREE.MeshToonMaterial({ color: 0x1e1006, gradientMap: this.gradientMap })
+    const stoneMat = surface({ color: PALETTE.colonyStone, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
     for (const sx of [-17, -13, -8, -3, 2, 7, 12, 17]) {
       const h = 0.18 + Math.random() * 0.28
       const s = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.12), stoneMat)
@@ -422,8 +425,8 @@ export class AntColonyScene3D {
 
         // Each divider segment gets its own material instance so opacity is independent.
         // depthWrite:false prevents Z-fighting when walls fade transparent.
-        const segMat = new THREE.MeshToonMaterial({
-          color: 0x251a0e, gradientMap: this.gradientMap,
+        const segMat = surface({
+          color: PALETTE.colonyWall, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap,
           transparent: true, opacity: 1.0, depthWrite: false,
         })
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(segW, WALL_H, ht), segMat)
@@ -433,8 +436,8 @@ export class AntColonyScene3D {
 
         // Round 6 Issue 6: pair each cap with its panel and a private material so
         // the occlusion system can fade them together (caps were staying opaque).
-        const capMat = new THREE.MeshToonMaterial({
-          color: 0x332211, gradientMap: this.gradientMap,
+        const capMat = surface({
+          color: PALETTE.colonyCap, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap,
           transparent: true, opacity: 1.0, depthWrite: false,
         })
         const cap = new THREE.Mesh(new THREE.BoxGeometry(segW + 0.08, 0.10, ht + 0.1), capMat)
@@ -463,7 +466,7 @@ export class AntColonyScene3D {
   // Plus dead-end reward alcoves (existing dead-end system) and stub walls in
   // the middle that block sight-lines without fully sealing routes.
   private buildMazeWalls(): void {
-    const mat = new THREE.MeshToonMaterial({ color: 0x2a1808, gradientMap: this.gradientMap })
+    const mat = surface({ color: PALETTE.colonyWall, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap })
 
     // ── Northern divider (Z=+6) — gaps at X=-12, X=-2, X=+10 ────────────────
     this.addMazeWall(-20,  6,  -14,  6, 0.4, mat)
@@ -490,7 +493,7 @@ export class AntColonyScene3D {
     this.addMazeWall(  6, -9,    8, -11, 0.35, mat) // diagonal stub S corridor mid-east
 
     // ── Decorative stalactites at junctions ─────────────────────────────────
-    const stoneMat = new THREE.MeshToonMaterial({ color: 0x1a1006, gradientMap: this.gradientMap })
+    const stoneMat = surface({ color: PALETTE.colonyStone, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
     const stalacPositions: [number, number][] = [
       [-18,  9], [-12,  6.3], [ -2,  6.3], [10,  6.3], [18,  9],
       [-18, -9], [-10, -6.3], [  2, -6.3], [12, -6.3], [18, -9],
@@ -511,18 +514,10 @@ export class AntColonyScene3D {
   ): void {
     this.addCrookedWallSegment(x0, z0, x1, z1, thickness, WALL_H, mat)
 
-    // Physics AABB covering the swept rectangle plus thickness margin.
-    const minX = Math.min(x0, x1) - thickness * 0.5
-    const minZ = Math.min(z0, z1) - thickness * 0.5
-    const wX   = Math.abs(x1 - x0) + thickness
-    const wZ   = Math.abs(z1 - z0) + thickness
-    const body = physicsWorld.add({
-      x: minX, z: minZ, radius: 0,
-      velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
-      aabb: { x: minX, z: minZ, w: wX, h: wZ },
-    })
-    this.wallBodies.push(body)
-    this.mazeWallAabbs.push({ cx: minX + wX / 2, cz: minZ + wZ / 2, hw: wX / 2, hh: wZ / 2 })
+    // Physics: an oriented box along the segment.  The old AABB covered the whole
+    // swept rectangle, so diagonal stubs had large invisible collision blocks.
+    this.wallBodies.push(physicsWorld.addStaticSegment(x0, z0, x1, z1, thickness))
+
   }
 
   // ── Round 9 Issue 5: navigational landmarks ─────────────────────────────────
@@ -660,11 +655,11 @@ export class AntColonyScene3D {
       const g = new THREE.Group()
       g.position.set(d.x, 0, z)
 
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.30, 0.36), bodyMat.clone())
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.30, 0.36), clonePatched(bodyMat))
       body.position.y = 0.15; body.castShadow = true; g.add(body)
-      const lid = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.14, 0.36), lidMat.clone())
+      const lid = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.14, 0.36), clonePatched(lidMat))
       lid.position.y = 0.37; lid.castShadow = true; g.add(lid)
-      const band = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.06, 0.06), bandMat.clone())
+      const band = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.06, 0.06), clonePatched(bandMat))
       band.position.set(0, 0.18, 0.19); g.add(band)
 
       const glowColor = d.isMimic ? 0xff4422 : 0xffcc44
@@ -723,7 +718,7 @@ export class AntColonyScene3D {
     const mat = new THREE.MeshToonMaterial({ color: 0xcc99ff, gradientMap: this.gradientMap })
     for (const d of THISTLE_DATA) {
       const z    = jitterZ(d.cz, 1.2)
-      const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 5), mat.clone())
+      const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 5), clonePatched(mat))
       mesh.position.set(d.x, 0.09, z)
       mesh.rotation.z = 0.3
       this.threeScene.add(mesh); this.tracked.push(mesh)
@@ -734,9 +729,9 @@ export class AntColonyScene3D {
   // ── Dead-end rooms ─────────────────────────────────────────────────────────────
 
   private buildDeadEnds(): void {
-    const floorMat = new THREE.MeshToonMaterial({ color: 0x0a0805, gradientMap: this.gradientMap })
-    const wallMat  = new THREE.MeshToonMaterial({ color: 0x1a1208, gradientMap: this.gradientMap })
-    const spikeMat = new THREE.MeshToonMaterial({ color: 0x3a1a08, gradientMap: this.gradientMap })
+    const floorMat = surface({ color: PALETTE.deadEndFloor, tex: 'dirt',  texScale: 0.45, gradientMap: this.gradientMap })
+    const wallMat  = surface({ color: PALETTE.deadEndWall,  tex: 'dirt',  texScale: 0.6,  gradientMap: this.gradientMap })
+    const spikeMat = surface({ color: PALETTE.spike,        tex: 'stone', texScale: 1.5,  gradientMap: this.gradientMap })
     const lootMat  = new THREE.MeshBasicMaterial({ color: 0x44ffaa, transparent: true, opacity: 0.3 })
 
     for (const d of DEAD_END_DATA) {
@@ -819,25 +814,43 @@ export class AntColonyScene3D {
     }
 
     // Ant trail dots across all corridors
+    // (merged into one mesh — was ~150 separate draw calls)
     const trailMat = new THREE.MeshBasicMaterial({ color: 0x060402 })
+    const dots: THREE.BufferGeometry[] = []
     for (const cz of CZ) {
       for (let i = -18; i < 18; i += 1.2) {
-        const dot = new THREE.Mesh(new THREE.CircleGeometry(0.04, 5).rotateX(-Math.PI / 2), trailMat)
-        dot.position.set(i + Math.sin(i * 1.5) * 0.35, 0.007, cz + Math.cos(i * 1.3) * 0.3)
-        this.add(dot)
+        dots.push(new THREE.CircleGeometry(0.04, 5).rotateX(-Math.PI / 2)
+          .translate(i + Math.sin(i * 1.5) * 0.35, 0.007, cz + Math.cos(i * 1.3) * 0.3))
       }
     }
+    const trail = mergeGeometries(dots)
+    dots.forEach(d => d.dispose())
+    if (trail) this.add(new THREE.Mesh(trail, trailMat))
   }
 
   // ── Lighting ────────────────────────────────────────────────────────────────────
 
   private buildLighting(): void {
-    // Round 8 Issue 9: brighter ambient + extra warm entry light
-    this.add(new THREE.AmbientLight(0x223315, 0.55))
-    const fill = new THREE.DirectionalLight(0x445533, 0.35)
-    fill.position.set(-10, 12, -5); this.add(fill)
-    const entryLight = new THREE.DirectionalLight(0xddcc88, 0.20)
-    entryLight.position.set(18, 8, 0); this.add(entryLight)
+    // Ambient/fill/key now come from env/ZoneLighting (antColony preset); a warm
+    // pool at the entry keeps the "light behind you" read from home.
+    const entry = new THREE.PointLight(0xddcc88, 1.2, 7, 2)
+    entry.position.set(18, 2.5, 0); this.add(entry)
+  }
+
+  // Merge the batched wall boxes: one draw call (and one shadow draw) per
+  // wall material instead of one per box.  Colliders are separate segments,
+  // so nothing needed the individual meshes.
+  private wallBatch = new Map<THREE.Material, THREE.BufferGeometry[]>()
+  private flushWallBatch(): void {
+    for (const [mat, geos] of this.wallBatch) {
+      const merged = mergeGeometries(geos)
+      geos.forEach(g => g.dispose())
+      if (!merged) continue
+      const mesh = new THREE.Mesh(merged, mat)
+      mesh.castShadow = mesh.receiveShadow = true
+      this.add(mesh)
+    }
+    this.wallBatch.clear()
   }
 
   // Round 8 Issue 9: build a single wall as a chain of jittered, slightly
@@ -863,15 +876,13 @@ export class AntColonyScene3D {
       const jitter      = (Math.random() - 0.5) * 0.3
       const angleJitter = (Math.random() - 0.5) * 0.25
       const segLength   = Math.hypot(stepDx, stepDz) * 1.1
-      const box = new THREE.Mesh(
-        new THREE.BoxGeometry(segLength, height + (Math.random() - 0.5) * 0.2, thickness),
-        mat,
-      )
-      box.position.set(cx + perpX * jitter, height / 2, cz + perpZ * jitter)
-      box.rotation.y = baseAngle + angleJitter
-      box.castShadow = true
-      box.receiveShadow = true
-      this.add(box)
+      const geo = new THREE.BoxGeometry(segLength, height + (Math.random() - 0.5) * 0.2, thickness)
+      // same transform the per-box mesh had (rotation.y, then position), baked in
+      _wallM.makeRotationY(baseAngle + angleJitter).setPosition(cx + perpX * jitter, height / 2, cz + perpZ * jitter)
+      geo.applyMatrix4(_wallM)
+      let list = this.wallBatch.get(mat)
+      if (!list) { list = []; this.wallBatch.set(mat, list) }
+      list.push(geo)
     }
   }
 
@@ -908,17 +919,6 @@ export class AntColonyScene3D {
   checkExitRight(playerX: number): boolean { return playerX > AntColonyScene3D.EXIT_RIGHT_X }
   checkExitLeft(playerX:  number): boolean { return playerX < AntColonyScene3D.EXIT_LEFT_X  }
 
-  webWallHitTest(x: number, z: number): boolean {
-    if (x <= AntColonyScene3D.LEFT  + 0.5 ||
-        x >= AntColonyScene3D.RIGHT - 0.5 ||
-        z <= AntColonyScene3D.BACK  + 0.3 ||
-        z >= AntColonyScene3D.FRONT - 0.3) return true
-    // Round 9 Issue 5: check maze wall AABBs instead of corridor dividers
-    for (const w of this.mazeWallAabbs) {
-      if (Math.abs(x - w.cx) < w.hw + 0.1 && Math.abs(z - w.cz) < w.hh + 0.1) return true
-    }
-    return false
-  }
 
   nearWorkbench(playerX: number, playerZ: number): boolean {
     const dx = playerX - AntColonyScene3D.WORKBENCH_X
@@ -1095,6 +1095,14 @@ export class AntColonyScene3D {
                         Math.abs(e.collisionBody.z - pz) > CULL_R * 0.3
       e.group.visible = !offscreen
       if (!offscreen) { e.update(delta, px, pz); e.syncPosition() }
+      else {
+        // Not thinking off-screen — but the body is still live, so its last AI
+        // velocity used to carry it on (a charging beetle slid into a wall, the
+        // mesh then jumped when it came back into view).  Stand it still.
+        e.collisionBody.velocity.x = 0
+        e.collisionBody.velocity.z = 0
+        e.syncPosition()
+      }
     }
     for (let i = this.freeEnemies.length - 1; i >= 0; i--) {
       if (this.freeEnemies[i].isExpired()) {
@@ -1127,10 +1135,7 @@ export class AntColonyScene3D {
     this.pendingSpawns  = []
     this.freeEnemies    = []
     this.wallBodies     = []
-    for (const obj of this.tracked) {
-      this.threeScene.remove(obj)
-      if ((obj as THREE.Mesh).isMesh) (obj as THREE.Mesh).geometry.dispose()
-    }
+    for (const obj of this.tracked) disposeTree(obj)
     this.tracked = []
     physicsWorld.bounds = null
   }

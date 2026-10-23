@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { disposeTree } from '../core/dispose'
 import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import { registry } from '../core/Registry'
 import type { Enemy3D } from '../entities/Enemy3D'
@@ -88,7 +89,7 @@ export class HomeBaseScene3D {
   warmPools:         THREE.PointLight[]  = []   // exposed for per-frame flicker in main.ts
   denHandles!:       DenHandles               // exposed for SurvivorsProgression
   antEntranceGroup!: THREE.Group              // exposed for CameraOccluder registration
-  wallPanels:        THREE.Mesh[]        = []   // octagon wall panels; registered with CameraOccluder
+  floorMesh!:        THREE.Mesh                // den floor — excluded from occlusion
   exitTriggerX:      number = HomeBaseScene3D.EXIT_TRIGGER_X  // updated by buildAntColonyEntrance
 
   toothpickAvailable = true
@@ -112,7 +113,8 @@ export class HomeBaseScene3D {
   private giftGroup:      THREE.Group | null = null
   private cardGroup:      THREE.Group | null = null
   private pickupMeshes:   Array<THREE.Group | null> = Array(MATERIAL_PICKUPS.length).fill(null)
-  private staticBodies:   CollisionBody[] = []   // stones + doorframe posts
+  private staticBodies:   CollisionBody[] = []   // walls, mounds, rubble, posts, furniture
+  private giftBody:       CollisionBody | null = null
 
   // Proximity glint — interactables ramp emissive as Webbs nears.
   private glinters: Array<{
@@ -133,7 +135,6 @@ export class HomeBaseScene3D {
       minZ: HomeBaseScene3D.BACK  + 0.3,
       maxZ: HomeBaseScene3D.FRONT - 0.3,
     }
-    physicsWorld.circularBound = 50.0   // HomeBase chamber radius (10.0 × DEN_SCALE)
 
     // Build the shared material palette (uses the scene's gradientMap for
     // consistent toon banding) and bind the tracked add helper once.
@@ -141,9 +142,17 @@ export class HomeBaseScene3D {
     const add    = this.add.bind(this)
 
     // ── Terrain & structure ───────────────────────────────────────────────────
-    buildDenFloor(denMat, add)
-    this.buildWalls()                              // physics octagon + doorframe + glow
-    const walls = buildBurrowWalls(denMat, add)    // organic visual mounds over physics walls
+    this.floorMesh = buildDenFloor(denMat, add)
+    physicsWorld.setTerrain(this.floorMesh)        // Webbs + his feet ride the real floor
+    this.buildWalls()                              // octagon panels + doorframe + rubble (all solid)
+    const walls = buildBurrowWalls(denMat, add)    // organic burrow mounds
+    // Mounds are the den's visible wall — collide exactly where they meet the floor.
+    // (Previously only an invisible r=50 circle existed, so Webbs walked into them.)
+    for (const mound of walls.children) {
+      if (!mound.userData.solid) continue
+      const b = physicsWorld.addFootprint(mound, 1.0, 0.9)
+      if (b) this.staticBodies.push(b)
+    }
 
     // ── Gameplay objects (positions unchanged) ────────────────────────────────
     this.buildWorkbench()
@@ -169,7 +178,7 @@ export class HomeBaseScene3D {
     this.buildMaterialPickups()
     this.buildClues(denMat)
     this.buildLighting()
-    this.buildPropColliders()
+    this.buildPropColliders(junk)
 
     // Restore pickup state from save — remove objects the player already collected
     if (registry.get<boolean>('toothpickCollected')) this.pickupToothpick()
@@ -203,10 +212,12 @@ export class HomeBaseScene3D {
 
       const panel = new THREE.Mesh(new THREE.BoxGeometry(chord, WALL_H, 2.0), wallMat)  // 0.4 × DEN_SCALE
       panel.position.set(mx, WALL_H / 2, mz)
-      panel.rotation.y = -(a0 + a1) / 2
+      // Chord runs TANGENT to the ring: local +X → (−sin m, cos m).  (Was −m, which
+      // laid every 41-wu panel radially like a spoke reaching in to r ≈ 33.)
+      panel.rotation.y = -(a0 + a1) / 2 - Math.PI / 2
       panel.castShadow = true; panel.receiveShadow = true
       this.add(panel)
-      this.wallPanels.push(panel)   // E: registered with CameraOccluder in main.ts
+      this.staticBodies.push(physicsWorld.addStaticBox(mx, mz, chord / 2, 1.0, panel.rotation.y))
 
       const cap = new THREE.Mesh(new THREE.BoxGeometry(chord + 0.5, 0.6, 2.5), capMat)  // 0.1/0.12/0.5 × DEN_SCALE
       cap.position.set(mx, WALL_H + 0.06, mz)
@@ -226,14 +237,8 @@ export class HomeBaseScene3D {
     const post2 = new THREE.Mesh(new THREE.BoxGeometry(1.0, WALL_H, 1.0), frameMat)
     post2.position.set(-49.5, WALL_H / 2,  22.3)
     this.add(post2)
-    this.staticBodies.push(physicsWorld.add({
-      x: -49.5, z: -22.3, radius: 0.89,   // 0.18 × DEN_SCALE
-      velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
-    }))
-    this.staticBodies.push(physicsWorld.add({
-      x: -49.5, z:  22.3, radius: 0.89,
-      velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
-    }))
+    this.staticBodies.push(physicsWorld.addStaticBox(-49.5, -22.3, 0.5, 0.5))
+    this.staticBodies.push(physicsWorld.addStaticBox(-49.5,  22.3, 0.5, 0.5))
     // Lintel across the top
     const lintel = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.0, 45.5), frameMat)
     lintel.position.set(-49.5, WALL_H, 0)
@@ -258,10 +263,7 @@ export class HomeBaseScene3D {
       stone.rotation.y = angle
       stone.castShadow = true
       this.add(stone)
-      this.staticBodies.push(physicsWorld.add({
-        x: sx, z: sz, radius: 1.58,   // 0.32 × DEN_SCALE
-        velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
-      }))
+      this.staticBodies.push(physicsWorld.addStaticBox(sx, sz, 2.0, 0.445, angle))   // matches the 4.0 × 0.89 slab
     }
   }
 
@@ -349,7 +351,7 @@ export class HomeBaseScene3D {
       new THREE.RingGeometry(0.35*P, 0.48*P, 20).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({ color: 0xeeeeff, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
     )
-    giftGlow.position.set(gx, 0.01, gz); giftGroup.add(giftGlow)
+    giftGlow.position.set(gx, 0.01, gz); giftGlow.userData.noCollide = true; giftGroup.add(giftGlow)
     this.giftGroup = giftGroup
     this.threeScene.add(giftGroup); this.tracked.push(giftGroup)
     this.addGlint(gx, gz, giftMat, () => this.giftAvailable)
@@ -595,44 +597,56 @@ export class HomeBaseScene3D {
   // Static circle colliders for every solid prop so Webbs walks around them
   // instead of phasing through. Radii derived from world-space footprints at 0.45
   // coverage (slightly inside the visual so edges can be brushed).
-  private buildPropColliders(): void {
-    const body = (x: number, z: number, radius: number) => {
-      this.staticBodies.push(physicsWorld.add({
-        x, z, radius,
-        velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
-      }))
+  private buildPropColliders(junk: THREE.Group): void {
+    // Furniture: one collider per piece, generated from its actual geometry at
+    // actor height — replaces hand-guessed circles that sat ~45% inside the
+    // visuals (Webbs could walk half-way into the workbench and cabinet).
+    for (const piece of junk.children) {
+      const b = physicsWorld.addFootprint(piece, 1.0)
+      if (b) this.staticBodies.push(b)
     }
-    const L = 2.08    // LIFE_SCALE ≈ 2.08
 
-    // Workbench — BoxGeometry(1.4P × 0.9P footprint) ≈ (5.2 × 3.34) → radius 1.17
-    body(HomeBaseScene3D.WORKBENCH_X, HomeBaseScene3D.WORKBENCH_Z, 1.17)
+    // Workbench — top is 1.4P × 0.9P, axis-aligned
+    const P = PROP_SCALE
+    this.staticBodies.push(physicsWorld.addStaticBox(
+      HomeBaseScene3D.WORKBENCH_X, HomeBaseScene3D.WORKBENCH_Z, 0.7 * P * 0.95, 0.45 * P * 0.95))
 
-    // Central bottle-cap table (s=1.6P=5.94) + birthday cake on top
-    body(0, 0, 2.68)
-
-    // Bottle-cap table (rusty, 8L × -5L, s=1.0P=3.71)
-    body(8 * L, -5 * L, 1.67)
-
-    // Bottle-cap table (-9L × 6L, s=0.8P=2.97)
-    body(-9 * L, 6 * L, 1.34)
-
-    // Matchbox cabinet (9L × 5L, BoxGeometry 3P×1.8P = 11.1×6.7) → radius 2.51
-    body(9 * L, 5 * L, 2.51)
-
-    // Thimble (6L × 6L, base radius 0.6P=2.23) → collider radius 1.00
-    body(6 * L, 6 * L, 1.00)
-
-    // Gift box (GIFT_X × GIFT_Z, side 0.55P=2.04) → radius 0.46
-    body(HomeBaseScene3D.GIFT_X, HomeBaseScene3D.GIFT_Z, 0.46)
-
-    // Spool stools — 6 around center at r=3.2L=6.66, flange radius 0.55
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2
-      body(Math.cos(a) * 3.2 * L, Math.sin(a) * 3.2 * L, 0.50)
+    // Gift box (side 0.55P) — removed when the gift is collected
+    if (this.giftGroup) {
+      this.giftBody = physicsWorld.addFootprint(this.giftGroup, 1.0)
+      if (this.giftBody) this.staticBodies.push(this.giftBody)
     }
 
     // Clue cradle (overturned, bowl radius 0.5)
-    body(-4.16, 6.24, 0.38)
+    this.staticBodies.push(physicsWorld.add({
+      x: -4.16, z: 6.24, radius: 0.45,
+      velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
+    }))
+  }
+
+  // ── Occluder collection (E fix) ─────────────────────────────────────────────
+  // Every den mesh tall enough to hide Webbs from the iso camera, so CameraOccluder
+  // fades ALL of them — not a hand-maintained subset.  Sourced from this.tracked
+  // (the den's own objects), which never contains Webbs/enemies/particles, so his
+  // own legs and body are never accidentally faded.  Flat things (floor, decals,
+  // drag marks, glow rings, confetti) fall below the height threshold and are skipped.
+  getOccluderMeshes(): THREE.Mesh[] {
+    const out: THREE.Mesh[] = []
+    const box  = new THREE.Box3()
+    const size = new THREE.Vector3()
+    const MIN_H = 0.6   // Webbs reads ~1–2.5wu tall; below this can't occlude him
+    for (const root of this.tracked) {
+      root.traverse(o => {
+        const m = o as THREE.Mesh
+        if (!m.isMesh) return
+        if (m === this.floorMesh) return
+        if (m.userData.noOcclude) return
+        box.setFromObject(m)
+        box.getSize(size)
+        if (size.y >= MIN_H) out.push(m)
+      })
+    }
+    return out
   }
 
   // ── Proximity glint helpers ───────────────────────────────────────────────────
@@ -661,14 +675,7 @@ export class HomeBaseScene3D {
   }
 
   private buildLighting(): void {
-    // Cool hemisphere ambient — lifted so the dark reads as cozy-dim, not can't-see
-    this.add(new THREE.HemisphereLight(0x3a4a6a, 0x100808, 0.30))
-
-    // Warm directional crack — light filtering through a gap in the ceiling.
-    // No shadows here: the global dirLight in main.ts handles shadow casting.
-    const sunCrack = new THREE.DirectionalLight(0xffd9a0, 0.6)
-    sunCrack.position.set(-6, 12, 4)
-    this.add(sunCrack)
+    // Ambient + the ceiling-crack key light live in env/ZoneLighting (homeBase preset).
 
     // Warm pool point lights — pooled where family life is (the LIFE cluster).
     // Positions ×LIFE_SCALE so they light the re-anchored props; ranges widened
@@ -727,10 +734,6 @@ export class HomeBaseScene3D {
     return dx * dx + dz * dz < HomeBaseScene3D.INTERACT_R ** 2
   }
 
-  webWallHitTest(x: number, z: number): boolean {
-    // Circular chamber — test if outside (radius 50 ≈ 10.0 × DEN_SCALE)
-    return x * x + z * z > 50.0 * 50.0
-  }
 
   pickupToothpick(): void {
     this.toothpickAvailable = false
@@ -758,6 +761,11 @@ export class HomeBaseScene3D {
 
   collectGift(): void {
     this.giftAvailable = false
+    if (this.giftBody) {
+      physicsWorld.remove(this.giftBody)
+      this.staticBodies.splice(this.staticBodies.indexOf(this.giftBody), 1)
+      this.giftBody = null
+    }
     if (this.giftGroup) {
       this.threeScene.remove(this.giftGroup)
       const idx = this.tracked.indexOf(this.giftGroup)
@@ -774,17 +782,14 @@ export class HomeBaseScene3D {
 
   destroy(): void {
     audio.stopLoop('amb_homebase')
-    for (const obj of this.tracked) {
-      this.threeScene.remove(obj)
-      if ((obj as THREE.Mesh).isMesh) (obj as THREE.Mesh).geometry.dispose()
-    }
+    for (const obj of this.tracked) disposeTree(obj)   // geometry + materials + textures, children too
     for (const body of this.staticBodies) physicsWorld.remove(body)
     this.staticBodies   = []
     this.tracked        = []
     this.glinters       = []
     this.toothpickGroup = null
     physicsWorld.bounds         = null
-    physicsWorld.circularBound  = null
+    physicsWorld.setTerrain(null)
   }
 
   // ── Helper ────────────────────────────────────────────────────────────────────

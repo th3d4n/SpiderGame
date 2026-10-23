@@ -2,140 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>No Leg Left to Stand On</title>
+    <!-- All game UI styling lives in src/ui/theme.ts (installed at boot) -->
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #1a1a2e; display: flex; justify-content: center; align-items: center; height: 100vh; }
-
-      #game-container { position: relative; width: 1280px; height: 720px; }
-
-      /* ── HUD overlay — pointer-events:none so clicks reach the canvas ───── */
-      #hud-overlay {
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        pointer-events: none;
-        font-family: monospace;
-      }
-
-      /* Zone label — top center */
-      #zone-label {
-        position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
-        color: #7777ff; font-size: 12px; letter-spacing: 4px; opacity: 0.85;
-        background: rgba(13,13,26,0.7); padding: 4px 14px; border: 1px solid rgba(119,119,255,0.25);
-      }
-
-      /* HP / stamina / energy bars — bottom left */
-      #bars-group {
-        position: absolute; bottom: 18px; left: 18px;
-        display: flex; flex-direction: column; gap: 6px;
-      }
-      .bar-row { display: flex; align-items: center; gap: 8px; }
-      .bar-label { color: #556677; font-size: 10px; width: 30px; text-align: right; }
-      .bar-track {
-        width: 130px; height: 8px;
-        background: #0a0a18; border: 1px solid #1e1e2e; border-radius: 2px; overflow: hidden;
-      }
-      .bar-fill { height: 100%; border-radius: 1px; transition: width 80ms linear; }
-      #hp-fill    { background: #cc3344; }
-      #stam-fill  { background: #ccaa22; }
-      #energy-fill{ background: #3388cc; }
-
-      /* Weapon ring SVG — bottom right */
-      #weapon-ring-wrap {
-        position: absolute; bottom: 12px; right: 18px;
-        pointer-events: none;
-      }
-
-      /* Controls hint — bottom center */
-      #controls-hint {
-        position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
-        color: #334455; font-size: 10px; letter-spacing: 1px;
-      }
-
-      /* Interact hint — above controls hint, shown near interactable objects */
-      #interact-hint {
-        display: none;
-        position: absolute; bottom: 38px; left: 50%; transform: translateX(-50%);
-        color: #aaccaa; font-size: 11px; letter-spacing: 2px; font-family: monospace;
-        background: rgba(0,0,0,0.6); padding: 3px 10px;
-        border: 1px solid rgba(100,180,100,0.3);
-      }
-
-      /* ── Boss HP bar ────────────────────────────────────────────────────── */
-      #boss-hp-wrap {
-        display: none;
-        position: absolute; top: 36px; left: 50%; transform: translateX(-50%);
-        flex-direction: column; align-items: center; gap: 4px;
-      }
-      #boss-hp-label { color: #ffaacc; font-size: 11px; letter-spacing: 2px; font-family: monospace; }
-      #boss-hp-track {
-        width: 360px; height: 16px;
-        background: #220011; border: 1px solid #884455; border-radius: 1px; overflow: hidden;
-      }
-      #boss-hp-fill { height: 100%; background: #ff5577; transition: width 60ms linear; }
-
-      /* Boss warning message */
-      #boss-msg {
-        display: none;
-        position: absolute; top: 68px; left: 50%; transform: translateX(-50%);
-        color: #ff4444; font-size: 13px; letter-spacing: 1px; font-family: monospace;
-        text-align: center; pointer-events: none;
-      }
-
-      /* ── Ammo counter (Bow / Thistle) — bottom right above weapon ring ─── */
-      #ammo-panel {
-        display: none;
-        position: absolute; bottom: 150px; right: 18px;
-        color: #ccaa22; font-size: 11px; letter-spacing: 1px; font-family: monospace;
-        background: rgba(13,13,26,0.8); padding: 3px 10px;
-        border: 1px solid rgba(180,150,30,0.3);
-      }
-      #ammo-panel.empty { color: #cc3333; border-color: rgba(200,50,50,0.4); }
-
-      /* ── Controls legend — top right, toggled by H ──────────────────────── */
-      #controls-legend {
-        display: none;
-        position: absolute; top: 12px; right: 18px;
-        background: rgba(13,13,26,0.92); border: 1px solid #334466;
-        padding: 10px 12px; font-family: monospace; font-size: 10px;
-        min-width: 210px;
-      }
-      #controls-legend .legend-title { color: #7777ff; letter-spacing: 2px; margin-bottom: 8px; }
-      #controls-legend .legend-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
-      #controls-legend .legend-key  { color: #aaaacc; }
-      #controls-legend .legend-act  { color: #556677; text-align: right; }
-
-      /* ── Pickup notifications — bottom center stack ──────────────────────── */
-      #pickup-notifications {
-        position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
-        display: flex; flex-direction: column-reverse; align-items: center; gap: 6px;
-        pointer-events: none; font-family: monospace;
-      }
-
-      /* ── Zone-transition fade overlay ───────────────────────────────────── */
-      #transition-overlay {
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        background: #000; opacity: 0; pointer-events: none;
-        transition: opacity 400ms ease;
-      }
-
-      /* ── Menu overlay — shown when any menu is open ─────────────────────── */
-      #menu-overlay {
-        display: none;
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.75);
-        pointer-events: auto;
-      }
-
-      /* ── Damage vignette — red flash on player hit ──────────────────────── */
-      #damage-vignette {
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        pointer-events: none;
-        background: radial-gradient(ellipse at center, transparent 35%, rgba(180,0,0,0.65) 100%);
-        opacity: 0;
-        transition: opacity 60ms ease-in;
-        z-index: 50;
-      }
+      body { background: #07060a; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+      /* 1280×720 logical layout, CSS-scaled to fit the window (main.ts fitToWindow) */
+      #game-container { position: relative; width: 1280px; height: 720px; flex: none; transform-origin: center center; overflow: hidden; }
+      #transition-overlay { position: absolute; inset: 0; background: #050403; opacity: 0; pointer-events: none; transition: opacity 400ms ease; z-index: 300; }
+      #menu-overlay { display: none; position: absolute; inset: 0; pointer-events: auto; z-index: 150; }
     </style>
   </head>
   <body>
@@ -143,72 +21,55 @@
 
       <!-- HUD (always visible, no pointer events) -->
       <div id="hud-overlay">
-        <div id="zone-label">HOME BASE</div>
+        <div id="zone-label" class="hud-card">Home Base</div>
 
-        <div id="bars-group">
+        <div id="bars-group" class="hud-card">
           <div class="bar-row">
             <span class="bar-label">HP</span>
-            <div class="bar-track"><div class="bar-fill" id="hp-fill" style="width:100%"></div></div>
+            <div class="bar-track"><div class="bar-ghost" id="hp-ghost" style="width:100%"></div><div class="bar-fill" id="hp-fill" style="width:100%"></div></div>
+            <span class="bar-num" id="hp-num">100</span>
           </div>
           <div class="bar-row">
             <span class="bar-label">STAM</span>
             <div class="bar-track"><div class="bar-fill" id="stam-fill" style="width:100%"></div></div>
+            <span class="bar-num" id="stam-num">100</span>
           </div>
           <div class="bar-row">
             <span class="bar-label">ENRG</span>
             <div class="bar-track"><div class="bar-fill" id="energy-fill" style="width:100%"></div></div>
+            <span class="bar-num" id="energy-num">100</span>
           </div>
         </div>
 
         <div id="weapon-ring-wrap">
-          <svg id="weapon-ring" width="154" height="154" viewBox="-77 -77 154 154"></svg>
+          <svg id="weapon-ring" width="168" height="168" viewBox="-84 -84 168 168"></svg>
         </div>
 
-        <div id="controls-hint">WASD move &nbsp;·&nbsp; Click attack &nbsp;·&nbsp; I equip &nbsp;·&nbsp; E interact &nbsp;·&nbsp; H controls</div>
-
-        <!-- Round 8 Issue 8: XP counter — top right -->
-        <div id="xp-counter" style="
-          position: absolute; top: 50px; right: 16px;
-          font-family: monospace; font-size: 12px;
-          color: #aaffaa; border: 1px solid #44aa44;
-          padding: 4px 12px; background: rgba(13, 13, 26, 0.85);
-          letter-spacing: 1px;
-        ">XP <span id="xp-value">0</span></div>
-        <div id="interact-hint"></div>
-        <div id="ammo-panel">THISTLE: 0</div>
-        <div id="controls-legend">
-          <div class="legend-title">CONTROLS</div>
-          <div class="legend-row"><span class="legend-key">WASD / ↑↓←→</span><span class="legend-act">Move</span></div>
-          <div class="legend-row"><span class="legend-key">1 – 8</span><span class="legend-act">Select weapon</span></div>
-          <div class="legend-row"><span class="legend-key">Click</span><span class="legend-act">Fire weapon</span></div>
-          <div class="legend-row"><span class="legend-key">Q</span><span class="legend-act">Web Thrower</span></div>
-          <div class="legend-row"><span class="legend-key">E</span><span class="legend-act">Interact</span></div>
-          <div class="legend-row"><span class="legend-key">C</span><span class="legend-act">HP Potion</span></div>
-          <div class="legend-row"><span class="legend-key">V</span><span class="legend-act">Stamina Tonic</span></div>
-          <div class="legend-row"><span class="legend-key">X</span><span class="legend-act">Max Potion</span></div>
-          <div class="legend-row"><span class="legend-key">I</span><span class="legend-act">Equipment</span></div>
-          <div class="legend-row"><span class="legend-key">M</span><span class="legend-act">Advance text</span></div>
-          <div class="legend-row"><span class="legend-key">Space</span><span class="legend-act">Skip cutscene</span></div>
-          <div class="legend-row"><span class="legend-key">H</span><span class="legend-act">Hide this panel</span></div>
+        <div id="controls-hint">
+          <span><span class="nl-key">WASD</span> move</span>
+          <span><span class="nl-key">Click</span> attack</span>
+          <span><span class="nl-key">I</span> equip</span>
+          <span><span class="nl-key">E</span> interact</span>
+          <span><span class="nl-key">Esc</span> menu</span>
         </div>
+
+        <div id="xp-counter" class="hud-card"><span class="xp-label">XP</span><span id="xp-value">0</span></div>
+        <div id="interact-hint" class="hud-card"></div>
+        <div id="ammo-panel" class="hud-card">THISTLE <b>0</b></div>
         <div id="pickup-notifications"></div>
+        <div id="nl-toasts"></div>
 
-      <!-- Boss HP bar — shown only during boss fights -->
-      <div id="boss-hp-wrap">
-        <div id="boss-hp-label">BOSS</div>
-        <div id="boss-hp-track"><div id="boss-hp-fill" style="width:100%"></div></div>
+        <!-- Boss HP bar — shown only during boss fights -->
+        <div id="boss-hp-wrap">
+          <div id="boss-hp-label">Boss</div>
+          <div id="boss-hp-track"><div id="boss-hp-ghost" style="width:100%"></div><div id="boss-hp-fill" style="width:100%"></div></div>
+        </div>
+        <!-- Boss callout -->
+        <div id="boss-msg"></div>
       </div>
 
-      <!-- Boss warning message -->
-      <div id="boss-msg"></div>
-      </div>
-
-      <!-- Round 10 — Audio mute toggle -->
-      <button id="audio-toggle" style="
-        position: absolute; top: 16px; right: 16px; z-index: 200;
-        background: rgba(13,13,26,0.85); border: 1px solid #445566;
-        color: #aabbcc; padding: 6px 10px; font-family: monospace;
-        font-size: 11px; letter-spacing: 1px; cursor: pointer;">SOUND ON</button>
+      <!-- Audio mute toggle -->
+      <button id="audio-toggle" class="hud-card">SOUND ON</button>
 
       <!-- Menu overlay (hidden until a menu opens) -->
       <div id="menu-overlay"></div>

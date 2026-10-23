@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { physicsWorld } from '../core/PhysicsWorld'
 import { Enemy3D, type EnemyConfig3D, WeakPointZone } from './Enemy3D'
 import { WeaponType } from '../systems/WeaponSystem'
 import { audio } from '../systems/AudioManager'
@@ -8,7 +9,8 @@ const CONFIG: EnemyConfig3D = {
   health:          30,
   speed:           1.3,    // 130 px/s × 0.01
   damage:          12,
-  bodyRadius:      0.14,   // 14 px × 0.01
+  bodyRadius:      0.13,   // segment half-width
+  capsule:         { halfLength: 0.17, axis: 'z' },   // mesh spans ±0.32 along its heading
   knockbackResist: 0.1,
   staggerDuration: 0.42,   // 420 ms
   weakPoints:      [WeakPointZone.Head],
@@ -37,8 +39,9 @@ const SCURRY_OFF    = 0.14  // seconds of brief pause between bursts
 const SCURRY_FAST   = 1.0   // speed multiplier during burst
 const SCURRY_SLOW   = 0.28  // speed multiplier during pause
 
-// Wall-hugging: Z boundaries of corridor dividers (AntColonyScene3D layout)
-const WALL_Z_BOUNDS = [-11.5, -8.5, -6.5, -3.5, -1.5, 1.5, 3.5, 6.5, 8.5, 11.5]
+// Wall-hugging: short probes (ahead, left, right) against the real colliders —
+// a wall within reach turns the run along it, toward the player.  (Was a table
+// of Z bounds from the retired corridor layout, which no longer matched the maze.)
 const WALL_HUG_DIST = 0.48  // wu from wall to trigger hugging
 const WALL_HUG_STR  = 0.78  // blend strength toward wall-run angle
 
@@ -137,8 +140,8 @@ export class CentipedeAmbusher3D extends Enemy3D {
       const cx = this.collisionBody.x, cz = this.collisionBody.z
       if (this.state === 'BURSTING')        audio.play('centipede_burst', cx, cz)
       else if (this.state === 'LUNGING')    audio.play('centipede_attack', cx, cz)
-      else if (this.state === 'TRACKING')   audio.playLoop('centipede_skitter', cx, cz)
-      if (this.prevState === 'TRACKING')    audio.stopLoop('centipede_skitter')
+      else if (this.state === 'TRACKING')   audio.playLoop('centipede_skitter', cx, cz, this)
+      if (this.prevState === 'TRACKING')    audio.stopLoop('centipede_skitter', this)
       this.prevState = this.state
     }
 
@@ -182,11 +185,12 @@ export class CentipedeAmbusher3D extends Enemy3D {
 
         let desiredAngle = Math.atan2(dx, dz) + weaveOffset
 
-        // Wall-hug: if near a corridor wall, blend toward running along X axis
-        const nearWall = nearestWallZ(this.collisionBody.z)
-        if (nearWall !== null) {
-          const wallRunAngle = (playerX > this.collisionBody.x) ? Math.PI / 2 : -Math.PI / 2
-          desiredAngle = lerpAngleMix(desiredAngle, wallRunAngle, WALL_HUG_STR)
+        // Wall-hug: run along the nearest real wall, in the player's direction
+        const wall = this.nearestWall(desiredAngle)
+        if (wall) {
+          let tx = -wall.nz, tz = wall.nx                       // tangent of the wall face
+          if (tx * dx + tz * dz < 0) { tx = -tx; tz = -tz }      // …pointing toward the player
+          desiredAngle = lerpAngleMix(desiredAngle, Math.atan2(tx, tz), WALL_HUG_STR)
         }
 
         const angleDiff = wrapAngle(desiredAngle - this.facingAngle)
@@ -263,6 +267,21 @@ export class CentipedeAmbusher3D extends Enemy3D {
   }> = []
   private frontFlipAngle = 0
 
+  // Only the lunge bites — brushing past a tracking centipede is safe
+  override dealsContactDamage(): boolean { return this.state === 'LUNGING' }
+
+  // Closest static wall within WALL_HUG_DIST of the body: ahead or to either side
+  private nearestWall(heading: number): { nx: number; nz: number } | null {
+    const b = this.collisionBody
+    let best: { nx: number; nz: number; dist: number } | null = null
+    for (const off of [0, Math.PI / 2, -Math.PI / 2]) {
+      const a = heading + off
+      const hit = physicsWorld.castBall(b.x, b.z, Math.sin(a), Math.cos(a), WALL_HUG_DIST, 0.06, b)
+      if (hit && hit.body?.isStatic && (!best || hit.dist < best.dist)) best = { nx: hit.nx, nz: hit.nz, dist: hit.dist }
+    }
+    return best
+  }
+
   override startHitReaction(style: 'small' | 'medium' | 'large' | 'stab' | 'sword' | 'axe'): void {
     super.startHitReaction(style)
     audio.play('centipede_hit', this.collisionBody.x, this.collisionBody.z)
@@ -297,7 +316,7 @@ export class CentipedeAmbusher3D extends Enemy3D {
                    : weapon === WeaponType.Bow           ? 'centipede_death_bow'
                    : weapon === WeaponType.FlameBreather ? 'centipede_death_flame'
                    :                                       'centipede_death_generic'
-    audio.stopLoop('centipede_skitter')
+    audio.stopOwner(this)
     audio.play(deathKey, cx, cz)
 
     switch (weapon) {
@@ -510,12 +529,6 @@ function wrapAngle(a: number): number {
   return a
 }
 
-function nearestWallZ(z: number): number | null {
-  for (const wz of WALL_Z_BOUNDS) {
-    if (Math.abs(z - wz) < WALL_HUG_DIST) return wz
-  }
-  return null
-}
 
 function lerpAngleMix(a: number, b: number, t: number): number {
   let diff = b - a

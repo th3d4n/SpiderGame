@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { surface, clonePatched } from '../env/Materials'
 import { DEN_RADIUS, DEN_SCALE, PROP_SCALE, LIFE_SCALE } from '../env/denScale'
 
 // ─── Chamber constants — must match HomeBaseScene3D ───────────────────────────
@@ -8,8 +9,11 @@ const WB_X      = -5.0  * LIFE_SCALE      // -10.4
 const WB_Z      = -7.5  * LIFE_SCALE      // -15.6
 // West exit gap arc — panels 3+4 of the octagon (135°–225°).  Burrow mounds
 // and blocked tunnels must not be placed inside this range.
-const EXIT_GAP_START = Math.PI * 0.75   // 135°
-const EXIT_GAP_END   = Math.PI * 1.25   // 225°
+// Mound-free arc around the west exit.  Matches the DOORWAY (posts at z = ±22.3,
+// x = −49.5 → 155.7° / 204.3°), not the 135°–225° panel gap: the wider gap left
+// open void between the last wall panel and the doorway posts.
+const EXIT_GAP_START = Math.PI * 0.85   // 153°
+const EXIT_GAP_END   = Math.PI * 1.15   // 207°
 
 // ─── Material bag type ────────────────────────────────────────────────────────
 export interface DenMaterials {
@@ -128,12 +132,16 @@ function silkHammock(
 export function buildDenMaterials(gradientMap: THREE.Texture): DenMaterials {
   const toon = (color: number) =>
     new THREE.MeshToonMaterial({ color, gradientMap })
+  // World-space textured earth: den is authored at 2.4× creature scale, so the
+  // tri-planar repeat is ~2.4× sparser than the colony's.
+  const earth = (color: number, tex: 'dirt' | 'wood' = 'dirt', scale = 0.16) =>
+    surface({ color, tex, texScale: scale, gradientMap })
   return {
     grad:      gradientMap,
-    earth:     toon(0x4a3322),
-    earthDark: toon(0x2c1d12),
-    rootWall:  toon(0x5a3d24),
-    floor:     toon(0x6b4a30),
+    earth:     earth(0x6a4c34),
+    earthDark: earth(0x52392a),
+    rootWall:  earth(0x6e4c2e, 'wood', 0.3),
+    floor:     earth(0x7a5a3c, 'dirt', 0.14),
     silk: new THREE.MeshStandardMaterial({
       color: 0xe8e0d0, roughness: 0.45, metalness: 0.0,
       transparent: true, opacity: 0.85, side: THREE.DoubleSide,
@@ -146,7 +154,7 @@ export function buildDenMaterials(gradientMap: THREE.Texture): DenMaterials {
     metalCap:  new THREE.MeshStandardMaterial({ color: 0x9aa0a6, metalness: 0.8, roughness: 0.4 }),
     rustCap:   new THREE.MeshStandardMaterial({ color: 0x7a4a32, metalness: 0.5, roughness: 0.7 }),
     cardboard: toon(0xc09a64),
-    wood:      toon(0x6e4a28),
+    wood:      earth(0x7e5630, 'wood', 0.35),
     acorn:     toon(0x7d5a36),
     acornCap:  toon(0x4a3320),
     partyPink: toon(0xd86a8a),
@@ -175,8 +183,9 @@ export function buildDenFloor(mat: DenMaterials, add: AddFn): THREE.Mesh {
           + Math.sin(x * 1.3 + z) * 0.06
     // Raised lip near the rim → reads as the bowl of a burrow
     if (d > CHAMBER_R * 0.72) y += (d - CHAMBER_R * 0.72) * 0.4
-    // Worn central depression where the family gathered
-    y -= Math.max(0, 6 * DEN_SCALE - d) * 0.04
+    // (Central depression removed: it sank the floor ~1.2 wu below the y=0 the
+    // furniture is placed at, so props floated.  Revisit with prop grounding in
+    // the visual pass.)
     pos.setY(i, y)
   }
   pos.needsUpdate = true
@@ -187,32 +196,37 @@ export function buildDenFloor(mat: DenMaterials, add: AddFn): THREE.Mesh {
   return floor
 }
 
-// Organic burrow mounds around the rim — purely visual dressing on top of the
-// physics octagon walls.  Placed at CHAMBER_R * 0.88–1.04 so they sit at the
-// wall boundary.  Exit arc (135°–225°) is left clear.
+// Organic burrow mounds around the rim — the den's visible (and solid) wall.
+// Many smaller mounds packed just inside the octagon panels: radii 5–8 wu centred
+// at CHAMBER_R × 1.00–1.06, so their inner faces sit at r ≈ 44–50 and the walkable
+// den keeps (nearly) its authored radius.  (The first pass used 26 mounds of radius
+// 14–23 at 0.88–1.04 × R, which reached in to r ≈ 25 once they became solid.)
+// Taller-than-wide (y-scale 0.9–1.4) so the wall still reads at the new size.
+// Exit arc (135°–225°) is left clear.
 export function buildBurrowWalls(mat: DenMaterials, add: AddFn): THREE.Group {
   const group = new THREE.Group()
-  const count = 26
+  const count = 44
   for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2
+    const a = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.06
     if (a > EXIT_GAP_START && a < EXIT_GAP_END) continue  // leave doorway clear
 
-    const r = CHAMBER_R * (0.88 + Math.random() * 0.16)
+    const r = CHAMBER_R * (1.0 + Math.random() * 0.06)
     const mound = new THREE.Mesh(
-      new THREE.IcosahedronGeometry((2.8 + Math.random() * 1.8) * DEN_SCALE, 1),
+      new THREE.IcosahedronGeometry((1.0 + Math.random() * 0.6) * DEN_SCALE, 1),
       Math.random() > 0.5 ? mat.earth : mat.earthDark,
     )
-    mound.scale.set(1, 0.55 + Math.random() * 0.45, 1)
-    mound.position.set(Math.cos(a) * r, 0.8 + Math.random() * 1.6, Math.sin(a) * r)
+    mound.scale.set(1, 0.9 + Math.random() * 0.5, 1)
+    mound.position.set(Math.cos(a) * r, 1.5 + Math.random() * 1.5, Math.sin(a) * r)
     mound.rotation.y = Math.random() * Math.PI
     mound.castShadow = true
     mound.receiveShadow = true
+    mound.userData.solid = true   // HomeBaseScene3D builds a footprint collider for it
     group.add(mound)
 
     // Occasional exposed root arcing out of a mound
     if (Math.random() > 0.55) {
       const root = new THREE.Mesh(
-        new THREE.TorusGeometry((1.2 + Math.random() * 0.6) * DEN_SCALE, 0.16 * DEN_SCALE, 6, 12, Math.PI * 0.8),
+        new THREE.TorusGeometry((0.6 + Math.random() * 0.35) * DEN_SCALE, 0.12 * DEN_SCALE, 6, 12, Math.PI * 0.8),
         mat.rootWall,
       )
       root.position.copy(mound.position)
@@ -335,7 +349,11 @@ export function buildJunkFurniture(mat: DenMaterials, add: AddFn): THREE.Group {
   drawer.castShadow = true
   group.add(drawer)
 
-  // Thread-spool stools around the central table — the family circle
+  // Thread-spool stools around the central table — the family circle.
+  // Built at unit size, then scaled to the den's furniture (they were left at
+  // 0.7 tall beside a 6-wu-radius table).  Ring sits just outside the table rim.
+  const STOOL_S = 0.6 * P
+  const STOOL_RING = 1.6 * P + 0.55 * STOOL_S + 0.8
   function spool(x: number, z: number): THREE.Group {
     const g    = new THREE.Group()
     const body = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.7, 16), mat.wood)
@@ -343,14 +361,16 @@ export function buildJunkFurniture(mat: DenMaterials, add: AddFn): THREE.Group {
     const top  = new THREE.Mesh(flange, mat.wood); top.position.y  =  0.4
     const bot  = new THREE.Mesh(flange, mat.wood); bot.position.y  = -0.4
     g.add(body, top, bot)
-    g.position.set(x, 0.42, z)
+    g.scale.setScalar(STOOL_S)
+    g.position.set(x, 0.46 * STOOL_S, z)
+    g.userData.uprightY = 0.46 * STOOL_S
     g.traverse(o => { o.castShadow = true })
     return g
   }
   for (let i = 0; i < 6; i++) {
-    const a  = (i / 6) * Math.PI * 2
-    const st = spool(Math.cos(a) * 3.2 * L, Math.sin(a) * 3.2 * L)
-    if (i === 2) { st.rotation.z = Math.PI / 2; st.position.y = 0.35 * P; st.userData.toppled = true }
+    const a  = (i / 6) * Math.PI * 2 + Math.PI / 6   // offset 30°: keeps the clue cradle (−4.2, 6.2) clear
+    const st = spool(Math.cos(a) * STOOL_RING, Math.sin(a) * STOOL_RING)
+    if (i === 2) { st.rotation.z = Math.PI / 2; st.position.y = 0.55 * STOOL_S; st.userData.toppled = true }
     group.add(st)
   }
 
@@ -465,7 +485,7 @@ export function buildBirthdayBash(mat: DenMaterials, add: AddFn): THREE.Group {
 
   // Confetti — pre-flagged transparent so SurvivorsProgression._tidyConfetti can fade them.
   // Three shared materials (one per colour) are fine because _tidyConfetti clones per-piece.
-  const confMats = cols.map(m => { const c = m.clone(); c.transparent = true; c.opacity = 1.0; return c })
+  const confMats = cols.map(m => { const c = clonePatched(m); c.transparent = true; c.opacity = 1.0; return c })
   for (let i = 0; i < 40; i++) {
     const conf = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), confMats[i % 3])
     const a    = Math.random() * Math.PI * 2

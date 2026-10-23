@@ -1,11 +1,21 @@
-const HOLD_MS   = 1800
+import { h, MATERIAL_INFO, materialSvg } from './theme'
+
+// ─── Loot feed ────────────────────────────────────────────────────────────────
+// Bottom-left stack of what you just picked up.  Material keys ("SilkThread")
+// render with their proper name and glyph; repeats of the same item within the
+// hold window MERGE into one card with a running count instead of stacking.
+
+const HOLD_MS   = 2600
 const FADE_MS   = 300
 const MAX_CARDS = 5
 
 interface Card {
-  el:      HTMLDivElement
-  timer:   number   // ms remaining before fade starts
-  fading:  boolean
+  el:     HTMLDivElement
+  key:    string
+  count:  number | null   // numeric "×N" amounts merge; other subtitles don't
+  countEl: HTMLElement | null
+  timer:  number          // ms remaining before fade starts
+  fading: boolean
 }
 
 export class PickupNotification3D {
@@ -17,41 +27,49 @@ export class PickupNotification3D {
   }
 
   notify(title: string, subtitle: string, color = '#aaaacc'): void {
+    const qty = /^×\s*(\d+)$/.exec(subtitle.trim())
+    const amount = qty ? Number(qty[1]) : null
+
+    // Merge with a live card for the same item
+    const live = this.cards.find(c => c.key === title && !c.fading && c.count !== null && amount !== null)
+    if (live && amount !== null && live.countEl) {
+      live.count = (live.count ?? 0) + amount
+      live.countEl.textContent = `×${live.count}`
+      live.timer = HOLD_MS
+      live.el.classList.remove('bump'); void live.el.offsetWidth; live.el.classList.add('bump')
+      return
+    }
+
     if (this.cards.length >= MAX_CARDS) {
       const oldest = this.cards.shift()!
       oldest.el.remove()
     }
 
-    const el = document.createElement('div')
-    el.style.cssText = [
-      `border-left:2px solid ${color};`,
-      'background:rgba(13,13,26,0.88);',
-      'padding:6px 14px; width:240px;',
-      'font-family:monospace; font-size:11px;',
-      'opacity:0; transition:opacity 150ms ease;',
-    ].join('')
+    const mat  = MATERIAL_INFO[title]
+    const tint = mat?.color ?? color
+    const el = h('div', 'nl-loot hud-card') as HTMLDivElement
+    el.style.borderLeft = `3px solid ${tint}`
 
-    const titleEl = document.createElement('div')
-    titleEl.style.cssText = `color:${color}; letter-spacing:1px;`
-    titleEl.textContent = title
+    const sw = h('div', 'swatch')
+    sw.style.background = `${tint}22`
+    sw.innerHTML = mat ? materialSvg(title, 18) : `<svg width="14" height="14" viewBox="-7 -7 14 14"><path d="M0,-6 L6,0 L0,6 L-6,0 Z" fill="${tint}"/></svg>`
+    el.appendChild(sw)
 
-    if (subtitle) {
-      const subEl = document.createElement('div')
-      subEl.style.cssText = 'color:#445566; font-size:10px; margin-top:2px;'
-      subEl.textContent = subtitle
-      el.appendChild(titleEl)
-      el.appendChild(subEl)
-    } else {
-      el.appendChild(titleEl)
+    const text = h('div')
+    text.appendChild(h('div', 't', mat?.name ?? title))
+    if (subtitle && amount === null) text.appendChild(h('div', 's', subtitle))
+    else text.appendChild(h('div', 's', mat ? 'material' : 'picked up'))
+    el.appendChild(text)
+
+    let countEl: HTMLElement | null = null
+    if (amount !== null) {
+      countEl = h('div', 'n', `×${amount}`)
+      countEl.style.color = tint
+      el.appendChild(countEl)
     }
 
     this.container.appendChild(el)
-    // Force reflow so the transition fires
-    void el.offsetWidth
-    el.style.opacity = '1'
-
-    const card: Card = { el, timer: HOLD_MS, fading: false }
-    this.cards.push(card)
+    this.cards.push({ el, key: title, count: amount, countEl, timer: HOLD_MS, fading: false })
   }
 
   // Call once per frame with delta in seconds
@@ -62,9 +80,8 @@ export class PickupNotification3D {
       card.timer -= dtMs
       if (!card.fading && card.timer <= 0) {
         card.fading = true
-        card.el.style.transition = `opacity ${FADE_MS}ms ease`
-        card.el.style.opacity = '0'
-        setTimeout(() => {
+        card.el.classList.add('out')
+        window.setTimeout(() => {
           card.el.remove()
           const idx = this.cards.indexOf(card)
           if (idx >= 0) this.cards.splice(idx, 1)

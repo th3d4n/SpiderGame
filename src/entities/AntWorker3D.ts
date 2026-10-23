@@ -1,11 +1,13 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D } from './Enemy3D'
+import { audio } from '../systems/AudioManager'
 
 const CONFIG: EnemyConfig3D = {
   health:          15,
   speed:           1.9,
   damage:          6,
   bodyRadius:      0.09,
+  capsule:         { halfLength: 0.10, axis: 'z' },   // mesh spans −0.17…+0.24 along heading
   knockbackResist: 0.0,
   staggerDuration: 0.20,
 }
@@ -17,7 +19,14 @@ const CHASE_SPEED   = 1.9
 const DART_FREQ     = 5.8   // rad/s — erratic swerve oscillator
 const DART_AMP      = 0.38  // max angle swerve (radians)
 
-type WorkerState = 'WANDER' | 'CHASE'
+// Bite: rear back (telegraph), snap forward (the only time it hurts), recover
+const BITE_RANGE   = 0.60   // wu centre-to-centre (bodies touch at ~0.47) — start a bite this close
+const BITE_WINDUP  = 0.30
+const BITE_SNAP    = 0.14
+const BITE_RECOVER = 0.45
+const SNAP_SPEED   = 2.6
+
+type WorkerState = 'WANDER' | 'CHASE' | 'WINDUP' | 'BITE' | 'RECOVER'
 
 export class AntWorker3D extends Enemy3D {
   private state:       WorkerState = 'WANDER'
@@ -26,6 +35,7 @@ export class AntWorker3D extends Enemy3D {
   private dartPhase    = Math.random() * Math.PI * 2
   private facingAngle  = 0
   private bodyMesh:    THREE.Mesh | null = null
+  private stateT       = 0
 
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     super(threeScene, x, z, CONFIG, gradientMap)
@@ -87,6 +97,9 @@ export class AntWorker3D extends Enemy3D {
     }
   }
 
+  // Touching an ant no longer hurts — only the bite's snap does
+  override dealsContactDamage(): boolean { return this.state === 'BITE' }
+
   protected setFlashColor(on: boolean): void {
     if (this.bodyMesh) {
       ;(this.bodyMesh.material as THREE.MeshToonMaterial).color.setHex(on ? 0xff4422 : 0x1a0f06)
@@ -98,8 +111,37 @@ export class AntWorker3D extends Enemy3D {
     const dz   = playerZ - this.collisionBody.z
     const dist = Math.sqrt(dx * dx + dz * dz)
 
+    // Bite sequence runs to completion once started
+    if (this.state === 'WINDUP' || this.state === 'BITE' || this.state === 'RECOVER') {
+      this.stateT += delta
+      this.collisionBody.velocity.x = 0
+      this.collisionBody.velocity.z = 0
+      if (this.state === 'WINDUP') {
+        const t = Math.min(1, this.stateT / BITE_WINDUP)
+        this.facingAngle = Math.atan2(dx, dz)                 // tracks you while it rears
+        this.group.scale.set(1 + 0.12 * t, 1 + 0.25 * t, 1 - 0.15 * t)
+        if (this.stateT >= BITE_WINDUP) { this.state = 'BITE'; this.stateT = 0 }
+      } else if (this.state === 'BITE') {
+        this.collisionBody.velocity.x = Math.sin(this.facingAngle) * SNAP_SPEED
+        this.collisionBody.velocity.z = Math.cos(this.facingAngle) * SNAP_SPEED
+        this.group.scale.set(0.95, 0.9, 1.3)
+        if (this.stateT >= BITE_SNAP) { this.state = 'RECOVER'; this.stateT = 0; this.group.scale.setScalar(1) }
+      } else if (this.stateT >= BITE_RECOVER) {
+        this.state = 'CHASE'; this.stateT = 0
+      }
+      this.group.rotation.y = this.facingAngle
+      return
+    }
+
     if (dist < CHASE_RANGE)          this.state = 'CHASE'
     else if (dist > CHASE_RANGE * 1.5) this.state = 'WANDER'
+
+    if (this.state === 'CHASE' && dist < BITE_RANGE) {
+      this.state = 'WINDUP'; this.stateT = 0
+      this.facingAngle = Math.atan2(dx, dz)
+      audio.play('ant_bite', this.collisionBody.x, this.collisionBody.z)   // the tell
+      return
+    }
 
     this.dartPhase += DART_FREQ * delta
 

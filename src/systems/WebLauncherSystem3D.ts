@@ -3,18 +3,27 @@ import type { Enemy3D } from '../entities/Enemy3D'
 import type { Webbs3D } from '../entities/Webbs3D'
 import { WeaponType } from './WeaponSystem'
 import { audio } from './AudioManager'
+import { physicsWorld, type CollisionBody, type Rope } from '../core/PhysicsWorld'
 
-// Converted from WebLauncherSystem.ts (Phaser px → Three.js world units × 0.01)
-const PROJECTILE_SPEED      = 7.0   // wu/s   (700px/s)
-const MAX_RANGE             = 4.8   // wu     (480px)
-const PULL_DURATION         = 0.35  // s      (350ms)
-const PULL_VELOCITY         = 9.0   // wu/s   (900px/s)
-const IDLE_RELEASE          = 4.5   // s      (4500ms)
-const COOLDOWN              = 0.22  // s      (220ms)
-const STAMINA_COST          = 8
-const PLAYER_PULL_THRESHOLD = 0.5   // knockbackResist ≥ this → player gets pulled instead
-const PICKUP_REACH          = 0.36  // wu     (36px) — auto-collect distance
-const RECALL_RELEASE        = 0.18  // wu     (18px) — recalled projectile reaches player
+// ─── Silk line tuning (authored for Webbs at scale 1; × his zone scale `s`) ────
+// The web is a real rope (physicsWorld.addRope): reeling shortens it and the
+// constraint does the pulling, so sideways input swings around the anchor,
+// mass decides who gets dragged (light enemies come to you, heavy ones drag you),
+// and walls/contacts still block the motion.
+const PROJECTILE_SPEED = 10.0  // wu/s
+const PROJECTILE_R     = 0.15  // swept-ball radius for hit tests
+const MAX_RANGE        = 4.8   // wu — beyond this the strand recalls
+const REEL_SPEED       = 9.0   // wu/s — top reel-in rate
+const REEL_RAMP        = 0.12  // s — reel eases up to speed (no instant yank)
+const PULL_DURATION    = 0.35  // s of reeling per attach
+const IDLE_RELEASE     = 4.5   // s — a held wall line lets go on its own
+const RELEASE_CARRY    = 0.8   // share of rope-driven velocity kept as momentum on release
+const COOLDOWN         = 0.22  // s
+const STAMINA_COST     = 8
+const PICKUP_REACH     = 0.36  // wu — auto-collect distance
+const RECALL_RELEASE   = 0.18  // wu — recalled glob reaches the spinneret
+const STUN_DURATION    = 1.2   // s of stagger forced on any enemy hit (Round 6 Issue 3)
+const LINE_POINTS      = 20
 
 export interface PullablePickup3D {
   x: number
@@ -25,7 +34,8 @@ export interface PullablePickup3D {
 
 type Target3D =
   | { kind: 'enemy';  ref: Enemy3D }
-  | { kind: 'wall';   x: number; z: number }
+  | { kind: 'body';   ref: CollisionBody }            // any other dynamic body (rocks…)
+  | { kind: 'wall';   x: number; z: number; body: CollisionBody | null }
   | { kind: 'pickup'; ref: PullablePickup3D }
 
 interface WebState3D {
@@ -38,37 +48,41 @@ interface WebState3D {
     homingTarget?: Enemy3D | null   // nearest enemy in 60° cone at fire time
   }
   attached?:   Target3D
+  rope?:       Rope
   line:        THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>
   age:         number
   pulling:     boolean
   pullElapsed: number
+  twang:       number   // decaying vibration amplitude after the line snaps taut
 }
-
-const STUN_DURATION = 1.2   // seconds of stagger forced on any enemy hit (Round 6 Issue 3)
 
 interface SilkWrap {
   mesh:  THREE.Mesh
   timer: number
 }
 
+const _spin = new THREE.Vector3()
+const _tip  = new THREE.Vector3()
+
+const HOMING_RATE = 17.3   // 1/s — steering toward a locked target (≈ 25 %/frame at 60 Hz)
+
 export class WebLauncherSystem3D {
   private state:         WebState3D | null = null
   private cooldown       = 0
   private enemies:       Enemy3D[] = []
-  private wallHitTest:   (x: number, z: number) => boolean = () => false
   private pickupHitTest: (x: number, z: number) => PullablePickup3D | null = () => null
   private threeScene:    THREE.Scene
   private silkWraps:     Map<Enemy3D, SilkWrap> = new Map()
+  private s              = 1   // Webbs' scale when the current web was fired
 
   constructor(threeScene: THREE.Scene) {
     this.threeScene = threeScene
   }
 
   setEnemies(enemies: Enemy3D[]):  void { this.enemies = enemies }
-  setWallHitTest(fn: (x: number, z: number) => boolean): void { this.wallHitTest = fn }
   setPickupHitTest(fn: (x: number, z: number) => PullablePickup3D | null): void { this.pickupHitTest = fn }
 
-  isAttachedToWall(): boolean { return this.state?.attached?.kind === 'wall' }
+  isAttachedToWall(): boolean { return this.state?.attached?.kind === 'wall' && !!this.state.rope }
   isActive():         boolean { return this.state !== null }
 
   // Q pressed: cancel active web or fire a new one
@@ -90,41 +104,54 @@ export class WebLauncherSystem3D {
     if (this.cooldown > 0) this.cooldown -= delta
     this.tickSilkWraps(delta)
     if (!this.state) return
+    const st = this.state
 
-    this.state.age += delta
+    st.age   += delta
+    st.twang *= Math.exp(-delta * 9)
 
-    if (this.state.projectile) {
+    if (st.projectile) {
       this.tickProjectile(webbs, delta)
+      if (this.state) this.updateLine(webbs)
       return
     }
 
-    // Active pull phase
-    if (this.state.attached && this.state.pulling) {
-      this.state.pullElapsed += delta
-      this.applyPullVelocity(webbs, delta)
+    if (st.rope?.broken) { this.release(); return }   // target died / was removed
+    if (st.attached && this.lineBlocked(webbs, st.attached)) { this.release(); return }
 
-      if (this.state.attached.kind === 'pickup') {
-        const pk = this.state.attached.ref
-        const dx = pk.x - webbs.collisionBody.x
-        const dz = pk.z - webbs.collisionBody.z
-        if (!pk.active || Math.hypot(dx, dz) < PICKUP_REACH) {
+    // Reel phase: the rope shortens (eased up to speed) and the constraint pulls
+    if (st.attached && st.pulling) {
+      st.pullElapsed += delta
+      const ramp = Math.min(1, st.pullElapsed / REEL_RAMP)
+      if (st.rope) st.rope.reelSpeed = REEL_SPEED * this.s * ramp * ramp
+
+      if (st.attached.kind === 'pickup') {
+        const pk = st.attached.ref
+        const dx = webbs.collisionBody.x - pk.x
+        const dz = webbs.collisionBody.z - pk.z
+        const d  = Math.hypot(dx, dz)
+        if (!pk.active || d < PICKUP_REACH * this.s) {
           if (pk.active) pk.collect()
           this.release()
           return
         }
+        const step = Math.min(d, REEL_SPEED * this.s * ramp * delta)
+        pk.x += (dx / d) * step
+        pk.z += (dz / d) * step
       }
 
-      if (this.state.pullElapsed >= PULL_DURATION) {
-        this.state.pulling = false
-        if (this.state.attached.kind !== 'wall') {
-          this.release()
-          return
-        }
+      const reachedEnd = st.rope ? st.rope.length <= st.rope.minLength + 1e-3 : false
+      if (st.pullElapsed >= PULL_DURATION || reachedEnd) {
+        // Bodies yanked by the line let go mid-motion and keep sliding (release
+        // while still pulling → momentum carry); wall lines stay up as a leash.
+        if (st.attached.kind !== 'wall') { this.release(); return }
+        st.pulling = false
+        if (st.rope) st.rope.reelSpeed = 0
+        audio.stopLoop('web_pull_loop')
       }
     }
 
-    // Auto-release idle wall anchor after timeout
-    if (this.state.attached && !this.state.pulling && this.state.age > IDLE_RELEASE) {
+    // A held wall line lets go after a while
+    if (st.attached && !st.pulling && st.age > IDLE_RELEASE) {
       this.release()
       return
     }
@@ -136,88 +163,83 @@ export class WebLauncherSystem3D {
     if (!this.state?.projectile) return
     const p = this.state.projectile
 
-    p.mesh.position.x += p.vx * delta
-    p.mesh.position.z += p.vz * delta
-    p.traveled += Math.hypot(p.vx * delta, p.vz * delta)
-
     if (p.recalling) {
       const dx = webbs.collisionBody.x - p.mesh.position.x
       const dz = webbs.collisionBody.z - p.mesh.position.z
-      const angle = Math.atan2(dz, dx)
-      p.vx = Math.cos(angle) * PROJECTILE_SPEED
-      p.vz = Math.sin(angle) * PROJECTILE_SPEED
-      if (Math.hypot(dx, dz) < RECALL_RELEASE) {
-        this.release()
-        return
-      }
-      this.updateLine(webbs)
+      const d  = Math.hypot(dx, dz)
+      if (d < RECALL_RELEASE * this.s + PROJECTILE_SPEED * this.s * delta) { this.release(); return }
+      p.vx = (dx / d) * PROJECTILE_SPEED * this.s
+      p.vz = (dz / d) * PROJECTILE_SPEED * this.s
+      p.mesh.position.x += p.vx * delta
+      p.mesh.position.z += p.vz * delta
       return
     }
 
-    // Homing: steer toward locked-on target (75/25 blend, renormalized)
+    // Homing: steer toward locked-on target.  Blend weight is per-second
+    // (≡ the old 25 % per frame at 60 Hz), so 144 Hz screens don't curve harder.
     if (p.homingTarget && !p.homingTarget.isDead()) {
       const hdx = p.homingTarget.collisionBody.x - p.mesh.position.x
       const hdz = p.homingTarget.collisionBody.z - p.mesh.position.z
       const hlen = Math.hypot(hdx, hdz) || 1
-      const curX = p.vx / PROJECTILE_SPEED
-      const curZ = p.vz / PROJECTILE_SPEED
-      const blendX = curX * 0.75 + (hdx / hlen) * 0.25
-      const blendZ = curZ * 0.75 + (hdz / hlen) * 0.25
+      const curX = p.vx / (PROJECTILE_SPEED * this.s)
+      const curZ = p.vz / (PROJECTILE_SPEED * this.s)
+      const k = 1 - Math.exp(-HOMING_RATE * delta)
+      const blendX = curX * (1 - k) + (hdx / hlen) * k
+      const blendZ = curZ * (1 - k) + (hdz / hlen) * k
       const blen   = Math.hypot(blendX, blendZ) || 1
-      p.vx = (blendX / blen) * PROJECTILE_SPEED
-      p.vz = (blendZ / blen) * PROJECTILE_SPEED
+      p.vx = (blendX / blen) * PROJECTILE_SPEED * this.s
+      p.vz = (blendZ / blen) * PROJECTILE_SPEED * this.s
     }
 
     const px = p.mesh.position.x
     const pz = p.mesh.position.z
+    const stepLen = Math.hypot(p.vx, p.vz) * delta
 
-    // Pickup hit
+    // Pickup hit (pickups have no colliders)
     const pickupHit = this.pickupHitTest(px, pz)
     if (pickupHit) {
       this.state.attached = { kind: 'pickup', ref: pickupHit }
       this.landProjectile()
       this.startPull(webbs)
-      this.updateLine(webbs)
       return
     }
 
-    // Enemy hit
-    for (const e of this.enemies) {
-      if (e.isDead()) continue
-      const dx = px - e.collisionBody.x
-      const dz = pz - e.collisionBody.z
-      if (Math.hypot(dx, dz) < 0.40) {
-        e.staggerTimer = Math.max(e.staggerTimer, STUN_DURATION)
-        e.startHitReaction('medium')   // Round 9 Issue 4 — visible recoil on web hit
+    // Sweep the glob against real colliders — walls, mounds, props, actors
+    const hit = physicsWorld.castBall(px, pz, p.vx, p.vz, stepLen, PROJECTILE_R * this.s, webbs.collisionBody)
+    if (hit) {
+      const enemy = hit.body ? this.enemies.find(e => e.collisionBody === hit.body && !e.isDead()) : undefined
+      if (enemy) {
+        enemy.staggerTimer = Math.max(enemy.staggerTimer, STUN_DURATION)
+        enemy.startHitReaction('medium')   // Round 9 Issue 4 — visible recoil on web hit
         // Round 9b — minor damage so a web at low HP can trigger a web-death animation.
-        e.takeDamage(5, undefined, WeaponType.WebLauncher)
-        this.addSilkWrap(e)
-        this.state.attached = { kind: 'enemy', ref: e }
-        audio.play('web_attach_enemy', e.collisionBody.x, e.collisionBody.z)
-        this.landProjectile()
-        this.startPull(webbs)
-        this.updateLine(webbs)
-        return
+        enemy.takeDamage(5, undefined, WeaponType.WebLauncher)
+        this.addSilkWrap(enemy)
+        this.state.attached = { kind: 'enemy', ref: enemy }
+        audio.play('web_attach_enemy', enemy.collisionBody.x, enemy.collisionBody.z)
+      } else if (hit.body && !hit.body.isStatic) {
+        this.state.attached = { kind: 'body', ref: hit.body }
+        audio.play('web_attach_enemy', hit.x, hit.z)
+      } else {
+        // Stick to the surface, a hair proud of it so the anchor isn't inside the wall
+        const ax = hit.x + hit.nx * 0.02, az = hit.z + hit.nz * 0.02
+        this.state.attached = { kind: 'wall', x: ax, z: az, body: hit.body }
+        audio.play('web_attach_wall', ax, az)
       }
-    }
-
-    // Wall hit
-    if (this.wallHitTest(px, pz)) {
-      this.state.attached = { kind: 'wall', x: px, z: pz }
-      audio.play('web_attach_wall', px, pz)
       this.landProjectile()
       this.startPull(webbs)
-      this.updateLine(webbs)
       return
     }
 
+    p.mesh.position.x += p.vx * delta
+    p.mesh.position.z += p.vz * delta
+    p.traveled += stepLen
+    p.mesh.position.y = this.spinneretY(webbs) + Math.sin(Math.PI * Math.min(1, p.traveled / (MAX_RANGE * this.s))) * 0.18 * this.s
+
     // Max range → recall
-    if (p.traveled > MAX_RANGE) {
+    if (p.traveled > MAX_RANGE * this.s) {
       p.recalling = true
       p.traveled  = 0
     }
-
-    this.updateLine(webbs)
   }
 
   private fire(webbs: Webbs3D, aim?: { dx: number; dz: number }): void {
@@ -252,27 +274,29 @@ export class WebLauncherSystem3D {
       }
     }
 
-    const geo = new THREE.SphereGeometry(0.05, 6, 4)
-    const mat = new THREE.MeshBasicMaterial({ color: 0xeeeeff })
+    this.s = webbs.scale
+    const geo  = new THREE.SphereGeometry(0.05 * this.s, 6, 4)
+    const mat  = new THREE.MeshBasicMaterial({ color: 0xeeeeff })
     const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(webbs.collisionBody.x, 0.18, webbs.collisionBody.z)
+    this.spinneret(webbs, _spin)
+    mesh.position.copy(_spin)
     this.threeScene.add(mesh)
 
-    // Silk strand line — 2-point BufferGeometry updated every frame
+    // Silk strand — a polyline so it can hang, pay out and vibrate
     const lineGeo = new THREE.BufferGeometry()
-    const positions = new Float32Array(6)
-    lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(LINE_POINTS * 3), 3))
     const lineMat = new THREE.LineBasicMaterial({ color: 0xddeeff, transparent: true, opacity: 0.85 })
     const line = new THREE.Line(lineGeo, lineMat)
     line.frustumCulled = false
     this.threeScene.add(line)
 
     this.state = {
-      projectile:  { mesh, vx: dx * PROJECTILE_SPEED, vz: dz * PROJECTILE_SPEED, traveled: 0, recalling: false, homingTarget },
+      projectile:  { mesh, vx: dx * PROJECTILE_SPEED * this.s, vz: dz * PROJECTILE_SPEED * this.s, traveled: 0, recalling: false, homingTarget },
       line,
       age:         0,
       pulling:     false,
       pullElapsed: 0,
+      twang:       0,
     }
   }
 
@@ -284,82 +308,106 @@ export class WebLauncherSystem3D {
     this.state.projectile = undefined
   }
 
+  // The line is straight: if a wall now stands between Webbs and the anchor
+  // (he walked around a pillar), it snags and snaps instead of leashing him
+  // through solid dirt.  A wall anchor whose wall was removed lets go too.
+  private lineBlocked(webbs: Webbs3D, a: Target3D): boolean {
+    let tx: number, tz: number, end: number
+    if (a.kind === 'wall') {
+      if (a.body?.removed) return true
+      tx = a.x; tz = a.z; end = 0.12 * this.s
+    } else if (a.kind === 'enemy' || a.kind === 'body') {
+      const b = a.kind === 'enemy' ? a.ref.collisionBody : a.ref
+      tx = b.x; tz = b.z; end = b.radius + 0.08 * this.s
+    } else return false
+    const wb = webbs.collisionBody
+    const dx = tx - wb.x, dz = tz - wb.z
+    const d = Math.hypot(dx, dz) - end          // stop short of the anchor itself
+    if (d <= wb.radius) return false
+    const hit = physicsWorld.castBall(wb.x, wb.z, dx, dz, d, 0.03 * this.s, wb)   // own body excluded
+    return !!hit && !!hit.body?.isStatic && hit.body !== (a.kind === 'wall' ? a.body : null)
+  }
+
   private startPull(webbs: Webbs3D): void {
-    if (!this.state?.attached) return
-    this.state.pulling     = true
-    this.state.pullElapsed = 0
+    const st = this.state
+    if (!st?.attached) return
+    st.pulling     = true
+    st.pullElapsed = 0
+    st.age         = 0
+    st.twang       = 0.12 * this.s   // the line snaps taut and hums
     audio.play('web_swing', webbs.collisionBody.x, webbs.collisionBody.z)
     audio.playLoop('web_pull_loop', webbs.collisionBody.x, webbs.collisionBody.z)
 
-    // Round 6 Issue 3: stretch the stun across the entire pull plus a brief follow-up
-    // so the pulled enemy can't immediately bonk into the player on arrival.
-    if (this.state.attached.kind === 'enemy') {
-      const e = this.state.attached.ref
-      e.staggerTimer = Math.max(e.staggerTimer, PULL_DURATION + 0.6)
-    }
-
-    this.applyPullVelocity(webbs, 0)
-  }
-
-  private applyPullVelocity(webbs: Webbs3D, delta: number): void {
-    if (!this.state?.attached) return
-    const target = this.state.attached
-
-    if (target.kind === 'enemy') {
-      const e     = target.ref
-      const heavy = e.config.knockbackResist >= PLAYER_PULL_THRESHOLD
-      if (heavy) {
-        const dx  = e.collisionBody.x - webbs.collisionBody.x
-        const dz  = e.collisionBody.z - webbs.collisionBody.z
-        const len = Math.hypot(dx, dz) || 1
-        webbs.collisionBody.velocity.x = (dx / len) * PULL_VELOCITY
-        webbs.collisionBody.velocity.z = (dz / len) * PULL_VELOCITY
-      } else {
-        const dx  = webbs.collisionBody.x - e.collisionBody.x
-        const dz  = webbs.collisionBody.z - e.collisionBody.z
-        const len = Math.hypot(dx, dz) || 1
-        e.collisionBody.velocity.x = (dx / len) * PULL_VELOCITY
-        e.collisionBody.velocity.z = (dz / len) * PULL_VELOCITY
+    const wb = webbs.collisionBody
+    const a  = st.attached
+    if (a.kind === 'wall') {
+      st.rope = physicsWorld.addRope(wb, { x: a.x, z: a.z })
+      st.rope.minLength = wb.radius + 0.25 * this.s
+    } else if (a.kind === 'enemy' || a.kind === 'body') {
+      const body = a.kind === 'enemy' ? a.ref.collisionBody : a.ref
+      st.rope = physicsWorld.addRope(wb, body)
+      st.rope.minLength = wb.radius + body.radius + 0.15 * this.s
+      if (a.kind === 'enemy') {
+        // Round 6 Issue 3: stun across the whole pull plus a beat, so the pulled
+        // enemy can't immediately bonk the player on arrival.
+        a.ref.staggerTimer = Math.max(a.ref.staggerTimer, PULL_DURATION + 0.6)
       }
-    } else if (target.kind === 'wall') {
-      const dx  = target.x - webbs.collisionBody.x
-      const dz  = target.z - webbs.collisionBody.z
-      const len = Math.hypot(dx, dz) || 1
-      webbs.collisionBody.velocity.x = (dx / len) * PULL_VELOCITY
-      webbs.collisionBody.velocity.z = (dz / len) * PULL_VELOCITY
-    } else if (target.kind === 'pickup' && delta > 0) {
-      const pk  = target.ref
-      const dx  = webbs.collisionBody.x - pk.x
-      const dz  = webbs.collisionBody.z - pk.z
-      const len = Math.hypot(dx, dz) || 1
-      const step = PULL_VELOCITY * delta
-      pk.x += (dx / len) * step
-      pk.z += (dz / len) * step
     }
   }
+
+  // ── Line rendering ─────────────────────────────────────────────────────────────
+
+  // Nozzle tip of the ventral launcher (body-local, scaled with Webbs)
+  private spinneret(webbs: Webbs3D, out: THREE.Vector3): THREE.Vector3 {
+    return webbs.group.localToWorld(out.set(0, 0.16, 0.31))
+  }
+  private spinneretY(webbs: Webbs3D): number { return this.spinneret(webbs, _spin).y }
 
   private updateLine(webbs: Webbs3D): void {
-    if (!this.state) return
-    const pos = this.state.line.geometry.attributes.position as THREE.BufferAttribute
+    const st = this.state
+    if (!st) return
+    this.spinneret(webbs, _spin)
 
-    pos.setXYZ(0, webbs.collisionBody.x, 0.18, webbs.collisionBody.z)
-
-    if (this.state.projectile) {
-      pos.setXYZ(1, this.state.projectile.mesh.position.x, 0.4, this.state.projectile.mesh.position.z)
-    } else if (this.state.attached) {
-      const a = this.state.attached
+    let length: number   // silk paid out — longer than the gap means the line hangs
+    if (st.projectile) {
+      _tip.copy(st.projectile.mesh.position)
+      length = _spin.distanceTo(_tip) * 1.06
+    } else if (st.attached) {
+      const a = st.attached
       if (a.kind === 'enemy') {
-        pos.setXYZ(1, a.ref.collisionBody.x, 0.4, a.ref.collisionBody.z)
+        _tip.set(a.ref.group.position.x, a.ref.group.position.y + 0.25 * this.s, a.ref.group.position.z)
+      } else if (a.kind === 'body') {
+        _tip.set(a.ref.renderX, 0.15 * this.s, a.ref.renderZ)
       } else if (a.kind === 'wall') {
-        pos.setXYZ(1, a.x, 0.4, a.z)
+        _tip.set(a.x, 0.4 * this.s, a.z)
       } else {
-        pos.setXYZ(1, a.ref.x, 0.4, a.ref.z)
+        _tip.set(a.ref.x, 0.2 * this.s, a.ref.z)
       }
+      const flat = Math.hypot(_tip.x - _spin.x, _tip.z - _spin.z)
+      length = st.rope ? Math.max(flat, st.rope.length) : flat
+    } else {
+      return
     }
 
+    // Catenary-ish sag from the slack, plus a little even when taut (silk has weight)
+    const gap   = _spin.distanceTo(_tip)
+    const slack = Math.max(0, length - gap)
+    const sag   = Math.sqrt(slack * gap) * 0.6 + gap * 0.02
+    const pos   = st.line.geometry.attributes.position as THREE.BufferAttribute
+    for (let i = 0; i < LINE_POINTS; i++) {
+      const u = i / (LINE_POINTS - 1)
+      const bell = 4 * u * (1 - u)
+      const hum  = Math.sin(st.age * 55) * st.twang * Math.sin(Math.PI * u)
+      pos.setXYZ(i,
+        _spin.x + (_tip.x - _spin.x) * u,
+        _spin.y + (_tip.y - _spin.y) * u - sag * bell + hum,
+        _spin.z + (_tip.z - _spin.z) * u,
+      )
+    }
     pos.needsUpdate = true
-    this.state.line.geometry.computeBoundingSphere()
   }
+
+  // ── Silk wraps on stunned enemies ──────────────────────────────────────────────
 
   private addSilkWrap(enemy: Enemy3D): void {
     const existing = this.silkWraps.get(enemy)
@@ -386,7 +434,7 @@ export class WebLauncherSystem3D {
         ;(wrap.mesh.material as THREE.Material).dispose()
         this.silkWraps.delete(enemy)
       } else {
-        wrap.mesh.position.set(enemy.collisionBody.x, 0.38, enemy.collisionBody.z)
+        wrap.mesh.position.set(enemy.group.position.x, 0.38, enemy.group.position.z)
         ;(wrap.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8 * (wrap.timer / STUN_DURATION)
       }
     }
@@ -401,17 +449,30 @@ export class WebLauncherSystem3D {
     this.silkWraps.clear()
   }
 
+  // Let go.  Whatever the line was driving keeps a share of that motion, so a
+  // zip or a yank flings instead of stopping dead.
   release(): void {
-    if (!this.state) return
+    const st = this.state
+    if (!st) return
     audio.stopLoop('web_pull_loop')
-    if (this.state.projectile) {
-      this.threeScene.remove(this.state.projectile.mesh)
-      this.state.projectile.mesh.geometry.dispose()
-      ;(this.state.projectile.mesh.material as THREE.Material).dispose()
+    if (st.rope) {
+      const r = st.rope
+      if (!r.broken && st.pulling) {
+        for (const b of [r.a, r.b]) {
+          if (!b || b.isStatic || !b.enabled) continue
+          b.push((b.actualVx - b.velocity.x) * RELEASE_CARRY, (b.actualVz - b.velocity.z) * RELEASE_CARRY)
+        }
+      }
+      physicsWorld.removeRope(r)
     }
-    this.threeScene.remove(this.state.line)
-    this.state.line.geometry.dispose()
-    this.state.line.material.dispose()
+    if (st.projectile) {
+      this.threeScene.remove(st.projectile.mesh)
+      st.projectile.mesh.geometry.dispose()
+      ;(st.projectile.mesh.material as THREE.Material).dispose()
+    }
+    this.threeScene.remove(st.line)
+    st.line.geometry.dispose()
+    st.line.material.dispose()
     this.state = null
   }
 }

@@ -16,8 +16,8 @@ export const WEAPON_COLORS: Record<WeaponType, number> = {
 // flame breather, which deals continuous damage). Keep these in sync when tuning.
 export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
   [WeaponType.Sword, {
-    name: 'Leg-Attached Broken Sword',
-    damage: 18,
+    name: 'Shard Sword',
+    damage: 24,
     staminaCost: 10,
     type: 'melee',
     requiredTier: 0,
@@ -31,24 +31,24 @@ export const WEAPON_DATA: Map<WeaponType, WeaponConfig> = new Map([
   }],
   [WeaponType.BoxingGloves, {
     name: 'Toothpick Stabber',
-    damage: 14,
+    damage: 10,
     staminaCost: 5,
     type: 'melee',
     requiredTier: 0,
   }],
   [WeaponType.Axe, {
-    name: 'Bolt-On Axe',
-    damage: 44,
+    name: 'Chitin Axe',
+    damage: 52,
     staminaCost: 22,
     type: 'melee',
     requiredTier: 1,
   }],
   [WeaponType.Glider, {
-    name: 'Glider',
+    name: 'Web Glider',
     damage: 0,
     staminaCost: 20,
     type: 'traversal',
-    requiredTier: 1,
+    requiredTier: 2,   // matches the workbench recipe
   }],
   [WeaponType.FlameBreather, {
     name: 'Flame Breather',
@@ -83,7 +83,7 @@ export const WEAPON_STATS: Record<WeaponType, WeaponStats> = {
     blurb:      'Nothing equipped.',
   },
   [WeaponType.Sword]: {
-    cooldownMs: 280,
+    cooldownMs: 340,
     range:      '70u arc',
     blurb:      'Quick 90° forward arc. Reliable damage, modest knockback.',
   },
@@ -93,12 +93,12 @@ export const WEAPON_STATS: Record<WeaponType, WeaponStats> = {
     blurb:      'Fires a thistle. Consumes 1 Thistle per shot; misses can be recovered.',
   },
   [WeaponType.Axe]: {
-    cooldownMs: 760,
+    cooldownMs: 780,
     range:      '88u cleave',
     blurb:      'Slow 170° heavy cleave. Big damage, huge knockback.',
   },
   [WeaponType.BoxingGloves]: {
-    cooldownMs: 220,
+    cooldownMs: 240,
     range:      '90u stab',
     blurb:      'Long thin stab in a narrow cone. Cheap and fast.',
   },

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Enemy3D, type EnemyConfig3D, WeakPointZone } from './Enemy3D'
+import { audio } from '../systems/AudioManager'
 
 const CONFIG: EnemyConfig3D = {
   health:          45,
@@ -31,6 +32,23 @@ export class JumpingSpider3D extends Enemy3D {
   private facingAngle = 0
   private bodyMesh:   THREE.Mesh | null = null
   private dustRings:  Array<{ mesh: THREE.Mesh; elapsed: number }> = []
+
+  // Only the leap (and its landing) hurts
+  override dealsContactDamage(): boolean { return this.state === 'LEAP' || this.state === 'LAND' }
+
+  // Stagger/knockback skip updateAI — which is what animates the arc — so a
+  // spider stunned or webbed mid-leap used to hang in the air, stretched.
+  // Drop it out of the leap: back on the ground, normal shape, recovering.
+  override update(delta: number, playerX: number, playerZ: number): void {
+    super.update(delta, playerX, playerZ)
+    if ((this.staggerTimer > 0 || this.knockbackTimer > 0) && !this.isDead() &&
+        (this.state === 'COIL' || this.state === 'LEAP' || this.state === 'LAND')) {
+      this.state      = 'RECOVER'
+      this.stateTimer = 0
+      this.group.position.y = 0
+      this.group.scale.setScalar(1)
+    }
+  }
 
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture) {
     super(threeScene, x, z, CONFIG, gradientMap)
@@ -120,6 +138,7 @@ export class JumpingSpider3D extends Enemy3D {
         if (dist < LEAP_RANGE && dist > 0.4) {
           this.leapDir.set(dx, dz).normalize()
           this.state      = 'COIL'
+          audio.play('spider_coil', this.collisionBody.x, this.collisionBody.z)   // telegraph
           this.stateTimer = 0
           this.collisionBody.velocity.x = 0
           this.collisionBody.velocity.z = 0
@@ -137,6 +156,7 @@ export class JumpingSpider3D extends Enemy3D {
 
         if (this.stateTimer >= COIL_DUR) {
           this.state      = 'LEAP'
+          audio.play('spider_leap', this.collisionBody.x, this.collisionBody.z)
           this.stateTimer = 0
           this.group.scale.setScalar(1)
         }
@@ -154,6 +174,7 @@ export class JumpingSpider3D extends Enemy3D {
 
         if (this.stateTimer >= LEAP_DUR) {
           this.state      = 'LAND'
+          audio.play('spider_land', this.collisionBody.x, this.collisionBody.z)
           this.stateTimer = 0
           this.collisionBody.velocity.x = 0
           this.collisionBody.velocity.z = 0

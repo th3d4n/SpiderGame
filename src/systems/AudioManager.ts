@@ -1,17 +1,20 @@
-// Round 10 — Comprehensive sound design via Howler.js.
+// ─── Audio engine ─────────────────────────────────────────────────────────────
+// A small Web Audio engine (replaces Howler).  Every game event still resolves
+// through `audio.play(key)` / `audio.playLoop(key)`, but now:
 //
-// Centralised audio bus.  Every game event resolves through `audio.play(key)`
-// or `audio.playLoop(key)`.  Sounds are lazily loaded on first play and gently
-// fail when files are missing (e.g. Tier 1/2/3 asset acquisition pending) so
-// the game still runs silent without console-spam.
+//  • Everything decodes up front, after boot — no first-hit decode lag.
+//  • Each buffer is analysed once: leading silence is trimmed (some source files
+//    started 0.1–0.6 s late) and loudness is normalised, so the `volume` numbers
+//    below are a real mix (1.0 ≈ -20 dBFS RMS), not compensation for wild files.
+//  • Positional sounds pan by where they are ON SCREEN (camera right vector) and
+//    fall off in units of creature scale, so the den (scale 2.4) and colony (1.0)
+//    sound the same size.  Distance also darkens the sound (low-pass).
+//  • Loops can belong to an owner (one skitter per centipede, not one shared).
+//  • Buses: world (sfx + ambience, through a menu "muffle" filter), UI (dry),
+//    a per-zone cave reverb send, and a master limiter so stacked hits can't clip.
+//  • A tiny synth layers weight under impacts (sub thump, weak-point ting).
 //
-// 3D spatial audio uses Howler's stereo pan + falloff model.  The listener
-// position follows the player; per-call worldX/worldZ positions sounds in 3D.
-//
-// Files live under `/public/audio/<key>.webm` (preferred) and `<key>.mp3`
-// (fallback).  Howler auto-picks the best supported codec.
-
-import { Howl, Howler } from 'howler'
+// Files live under `/public/audio/<file>.webm` (Opus) with `.mp3` fallback.
 
 export type SoundKey =
   // Player
@@ -26,7 +29,7 @@ export type SoundKey =
   | 'flame_loop' | 'flame_hit'
   | 'web_fire' | 'web_attach_wall' | 'web_attach_enemy' | 'web_pull_loop'
   // Enemies — Centipede
-  | 'centipede_idle' | 'centipede_burst' | 'centipede_skitter' | 'centipede_attack'
+  | 'centipede_burst' | 'centipede_skitter' | 'centipede_attack'
   | 'centipede_hit' | 'centipede_death_generic'
   | 'centipede_death_sword' | 'centipede_death_axe'
   | 'centipede_death_stab' | 'centipede_death_bow' | 'centipede_death_flame'
@@ -35,8 +38,10 @@ export type SoundKey =
   | 'beetle_hit' | 'beetle_death_generic'
   | 'beetle_death_sword' | 'beetle_death_axe'
   | 'beetle_death_stab' | 'beetle_death_flame'
+  // Enemies — small fry (ants, jumping spiders) reuse pitched sources
+  | 'small_death' | 'spider_coil' | 'spider_leap' | 'spider_land' | 'ant_bite'
   // Boss
-  | 'boss_idle' | 'boss_suction' | 'boss_charge' | 'boss_hit'
+  | 'boss_idle' | 'boss_suction' | 'boss_windup' | 'boss_charge' | 'boss_hit'
   | 'boss_phase_change' | 'boss_death'
   // Ambience (looping)
   | 'amb_homebase' | 'amb_colony_entry' | 'amb_colony_mid' | 'amb_colony_deep' | 'amb_boss'
@@ -48,221 +53,742 @@ export type SoundKey =
   | 'pickup_notify'
   | 'xp_gain_small' | 'xp_gain_combo'
   | 'stamina_winded' | 'energy_depleted'
-  | 'workbench_open' | 'crafting_complete'
+  | 'workbench_open' | 'crafting_complete' | 'potion_drink'
   | 'web_launcher_equipped'
 
+type Bus = 'sfx' | 'amb' | 'ui'
+
 interface SoundConfig {
-  src:        string[]
-  volume?:    number
-  loop?:      boolean
-  rate?:      number
-  rateRandom?: [number, number]
-  pool?:      number
+  file:        string             // basename under /audio
+  volume:      number             // mix level on the normalised buffer
+  bus?:        Bus                // default sfx
+  loop?:       boolean
+  rate?:       number             // fixed playback rate (pitch); 2^(st/12)
+  rateRandom?: [number, number]   // multiplies `rate`
+  maxVoices?:  number             // concurrent voices of this key (default 4)
+  minGap?:     number             // s — ignore retriggers closer than this (default 0.03)
+  maxLen?:     number             // s — one-shots fade out here (long-tailed sources)
+  lowpass?:    number             // Hz — tone shaping
+  reverb?:     number             // send level (default: 1 for sfx, 0 otherwise)
+  trimDb?:     number             // leading-silence threshold vs peak (default -30; noisy sources need higher)
+  maxLoop?:    number             // s — crop long loops (crossfaded seam) to save decoded memory
 }
 
+const ST = (semitones: number) => 2 ** (semitones / 12)
+
+// Volumes are a mix, relative to a normalised -20 dBFS RMS buffer.
 const SOUND_REGISTRY: Record<SoundKey, SoundConfig> = {
   // ── Player ──────────────────────────────────────────────────────────────
-  footstep_dirt:    { src: ['/audio/footstep_dirt.webm',   '/audio/footstep_dirt.mp3'],   volume: 0.35, rateRandom: [0.9, 1.1], pool: 8 },
-  footstep_stone:   { src: ['/audio/footstep_stone.webm',  '/audio/footstep_stone.mp3'],  volume: 0.35, rateRandom: [0.9, 1.1], pool: 8 },
-  web_swing:        { src: ['/audio/web_swing.webm',       '/audio/web_swing.mp3'],       volume: 0.5 },
-  webbs_damage:     { src: ['/audio/webbs_damage.webm',    '/audio/webbs_damage.mp3'],    volume: 0.7, rateRandom: [0.92, 1.08] },
-  webbs_death:      { src: ['/audio/webbs_death.webm',     '/audio/webbs_death.mp3'],     volume: 0.9 },
-  webbs_dodge:      { src: ['/audio/webbs_dodge.webm',     '/audio/webbs_dodge.mp3'],     volume: 0.55 },
-  heartbeat_low_hp: { src: ['/audio/heartbeat.webm',       '/audio/heartbeat.mp3'],       volume: 0.45, loop: true },
-  half_hp_pain:     { src: ['/audio/half_hp_pain.webm',    '/audio/half_hp_pain.mp3'],    volume: 0.8 },
+  footstep_dirt:    { file: 'footstep_dirt',  volume: 0.20, trimDb: -12, rateRandom: [0.88, 1.12], maxVoices: 6, minGap: 0.05, maxLen: 0.25, lowpass: 5000, reverb: 0.4 },
+  footstep_stone:   { file: 'footstep_stone', volume: 0.18, rateRandom: [0.88, 1.12], maxVoices: 6, minGap: 0.05, reverb: 0.5 },
+  web_swing:        { file: 'web_swing',      volume: 0.45 },
+  webbs_damage:     { file: 'webbs_damage',   volume: 0.80, rateRandom: [0.92, 1.08] },
+  webbs_death:      { file: 'webbs_death',    volume: 0.90 },
+  webbs_dodge:      { file: 'webbs_dodge',    volume: 0.45, maxLen: 0.45 },
+  heartbeat_low_hp: { file: 'heartbeat',      volume: 0.45, loop: true, reverb: 0, lowpass: 900 },
+  half_hp_pain:     { file: 'half_hp_pain',   volume: 0.65, maxLen: 1.6 },
 
   // ── Weapons ─────────────────────────────────────────────────────────────
-  sword_swing:      { src: ['/audio/sword_swing.webm',     '/audio/sword_swing.mp3'],     volume: 0.6,  rateRandom: [0.95, 1.05] },
-  sword_hit_enemy:  { src: ['/audio/sword_hit_enemy.webm', '/audio/sword_hit_enemy.mp3'], volume: 0.7,  rateRandom: [0.92, 1.08] },
-  sword_hit_ground: { src: ['/audio/sword_hit_ground.webm','/audio/sword_hit_ground.mp3'],volume: 0.6 },
-  axe_swing:        { src: ['/audio/axe_swing.webm',       '/audio/axe_swing.mp3'],       volume: 0.7,  rateRandom: [0.92, 1.05] },
-  axe_hit_enemy:    { src: ['/audio/axe_hit_enemy.webm',   '/audio/axe_hit_enemy.mp3'],   volume: 0.85, rateRandom: [0.9, 1.05] },
-  axe_hit_ground:   { src: ['/audio/axe_hit_ground.webm',  '/audio/axe_hit_ground.mp3'],  volume: 0.8 },
-  toothpick_stab:   { src: ['/audio/toothpick_stab.webm',  '/audio/toothpick_stab.mp3'],  volume: 0.5,  rateRandom: [0.95, 1.1] },
-  toothpick_hit:    { src: ['/audio/toothpick_hit.webm',   '/audio/toothpick_hit.mp3'],   volume: 0.55, rateRandom: [0.92, 1.08] },
-  bow_draw:         { src: ['/audio/bow_draw.webm',        '/audio/bow_draw.mp3'],        volume: 0.5 },
-  bow_release:      { src: ['/audio/bow_release.webm',     '/audio/bow_release.mp3'],     volume: 0.6 },
-  bow_hit_enemy:    { src: ['/audio/bow_hit_enemy.webm',   '/audio/bow_hit_enemy.mp3'],   volume: 0.65, rateRandom: [0.95, 1.05] },
-  bow_hit_wall:     { src: ['/audio/bow_hit_wall.webm',    '/audio/bow_hit_wall.mp3'],    volume: 0.55 },
-  flame_loop:       { src: ['/audio/flame_loop.webm',      '/audio/flame_loop.mp3'],      volume: 0.55, loop: true },
-  flame_hit:        { src: ['/audio/flame_hit.webm',       '/audio/flame_hit.mp3'],       volume: 0.6 },
-  web_fire:         { src: ['/audio/web_fire.webm',        '/audio/web_fire.mp3'],        volume: 0.5 },
-  web_attach_wall:  { src: ['/audio/web_attach_wall.webm', '/audio/web_attach_wall.mp3'], volume: 0.6 },
-  web_attach_enemy: { src: ['/audio/web_attach_enemy.webm','/audio/web_attach_enemy.mp3'],volume: 0.6 },
-  web_pull_loop:    { src: ['/audio/web_pull_loop.webm',   '/audio/web_pull_loop.mp3'],   volume: 0.4, loop: true },
+  sword_swing:      { file: 'sword_swing',      volume: 0.50, rateRandom: [0.95, 1.05] },
+  sword_hit_enemy:  { file: 'sword_hit_enemy',  volume: 0.95, rateRandom: [0.92, 1.08], maxLen: 0.7 },
+  sword_hit_ground: { file: 'sword_hit_ground', volume: 0.40, maxLen: 0.6 },
+  axe_swing:        { file: 'axe_swing',        volume: 0.60, rateRandom: [0.92, 1.05] },
+  axe_hit_enemy:    { file: 'axe_hit_enemy',    volume: 1.00, rateRandom: [0.9, 1.05] },
+  axe_hit_ground:   { file: 'axe_hit_ground',   volume: 0.45, maxLen: 0.6 },
+  toothpick_stab:   { file: 'toothpick_stab',   volume: 0.45, rateRandom: [0.95, 1.1] },
+  toothpick_hit:    { file: 'toothpick_hit',    volume: 0.85, rateRandom: [0.92, 1.08] },
+  // Placeholder (string flutter) — darkened and slowed so it reads as a creak
+  bow_draw:         { file: 'bow_draw',         volume: 0.30, rate: ST(-4), lowpass: 2400 },
+  bow_release:      { file: 'bow_release',      volume: 0.55 },
+  bow_hit_enemy:    { file: 'bow_hit_enemy',    volume: 0.70, rateRandom: [0.95, 1.05] },
+  bow_hit_wall:     { file: 'bow_hit_wall',     volume: 0.55 },
+  flame_loop:       { file: 'flame_loop',       volume: 0.55, loop: true, maxLoop: 10 },
+  flame_hit:        { file: 'flame_hit',        volume: 0.45, maxLen: 0.45, minGap: 0.3, maxVoices: 2 },
+  web_fire:         { file: 'web_fire',         volume: 0.55 },
+  web_attach_wall:  { file: 'web_attach_wall',  volume: 0.55 },
+  web_attach_enemy: { file: 'web_attach_enemy', volume: 0.60, maxLen: 0.7 },
+  web_pull_loop:    { file: 'web_pull_loop',    volume: 0.40, loop: true },
 
   // ── Centipede ───────────────────────────────────────────────────────────
-  centipede_idle:           { src: ['/audio/centipede_idle.webm',           '/audio/centipede_idle.mp3'],           volume: 0.3, loop: true },
-  centipede_burst:          { src: ['/audio/centipede_burst.webm',          '/audio/centipede_burst.mp3'],          volume: 0.65 },
-  centipede_skitter:        { src: ['/audio/centipede_skitter.webm',        '/audio/centipede_skitter.mp3'],        volume: 0.4, loop: true },
-  centipede_attack:         { src: ['/audio/centipede_attack.webm',         '/audio/centipede_attack.mp3'],         volume: 0.55 },
-  centipede_hit:            { src: ['/audio/centipede_hit.webm',            '/audio/centipede_hit.mp3'],            volume: 0.4, rateRandom: [0.9, 1.1] },
-  centipede_death_generic:  { src: ['/audio/centipede_death.webm',          '/audio/centipede_death.mp3'],          volume: 0.55 },
-  centipede_death_sword:    { src: ['/audio/centipede_death_sword.webm',    '/audio/centipede_death_sword.mp3'],    volume: 0.6 },
-  centipede_death_axe:      { src: ['/audio/centipede_death_axe.webm',      '/audio/centipede_death_axe.mp3'],      volume: 0.75 },
-  centipede_death_stab:     { src: ['/audio/centipede_death_stab.webm',     '/audio/centipede_death_stab.mp3'],     volume: 0.55 },
-  centipede_death_bow:      { src: ['/audio/centipede_death_bow.webm',      '/audio/centipede_death_bow.mp3'],      volume: 0.55 },
-  centipede_death_flame:    { src: ['/audio/centipede_death_flame.webm',    '/audio/centipede_death_flame.mp3'],    volume: 0.6 },
+  centipede_burst:          { file: 'centipede_burst',   volume: 0.70 },
+  centipede_skitter:        { file: 'centipede_skitter', volume: 0.35, loop: true },
+  centipede_attack:         { file: 'centipede_attack',  volume: 0.65 },
+  centipede_hit:            { file: 'centipede_hit',     volume: 0.50, rateRandom: [0.9, 1.1] },
+  // One source for every death — each weapon gets its own pitch/tone
+  centipede_death_generic:  { file: 'centipede_death', volume: 0.70 },
+  centipede_death_sword:    { file: 'centipede_death', volume: 0.75 },
+  centipede_death_axe:      { file: 'centipede_death', volume: 0.85, rate: ST(-3), lowpass: 2200 },
+  centipede_death_stab:     { file: 'centipede_death', volume: 0.65, rate: ST(2) },
+  centipede_death_bow:      { file: 'centipede_death', volume: 0.65, rate: ST(1), maxLen: 0.6 },
+  centipede_death_flame:    { file: 'centipede_death', volume: 0.70, rate: ST(-2), lowpass: 1500 },
 
   // ── Beetle ──────────────────────────────────────────────────────────────
-  beetle_walk:           { src: ['/audio/beetle_walk.webm',           '/audio/beetle_walk.mp3'],           volume: 0.4, loop: true },
-  beetle_charge_windup:  { src: ['/audio/beetle_charge_windup.webm',  '/audio/beetle_charge_windup.mp3'],  volume: 0.55 },
-  beetle_charging:       { src: ['/audio/beetle_charging.webm',       '/audio/beetle_charging.mp3'],       volume: 0.6, loop: true },
-  beetle_charge_crash:   { src: ['/audio/beetle_charge_crash.webm',   '/audio/beetle_charge_crash.mp3'],   volume: 0.7 },
-  beetle_hit:            { src: ['/audio/beetle_hit.webm',            '/audio/beetle_hit.mp3'],            volume: 0.45, rateRandom: [0.9, 1.1] },
-  beetle_death_generic:  { src: ['/audio/beetle_death.webm',          '/audio/beetle_death.mp3'],          volume: 0.65 },
-  beetle_death_sword:    { src: ['/audio/beetle_death_sword.webm',    '/audio/beetle_death_sword.mp3'],    volume: 0.7 },
-  beetle_death_axe:      { src: ['/audio/beetle_death_axe.webm',      '/audio/beetle_death_axe.mp3'],      volume: 0.85 },
-  beetle_death_stab:     { src: ['/audio/beetle_death_stab.webm',     '/audio/beetle_death_stab.mp3'],     volume: 0.6 },
-  beetle_death_flame:    { src: ['/audio/beetle_death_flame.webm',    '/audio/beetle_death_flame.mp3'],    volume: 0.7 },
+  beetle_walk:           { file: 'beetle_walk',          volume: 0.35, loop: true },
+  beetle_charge_windup:  { file: 'beetle_charge_windup', volume: 0.70 },
+  beetle_charging:       { file: 'beetle_charging',      volume: 0.60, loop: true },
+  beetle_charge_crash:   { file: 'beetle_charge_crash',  volume: 0.85 },
+  beetle_hit:            { file: 'beetle_hit',           volume: 0.55, rateRandom: [0.9, 1.1] },
+  beetle_death_generic:  { file: 'beetle_death', volume: 0.80 },
+  beetle_death_sword:    { file: 'beetle_death', volume: 0.80 },
+  beetle_death_axe:      { file: 'beetle_death', volume: 0.90, rate: ST(-3), lowpass: 2000 },
+  beetle_death_stab:     { file: 'beetle_death', volume: 0.75, rate: ST(2) },
+  beetle_death_flame:    { file: 'beetle_death', volume: 0.80, rate: ST(-2), lowpass: 1400 },
+
+  // ── Small fry ───────────────────────────────────────────────────────────
+  small_death:   { file: 'centipede_death',  volume: 0.55, rate: ST(6), rateRandom: [0.94, 1.06], maxLen: 0.6 },
+  spider_coil:   { file: 'centipede_attack', volume: 0.45, rate: ST(5), lowpass: 4000 },   // telegraph hiss
+  spider_leap:   { file: 'webbs_dodge',      volume: 0.40, rate: ST(4), maxLen: 0.35 },
+  spider_land:   { file: 'beetle_hit',       volume: 0.45, rate: ST(5) },
+  ant_bite:      { file: 'centipede_attack', volume: 0.35, rate: ST(9), maxLen: 0.3, minGap: 0.12 },   // mandible click (bite tell)
 
   // ── Boss ────────────────────────────────────────────────────────────────
-  boss_idle:         { src: ['/audio/boss_idle.webm',         '/audio/boss_idle.mp3'],         volume: 0.5, loop: true },
-  boss_suction:      { src: ['/audio/boss_suction.webm',      '/audio/boss_suction.mp3'],      volume: 0.7, loop: true },
-  boss_charge:       { src: ['/audio/boss_charge.webm',       '/audio/boss_charge.mp3'],       volume: 0.75 },
-  boss_hit:          { src: ['/audio/boss_hit.webm',          '/audio/boss_hit.mp3'],          volume: 0.7 },
-  boss_phase_change: { src: ['/audio/boss_phase_change.webm', '/audio/boss_phase_change.mp3'], volume: 0.85 },
-  boss_death:        { src: ['/audio/boss_death.webm',        '/audio/boss_death.mp3'],        volume: 0.95 },
+  boss_idle:         { file: 'boss_idle',         volume: 0.55, loop: true },
+  boss_suction:      { file: 'boss_suction',      volume: 0.75 },
+  boss_windup:       { file: 'beetle_charge_windup', volume: 0.80, rate: ST(-6), maxLen: 0.8 },   // attack telegraph
+  boss_charge:       { file: 'boss_charge',       volume: 0.70 },
+  // Shares a source with the beetle wind-up — deeper and shorter here
+  boss_hit:          { file: 'boss_hit',          volume: 0.75, rate: ST(-5), maxLen: 0.9 },
+  boss_phase_change: { file: 'boss_phase_change', volume: 0.90 },
+  boss_death:        { file: 'boss_death',        volume: 1.00 },
 
   // ── Ambience ────────────────────────────────────────────────────────────
-  amb_homebase:      { src: ['/audio/amb_homebase.webm',      '/audio/amb_homebase.mp3'],      volume: 0.35, loop: true },
-  amb_colony_entry:  { src: ['/audio/amb_colony_entry.webm',  '/audio/amb_colony_entry.mp3'],  volume: 0.4,  loop: true },
-  amb_colony_mid:    { src: ['/audio/amb_colony_mid.webm',    '/audio/amb_colony_mid.mp3'],    volume: 0.4,  loop: true },
-  amb_colony_deep:   { src: ['/audio/amb_colony_deep.webm',   '/audio/amb_colony_deep.mp3'],   volume: 0.45, loop: true },
-  amb_boss:          { src: ['/audio/amb_boss.webm',          '/audio/amb_boss.mp3'],          volume: 0.5,  loop: true },
+  // Beds sit ~10 dB under the action
+  // Den: pitched down and darkened to a low, felt-more-than-heard bed
+  amb_homebase:      { file: 'amb_homebase',     volume: 0.17, loop: true, bus: 'amb', rate: ST(-3), lowpass: 850 },
+  amb_colony_entry:  { file: 'amb_colony_entry', volume: 0.26, loop: true, bus: 'amb' },
+  amb_colony_mid:    { file: 'amb_colony_mid',   volume: 0.26, loop: true, bus: 'amb', maxLoop: 50 },
+  amb_colony_deep:   { file: 'amb_colony_deep',  volume: 0.30, loop: true, bus: 'amb' },
+  amb_boss:          { file: 'amb_boss',         volume: 0.32, loop: true, bus: 'amb', maxLoop: 50 },
 
   // ── UI ──────────────────────────────────────────────────────────────────
-  ui_hover:           { src: ['/audio/ui_hover.webm',          '/audio/ui_hover.mp3'],          volume: 0.3 },
-  ui_click:           { src: ['/audio/ui_click.webm',          '/audio/ui_click.mp3'],          volume: 0.45 },
-  ui_back:            { src: ['/audio/ui_back.webm',           '/audio/ui_back.mp3'],           volume: 0.4 },
-  ui_title_new_game:  { src: ['/audio/ui_title_new_game.webm', '/audio/ui_title_new_game.mp3'], volume: 0.6 },
-  ui_title_continue:  { src: ['/audio/ui_title_continue.webm', '/audio/ui_title_continue.mp3'], volume: 0.55 },
-  ui_text_advance:    { src: ['/audio/ui_text_advance.webm',   '/audio/ui_text_advance.mp3'],   volume: 0.3 },
-  celeb_swell:        { src: ['/audio/celeb_swell.webm',       '/audio/celeb_swell.mp3'],       volume: 0.65 },
-  celeb_burst:        { src: ['/audio/celeb_burst.webm',       '/audio/celeb_burst.mp3'],       volume: 0.75 },
-  celeb_tutorial:     { src: ['/audio/celeb_tutorial.webm',    '/audio/celeb_tutorial.mp3'],    volume: 0.45 },
-  pickup_notify:      { src: ['/audio/pickup_notify.webm',     '/audio/pickup_notify.mp3'],     volume: 0.5 },
-  xp_gain_small:      { src: ['/audio/xp_gain_small.webm',     '/audio/xp_gain_small.mp3'],     volume: 0.4 },
-  xp_gain_combo:      { src: ['/audio/xp_gain_combo.webm',     '/audio/xp_gain_combo.mp3'],     volume: 0.55 },
-  stamina_winded:     { src: ['/audio/stamina_winded.webm',    '/audio/stamina_winded.mp3'],    volume: 0.5 },
-  energy_depleted:    { src: ['/audio/energy_depleted.webm',   '/audio/energy_depleted.mp3'],   volume: 0.5 },
-  workbench_open:     { src: ['/audio/workbench_open.webm',    '/audio/workbench_open.mp3'],    volume: 0.55 },
-  crafting_complete:  { src: ['/audio/crafting_complete.webm', '/audio/crafting_complete.mp3'], volume: 0.6 },
-  web_launcher_equipped: { src: ['/audio/web_launcher_equipped.webm', '/audio/web_launcher_equipped.mp3'], volume: 0.55 },
+  ui_hover:           { file: 'ui_hover',          volume: 0.30, bus: 'ui', minGap: 0.04 },
+  ui_click:           { file: 'ui_click',          volume: 0.45, bus: 'ui' },
+  ui_back:            { file: 'ui_back',           volume: 0.40, bus: 'ui' },
+  ui_title_new_game:  { file: 'ui_title_new_game', volume: 0.45, bus: 'ui' },
+  ui_title_continue:  { file: 'ui_title_continue', volume: 0.45, bus: 'ui' },
+  ui_text_advance:    { file: 'ui_text_advance',   volume: 0.35, bus: 'ui' },
+  celeb_swell:        { file: 'celeb_swell',       volume: 0.60, bus: 'ui' },
+  // The edit the consolidation report asked for (+2 st, room) — done at runtime
+  celeb_burst:        { file: 'celeb_burst',       volume: 0.65, bus: 'ui', rate: ST(2), reverb: 0.9 },
+  celeb_tutorial:     { file: 'celeb_tutorial',    volume: 0.45, bus: 'ui' },
+  pickup_notify:      { file: 'pickup_notify',     volume: 0.45, bus: 'ui', minGap: 0.06 },
+  xp_gain_small:      { file: 'xp_gain_small',     volume: 0.35, bus: 'ui' },
+  // Same source as the title "new game" sting — pitched up so they differ
+  xp_gain_combo:      { file: 'xp_gain_combo',     volume: 0.40, bus: 'ui', rate: ST(4) },
+  stamina_winded:     { file: 'stamina_winded',    volume: 0.55, maxLen: 2.2 },
+  energy_depleted:    { file: 'energy_depleted',   volume: 0.40, bus: 'ui' },
+  workbench_open:     { file: 'workbench_open',    volume: 0.50, bus: 'ui' },
+  crafting_complete:  { file: 'crafting_complete', volume: 0.55, bus: 'ui' },
+  potion_drink:       { file: 'xp_gain_small',     volume: 0.45, bus: 'ui', rate: ST(-5) },   // low, round gulp
+  web_launcher_equipped: { file: 'web_launcher_equipped', volume: 0.50, bus: 'ui' },
 }
 
-// Sentinel sound id returned when audio is muted / file missing — safe to
-// pass back to stop() / pos() etc. (Howler treats unknown ids as no-ops).
+const FILE_TRIM_DB = new Map<string, number>()
+const FILE_MAX_LOOP = new Map<string, number>()
+for (const cfg of Object.values(SOUND_REGISTRY)) {
+  if (cfg.trimDb !== undefined) FILE_TRIM_DB.set(cfg.file, cfg.trimDb)
+  if (cfg.maxLoop !== undefined) FILE_MAX_LOOP.set(cfg.file, cfg.maxLoop)
+}
+
+// ── Tuning ────────────────────────────────────────────────────────────────────
+const TARGET_RMS   = 0.1      // -20 dBFS: what every buffer is normalised to
+const MAX_BOOST    = 16       // +24 dB at most (very quiet source files)
+const PEAK_CEIL    = 1.4      // normalised peak may exceed full scale a little — the limiter catches it
+const TRIM_REL_DB  = -30      // leading silence = below peak -30 dB…
+const TRIM_ABS     = 0.002    // …or below -54 dBFS
+const TRIM_PREROLL = 0.004    // keep 4 ms before the first transient
+const NEAR_UNITS   = 4        // full volume within this many creature-scale units
+const FALLOFF      = 9        // then -6 dB per ~FALLOFF units further
+const PAN_UNITS    = 12       // screen-right distance that pans fully
+const MAX_VOICES   = 48
+const AMB_BUS      = 0.8      // ambience bus level under the world
+const LOAD_CONCURRENCY = 6
+
+// Per-zone cave reverb: decay time and how wet the world sounds
+export type AudioRoom = 'homeBase' | 'antColony' | 'bossRoller'
+// `rumble`: level of the synthetic sub-bass bed under the zone's ambience
+// (the sampled beds have almost nothing below 250 Hz).
+const ROOMS: Record<AudioRoom, { decay: number; wet: number; damp: number; rumble: number; rumbleHz: number }> = {
+  homeBase:   { decay: 0.9, wet: 0.14, damp: 0.55, rumble: 0.18, rumbleHz: 95 },   // small, soft dirt den
+  antColony:  { decay: 1.7, wet: 0.24, damp: 0.45, rumble: 0.12, rumbleHz: 120 },  // packed-earth tunnels
+  bossRoller: { decay: 2.8, wet: 0.30, damp: 0.35, rumble: 0.22, rumbleHz: 80 },   // big hollow
+}
+
+export type ImpactKind = 'light' | 'medium' | 'heavy' | 'weak' | 'kill' | 'hurt'
+
+interface Analysed { buffer: AudioBuffer; start: number; gain: number }
+
+interface Voice {
+  id:      number
+  key:     SoundKey | null      // null for synth voices
+  src:     AudioScheduledSourceNode
+  gain:    GainNode               // per-voice level (fades)
+  base:    number                 // level before distance attenuation
+  level:   number                 // level it started at (after attenuation)
+  loop:    boolean
+  pan:     StereoPannerNode | null
+  lp:      BiquadFilterNode | null
+  x?:      number
+  z?:      number
+  started: number
+  ended:   boolean
+}
+
+interface LoopEntry { voice: Voice | null; pending: boolean; x?: number; z?: number }
+
 const NULL_SOUND_ID = -1
+const MUTE_STORE    = 'nolegs.audio.muted'
 
 export class AudioManager {
-  private sounds      = new Map<SoundKey, Howl>()
-  private failedKeys  = new Set<SoundKey>()
-  private activeLoops = new Map<SoundKey, number>()
-  private masterVolume = 1.0
-  private muted        = false
+  private ctx:    AudioContext
+  private master: GainNode
+  private limiter: DynamicsCompressorNode
+  private world:  GainNode           // sfx + amb → muffle → master
+  private muffle: BiquadFilterNode
+  private buses:  Record<Bus, GainNode>
+  private reverbIn:  GainNode
+  private convolver: ConvolverNode
+  private reverbWet: GainNode
+  private noise:  AudioBuffer
+  private rumble!:   GainNode
+  private rumbleLp!: BiquadFilterNode
 
-  private getOrCreate(key: SoundKey): Howl | null {
-    if (this.failedKeys.has(key)) return null
-    const existing = this.sounds.get(key)
-    if (existing) return existing
+  private buffers = new Map<string, Analysed>()        // by file
+  private loading = new Map<string, Promise<Analysed | null>>()
+  private failed  = new Set<string>()
+  private ext:    'webm' | 'mp3'
 
-    const cfg = SOUND_REGISTRY[key]
-    const h = new Howl({
-      src:    cfg.src,
-      volume: (cfg.volume ?? 0.7) * this.masterVolume,
-      loop:   cfg.loop ?? false,
-      rate:   cfg.rate  ?? 1.0,
-      pool:   cfg.pool  ?? 4,
-      // Load error = permanent failure (file missing/corrupt). Play error is
-      // transient — most commonly the browser autoplay policy blocking audio
-      // before the first user gesture. Don't blacklist on play error; the next
-      // playLoop/play call after user interaction will succeed.
-      onloaderror: () => { this.failedKeys.add(key); this.sounds.delete(key) },
-      onplayerror: () => { /* transient — do not add to failedKeys */ },
-    })
-    this.sounds.set(key, h)
-    return h
+  private voices: Voice[] = []
+  private loops  = new Map<string, LoopEntry>()
+  private lastPlay = new Map<SoundKey, number>()
+  private owners = new WeakMap<object, number>()
+  private nextOwner = 1
+  private nextId = 1
+
+  private lx = 0; private lz = 0           // listener
+  private rx = 1; private rz = 0           // screen-right on the ground plane
+  private unit = 1                          // creature scale
+  private masterVolume = 1
+  private ambLevel = 1
+  private muted = false
+
+  constructor() {
+    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    this.ctx = new Ctx({ latencyHint: 'interactive' })
+    const c = this.ctx
+
+    this.limiter = c.createDynamicsCompressor()
+    this.limiter.threshold.value = -9
+    this.limiter.knee.value      = 4
+    this.limiter.ratio.value     = 16
+    this.limiter.attack.value    = 0.002
+    this.limiter.release.value   = 0.14
+    this.master = c.createGain()
+    this.master.connect(this.limiter).connect(c.destination)
+
+    this.muffle = c.createBiquadFilter()
+    this.muffle.type = 'lowpass'
+    this.muffle.frequency.value = 20000
+    this.muffle.Q.value = 0.5
+    this.world = c.createGain()
+    this.world.connect(this.muffle).connect(this.master)
+
+    this.buses = { sfx: c.createGain(), amb: c.createGain(), ui: c.createGain() }
+    this.buses.sfx.connect(this.world)
+    // Ambience gets gentle compression so sparse spikes in the beds stay subtle.
+    // Web Audio compressors add automatic make-up gain ((1/gain at 0 dBFS)^0.6),
+    // which would make the beds LOUDER — cancel it.
+    const ambComp = c.createDynamicsCompressor()
+    const T = -34, R = 3
+    ambComp.threshold.value = T; ambComp.knee.value = 10; ambComp.ratio.value = R
+    ambComp.attack.value = 0.01; ambComp.release.value = 0.4
+    const makeupDb = 0.6 * -(T - T / R)
+    const ambTrim = c.createGain(); ambTrim.gain.value = 10 ** (-makeupDb / 20)
+    this.buses.amb.connect(ambComp).connect(ambTrim).connect(this.world)
+    this.buses.ui.connect(this.master)
+    this.buses.amb.gain.value = AMB_BUS
+
+    this.reverbIn  = c.createGain()
+    this.convolver = c.createConvolver()
+    this.reverbWet = c.createGain()
+    this.reverbIn.connect(this.convolver).connect(this.reverbWet).connect(this.world)
+
+    // Sub-bass bed: looping brown noise → low-pass, breathing on a slow LFO
+    const bn = c.createBuffer(1, c.sampleRate * 6, c.sampleRate)
+    const bd = bn.getChannelData(0)
+    let last = 0
+    let ss = 0
+    for (let i = 0; i < bd.length; i++) { last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02; bd[i] = last; ss += last * last }
+    const norm = TARGET_RMS / Math.sqrt(ss / bd.length)   // same -20 dBFS reference as the samples
+    for (let i = 0; i < bd.length; i++) bd[i] *= norm
+    const fade = Math.floor(c.sampleRate * 0.25)   // crossfade the loop seam
+    for (let i = 0; i < fade; i++) { const t = i / fade; bd[i] = bd[i] * t + bd[bd.length - fade + i] * (1 - t) }
+    const src = c.createBufferSource(); src.buffer = bn; src.loop = true; src.loopEnd = (bd.length - fade) / c.sampleRate
+    this.rumbleLp = c.createBiquadFilter(); this.rumbleLp.type = 'lowpass'; this.rumbleLp.Q.value = 0.7
+    this.rumble = c.createGain(); this.rumble.gain.value = 0
+    const breath = c.createGain(); breath.gain.value = 1
+    const lfo = c.createOscillator(); lfo.frequency.value = 0.06
+    const depth = c.createGain(); depth.gain.value = 0.35
+    lfo.connect(depth).connect(breath.gain)
+    src.connect(this.rumbleLp).connect(breath).connect(this.rumble).connect(this.buses.amb)
+    src.start(); lfo.start()
+    this.setRoom('homeBase')
+
+    // 0.5 s of white noise for synth layers
+    this.noise = c.createBuffer(1, Math.floor(c.sampleRate * 0.5), c.sampleRate)
+    const nd = this.noise.getChannelData(0)
+    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1
+
+    this.ext = new Audio().canPlayType('audio/webm; codecs="opus"') ? 'webm' : 'mp3'
+
+    try { this.muted = localStorage.getItem(MUTE_STORE) === '1' } catch { /* storage blocked */ }
+    this.master.gain.value = this.muted ? 0 : this.masterVolume
+
+    // Browsers start the context suspended until a gesture
+    const unlock = () => { if (this.ctx.state !== 'running') void this.ctx.resume() }
+    for (const ev of ['pointerdown', 'keydown', 'touchend']) window.addEventListener(ev, unlock, { capture: true })
+
   }
 
-  // One-shot SFX, optionally positioned in 3D world space.
-  play(key: SoundKey, worldX?: number, worldZ?: number): number {
-    if (this.muted) return NULL_SOUND_ID
-    const h = this.getOrCreate(key)
-    if (!h) return NULL_SOUND_ID
-    const id = h.play()
+  // ── Loading ────────────────────────────────────────────────────────────────
 
-    const cfg = SOUND_REGISTRY[key]
-    if (cfg.rateRandom) {
-      const [min, max] = cfg.rateRandom
-      h.rate(min + Math.random() * (max - min), id)
+  // Call once the first frame is up (not at module load, where it competed with
+  // the JS + physics WASM for bandwidth).  Every one-shot loads now — they must
+  // be ready the instant they're triggered — plus the den's ambience.  Other
+  // loops (colony/boss beds, flame, heartbeat — the multi-MB files) load on
+  // their first playLoop(), which already waits for the buffer and fades in.
+  preload(): void {
+    const files = new Set<string>()
+    for (const cfg of Object.values(SOUND_REGISTRY)) if (!cfg.loop) files.add(cfg.file)
+    files.add(SOUND_REGISTRY.amb_homebase.file)
+    const queue = [...files]
+    let i = 0
+    const next = (): void => {
+      if (i >= queue.length) return
+      void this.load(queue[i++]).then(next)
     }
-    if (worldX !== undefined && worldZ !== undefined) {
-      h.pos(worldX, 0, worldZ, id)
-    }
-    return id
+    for (let k = 0; k < LOAD_CONCURRENCY; k++) next()
   }
 
-  // Start a looping sound (idempotent — repeated calls return the same id).
-  playLoop(key: SoundKey, worldX?: number, worldZ?: number): number {
-    if (this.muted) return NULL_SOUND_ID
-    const existing = this.activeLoops.get(key)
-    if (existing !== undefined) {
-      const h = this.sounds.get(key)
-      // If the ID is stale (e.g. the initial play was blocked by browser autoplay
-      // policy before the first user gesture), clear it and fall through to retry.
-      if (h && h.playing(existing)) {
-        if (worldX !== undefined && worldZ !== undefined) {
-          h.pos(worldX, 0, worldZ, existing)
-        }
-        return existing
+  private load(file: string): Promise<Analysed | null> {
+    const have = this.buffers.get(file)
+    if (have) return Promise.resolve(have)
+    const pending = this.loading.get(file)
+    if (pending) return pending
+    const p = this.fetchDecode(file, this.ext)
+      .catch(() => this.ext === 'webm' ? this.fetchDecode(file, 'mp3') : null)
+      .catch(() => null)
+      .then(buf => {
+        this.loading.delete(file)
+        if (!buf) { this.failed.add(file); return null }
+        const max = FILE_MAX_LOOP.get(file)
+        if (max !== undefined) buf = cropLoop(this.ctx, buf, max)
+        const a = analyse(buf, FILE_TRIM_DB.get(file) ?? TRIM_REL_DB)
+        this.buffers.set(file, a)
+        return a
+      })
+    this.loading.set(file, p)
+    return p
+  }
+
+  private async fetchDecode(file: string, ext: string): Promise<AudioBuffer> {
+    const res = await fetch(`/audio/${file}.${ext}`)
+    if (!res.ok) throw new Error(`${res.status}`)
+    return await this.ctx.decodeAudioData(await res.arrayBuffer())
+  }
+
+  // ── One-shots ──────────────────────────────────────────────────────────────
+
+  play(key: SoundKey, worldX?: number, worldZ?: number, opts: { volume?: number; rate?: number } = {}): number {
+    if (this.muted || this.ctx.state !== 'running') return NULL_SOUND_ID
+    const cfg = SOUND_REGISTRY[key]
+    const a = this.buffers.get(cfg.file)
+    if (!a) { if (!this.failed.has(cfg.file)) void this.load(cfg.file); return NULL_SOUND_ID }   // late = worse than silent
+
+    const now = this.ctx.currentTime
+    const last = this.lastPlay.get(key)
+    if (last !== undefined && now - last < (cfg.minGap ?? 0.03)) return NULL_SOUND_ID
+    this.lastPlay.set(key, now)
+
+    // Voice limits: oldest of this key, then oldest overall
+    const same = this.voices.filter(v => v.key === key && !v.ended)
+    if (same.length >= (cfg.maxVoices ?? 4)) this.release(same[0], 0.02)
+    if (this.voices.length >= MAX_VOICES) {
+      const victim = this.voices.find(x => !x.loop && !x.ended)   // never steal a loop
+      if (victim) this.release(victim, 0.02)
+    }
+
+    const v = this.startVoice(key, a, cfg, worldX, worldZ, opts, false)
+    if (cfg.maxLen) {
+      const rate = (v.src as AudioBufferSourceNode).playbackRate.value
+      const len  = cfg.maxLen
+      if ((a.buffer.duration - a.start) / rate > len) {
+        v.gain.gain.setValueAtTime(v.level, now + len * 0.7)
+        v.gain.gain.linearRampToValueAtTime(0, now + len)
+        v.src.stop(now + len + 0.02)
       }
-      // Stale entry — sound is not actually playing.
-      this.activeLoops.delete(key)
     }
-    const h = this.getOrCreate(key)
-    if (!h) return NULL_SOUND_ID
-    const id = h.play()
-    if (worldX !== undefined && worldZ !== undefined) {
-      h.pos(worldX, 0, worldZ, id)
+    return v.id
+  }
+
+  // ── Loops ──────────────────────────────────────────────────────────────────
+  // `owner` makes the loop per-instance (each centipede has its own skitter).
+  // Idempotent: repeated calls just move it.
+
+  playLoop(key: SoundKey, worldX?: number, worldZ?: number, owner?: object): number {
+    const id = this.loopId(key, owner)
+    const cur = this.loops.get(id)
+    if (cur) {
+      if (worldX !== undefined && worldZ !== undefined) { cur.x = worldX; cur.z = worldZ; if (cur.voice) { cur.voice.x = worldX; cur.voice.z = worldZ } }
+      return cur.voice?.id ?? NULL_SOUND_ID
     }
-    this.activeLoops.set(key, id)
-    return id
+    const entry: LoopEntry = { voice: null, pending: true, x: worldX, z: worldZ }
+    this.loops.set(id, entry)
+    const cfg = SOUND_REGISTRY[key]
+    void this.load(cfg.file).then(a => {
+      if (!a || this.loops.get(id) !== entry) return   // stopped before it loaded
+      entry.pending = false
+      entry.voice = this.startVoice(key, a, cfg, entry.x, entry.z, {}, true)
+    })
+    return NULL_SOUND_ID
   }
 
-  stopLoop(key: SoundKey): void {
-    const id = this.activeLoops.get(key)
-    if (id === undefined) return
-    this.sounds.get(key)?.stop(id)
-    this.activeLoops.delete(key)
+  stopLoop(key: SoundKey, owner?: object): void {
+    const id = this.loopId(key, owner)
+    const e = this.loops.get(id)
+    if (!e) return
+    this.loops.delete(id)
+    if (e.voice) this.release(e.voice, SOUND_REGISTRY[key].bus === 'amb' ? 1.2 : 0.08)
   }
 
-  // Re-position a running loop (for moving enemies).
-  updateLoopPosition(key: SoundKey, worldX: number, worldZ: number): void {
-    const id = this.activeLoops.get(key)
-    if (id === undefined) return
-    this.sounds.get(key)?.pos(worldX, 0, worldZ, id)
+  updateLoopPosition(key: SoundKey, worldX: number, worldZ: number, owner?: object): void {
+    const e = this.loops.get(this.loopId(key, owner))
+    if (!e) return
+    e.x = worldX; e.z = worldZ
+    if (e.voice) { e.voice.x = worldX; e.voice.z = worldZ }
   }
 
-  // Move the global listener — call every frame with Webbs' world position.
-  setListenerPosition(worldX: number, worldZ: number): void {
-    Howler.pos(worldX, 0, worldZ)
+  // Move every loop an owner started (call from the owner's per-frame sync)
+  moveOwner(owner: object, worldX: number, worldZ: number): void {
+    const n = this.owners.get(owner)
+    if (n === undefined) return
+    const tag = `#${n}`
+    for (const [id, e] of this.loops) {
+      if (!id.endsWith(tag)) continue
+      e.x = worldX; e.z = worldZ
+      if (e.voice) { e.voice.x = worldX; e.voice.z = worldZ }
+    }
+  }
+
+  // Stop every loop an owner started (enemy cleanup)
+  stopOwner(owner: object): void {
+    const n = this.owners.get(owner)
+    if (n === undefined) return
+    const tag = `#${n}`
+    for (const [id, e] of [...this.loops]) {
+      if (!id.endsWith(tag)) continue
+      this.loops.delete(id)
+      if (e.voice) this.release(e.voice, 0.08)
+    }
+  }
+
+  stopAllLoops(): void {
+    for (const [id, e] of [...this.loops]) {
+      this.loops.delete(id)
+      if (e.voice) this.release(e.voice, e.voice.key && SOUND_REGISTRY[e.voice.key].bus === 'amb' ? 1.2 : 0.08)
+    }
+  }
+
+  // ── Synth impact layer ─────────────────────────────────────────────────────
+  // Weight under the sampled hit: a pitched-down sine "thump" plus a short
+  // filtered-noise crack; weak points add a bright inharmonic ting.
+  impact(kind: ImpactKind, worldX?: number, worldZ?: number): void {
+    if (this.muted || this.ctx.state !== 'running') return
+    const T = {
+      light:  { f0: 170, f1: 75, len: 0.10, lvl: 0.35, crack: 0.12 },
+      medium: { f0: 130, f1: 55, len: 0.14, lvl: 0.55, crack: 0.16 },
+      heavy:  { f0: 105, f1: 40, len: 0.20, lvl: 0.80, crack: 0.22 },
+      weak:   { f0: 140, f1: 60, len: 0.14, lvl: 0.55, crack: 0.18 },
+      kill:   { f0: 95,  f1: 32, len: 0.28, lvl: 0.90, crack: 0.20 },
+      hurt:   { f0: 150, f1: 50, len: 0.18, lvl: 0.70, crack: 0.10 },
+    }[kind]
+    const c = this.ctx, t = c.currentTime
+
+    const osc = c.createOscillator()
+    osc.frequency.setValueAtTime(T.f0, t)
+    osc.frequency.exponentialRampToValueAtTime(T.f1, t + T.len)
+    this.synthVoice(osc, T.lvl, 0.003, T.len, worldX, worldZ, 0.3)
+
+    const crack = c.createBufferSource()
+    crack.buffer = this.noise
+    crack.playbackRate.value = 0.8 + Math.random() * 0.4
+    const bp = c.createBiquadFilter()
+    bp.type = 'bandpass'; bp.frequency.value = kind === 'hurt' ? 900 : 2200; bp.Q.value = 0.9
+    crack.connect(bp)
+    this.synthVoice(crack, T.crack, 0.001, 0.05, worldX, worldZ, 0.6, bp)
+
+    if (kind === 'weak' || kind === 'kill') {
+      for (const [f, l] of kind === 'weak' ? [[2637, 0.16], [3951, 0.09]] : [[1760, 0.10]]) {
+        const ping = c.createOscillator()
+        ping.type = 'triangle'
+        ping.frequency.value = f
+        this.synthVoice(ping, l, 0.002, 0.22, worldX, worldZ, 1)
+      }
+    }
+  }
+
+  // ── Listener / mix ─────────────────────────────────────────────────────────
+
+  // Call every frame: listener (player) position, the camera's right vector on
+  // the ground plane, and the zone's creature scale.
+  setListener(x: number, z: number, rightX: number, rightZ: number, unit: number): void {
+    this.lx = x; this.lz = z
+    const l = Math.hypot(rightX, rightZ) || 1
+    this.rx = rightX / l; this.rz = rightZ / l
+    this.unit = unit
+    this.updateSpatial()
+  }
+
+  setListenerPosition(x: number, z: number): void {
+    this.lx = x; this.lz = z
+    this.updateSpatial()
+  }
+
+  setRoom(room: AudioRoom): void {
+    const r = ROOMS[room]
+    this.convolver.buffer = makeImpulse(this.ctx, r.decay, r.damp)
+    this.reverbWet.gain.setTargetAtTime(r.wet, this.ctx.currentTime, 0.1)
+    this.rumble.gain.setTargetAtTime(r.rumble, this.ctx.currentTime, 0.8)
+    this.rumbleLp.frequency.setTargetAtTime(r.rumbleHz, this.ctx.currentTime, 0.3)
+  }
+
+  // Pause menus etc.: the world goes dull and quieter; UI stays crisp.
+  setMuffled(on: boolean): void {
+    const t = this.ctx.currentTime
+    this.muffle.frequency.setTargetAtTime(on ? 700 : 20000, t, on ? 0.06 : 0.12)
+    this.world.gain.setTargetAtTime(on ? 0.6 : 1, t, 0.08)
+  }
+
+  // Hold ambience at a level (story text, discoveries) — 1 = normal
+  setAmbienceLevel(level: number): void {
+    this.ambLevel = level
+    const g = this.buses.amb.gain, t = this.ctx.currentTime
+    g.cancelScheduledValues(t)
+    g.setTargetAtTime(AMB_BUS * level, t, 0.25)
+  }
+
+  // Briefly pull ambience down under a big moment (boss roar), then recover
+  duck(level: number, seconds: number): void {
+    const g = this.buses.amb.gain, t = this.ctx.currentTime
+    g.cancelScheduledValues(t)
+    g.setTargetAtTime(AMB_BUS * this.ambLevel * level, t, 0.05)
+    g.setTargetAtTime(AMB_BUS * this.ambLevel, t + seconds, 0.5)
   }
 
   setMasterVolume(v: number): void {
     this.masterVolume = Math.max(0, Math.min(1, v))
-    Howler.volume(this.masterVolume)
+    if (!this.muted) this.master.gain.setTargetAtTime(this.masterVolume, this.ctx.currentTime, 0.02)
   }
 
-  mute(): void   { this.muted = true;  Howler.mute(true) }
-  unmute(): void { this.muted = false; Howler.mute(false) }
+  mute(): void   { this.setMute(true) }
+  unmute(): void { this.setMute(false) }
   isMuted(): boolean { return this.muted }
 
-  // Stop every active loop — call on scene teardown to keep ambient sounds
-  // from carrying across into the next zone.
-  stopAllLoops(): void {
-    for (const key of Array.from(this.activeLoops.keys())) this.stopLoop(key)
+  private setMute(on: boolean): void {
+    this.muted = on
+    this.master.gain.setTargetAtTime(on ? 0 : this.masterVolume, this.ctx.currentTime, 0.03)
+    try { localStorage.setItem(MUTE_STORE, on ? '1' : '0') } catch { /* storage blocked */ }
   }
+
+  // Dev: what's loaded / playing
+  debug(): { loaded: number; failed: string[]; voices: number; loops: string[]; state: string } {
+    return { loaded: this.buffers.size, failed: [...this.failed], voices: this.voices.length, loops: [...this.loops.keys()], state: this.ctx.state }
+  }
+
+  // ── Internals ──────────────────────────────────────────────────────────────
+
+  private loopId(key: SoundKey, owner?: object): string {
+    if (!owner) return key
+    let n = this.owners.get(owner)
+    if (n === undefined) { n = this.nextOwner++; this.owners.set(owner, n) }
+    return `${key}#${n}`
+  }
+
+  private startVoice(key: SoundKey, a: Analysed, cfg: SoundConfig, x: number | undefined, z: number | undefined,
+                     opts: { volume?: number; rate?: number }, loop: boolean): Voice {
+    const c = this.ctx, t = c.currentTime
+    const src = c.createBufferSource()
+    src.buffer = a.buffer
+    let rate = (cfg.rate ?? 1) * (opts.rate ?? 1)
+    if (cfg.rateRandom) rate *= cfg.rateRandom[0] + Math.random() * (cfg.rateRandom[1] - cfg.rateRandom[0])
+    src.playbackRate.value = rate
+    if (loop) src.loop = true
+
+    const base = a.gain * cfg.volume * (opts.volume ?? 1)
+    const bus  = cfg.bus ?? 'sfx'
+    const gain = c.createGain()
+    let head: AudioNode = src
+    if (cfg.lowpass) {
+      const f = c.createBiquadFilter()
+      f.type = 'lowpass'; f.frequency.value = cfg.lowpass
+      head.connect(f); head = f
+    }
+    const positional = x !== undefined && z !== undefined
+    let lp: BiquadFilterNode | null = null, pan: StereoPannerNode | null = null
+    if (positional) {
+      lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 20000
+      head.connect(lp); head = lp
+    }
+    head.connect(gain)
+    let out: AudioNode = gain
+    if (positional) { pan = c.createStereoPanner(); gain.connect(pan); out = pan }
+    out.connect(this.buses[bus])
+    const send = cfg.reverb ?? (bus === 'sfx' ? 1 : 0)
+    if (send > 0) {
+      const s = c.createGain(); s.gain.value = send
+      out.connect(s).connect(this.reverbIn)
+    }
+
+    const v: Voice = { id: this.nextId++, key, src, gain, base, level: base, loop, pan, lp, x, z, started: t, ended: false }
+    if (positional) {
+      const { att, p, cutoff } = this.place(x!, z!)
+      v.level = base * att
+      pan!.pan.value = p
+      lp!.frequency.value = cutoff
+    }
+    // Loops fade in (ambience slowly); one-shots start hard — transients matter
+    const fadeIn = loop ? (bus === 'amb' ? 1.2 : 0.05) : 0
+    if (fadeIn > 0) { gain.gain.setValueAtTime(0, t); gain.gain.linearRampToValueAtTime(v.level, t + fadeIn) }
+    else gain.gain.value = v.level
+    src.onended = () => this.retire(v)
+    src.start(t, loop ? 0 : a.start)
+    this.voices.push(v)
+    return v
+  }
+
+  private synthVoice(src: AudioScheduledSourceNode, level: number, attack: number, decay: number,
+                     x: number | undefined, z: number | undefined, send: number, tail?: AudioNode): void {
+    const c = this.ctx, t = c.currentTime
+    const env = c.createGain()
+    env.gain.setValueAtTime(0, t)
+    env.gain.linearRampToValueAtTime(level, t + attack)
+    env.gain.exponentialRampToValueAtTime(0.0005, t + attack + decay)
+    ;(tail ?? src).connect(env)
+    const out = c.createGain()          // distance attenuation
+    const pan = c.createStereoPanner()
+    if (x !== undefined && z !== undefined) {
+      const { att, p } = this.place(x, z)
+      out.gain.value = att
+      pan.pan.value = p
+    }
+    env.connect(out).connect(pan).connect(this.buses.sfx)
+    const s = c.createGain(); s.gain.value = send
+    pan.connect(s).connect(this.reverbIn)
+    // Short-lived: positions aren't tracked per frame (x/z left undefined)
+    const v: Voice = { id: this.nextId++, key: null, src, gain: env, base: level, level, loop: false, pan, lp: null, started: t, ended: false }
+    src.onended = () => this.retire(v)
+    src.start(t)
+    src.stop(t + attack + decay + 0.05)
+    this.voices.push(v)
+  }
+
+  private release(v: Voice, fade: number): void {
+    if (v.ended) return
+    v.ended = true
+    const t = this.ctx.currentTime
+    v.gain.gain.cancelScheduledValues(t)
+    v.gain.gain.setValueAtTime(v.gain.gain.value, t)
+    v.gain.gain.linearRampToValueAtTime(0, t + fade)
+    try { v.src.stop(t + fade + 0.01) } catch { /* already stopped */ }
+  }
+
+  private retire(v: Voice): void {
+    v.ended = true
+    const i = this.voices.indexOf(v)
+    if (i >= 0) this.voices.splice(i, 1)
+    v.gain.disconnect()
+    v.pan?.disconnect()
+  }
+
+  private place(x: number, z: number): { att: number; p: number; cutoff: number } {
+    const dx = x - this.lx, dz = z - this.lz
+    const u = Math.max(0.01, this.unit)
+    const du = Math.hypot(dx, dz) / u
+    const far = Math.max(0, du - NEAR_UNITS) / FALLOFF
+    const att = 1 / (1 + far * far)
+    const side = (dx * this.rx + dz * this.rz) / (PAN_UNITS * u)
+    return { att, p: Math.max(-1, Math.min(1, side)) * 0.85, cutoff: Math.max(700, 20000 * att ** 1.6) }
+  }
+
+  private spatialise(v: Voice): void {
+    if (v.x === undefined || v.z === undefined || !v.pan || v.ended) return
+    const { att, p, cutoff } = this.place(v.x, v.z)
+    const t = this.ctx.currentTime
+    v.pan.pan.setTargetAtTime(p, t, 0.05)
+    v.lp?.frequency.setTargetAtTime(cutoff, t, 0.05)
+    // Only steady (looping) voices track level — one-shots keep their envelopes
+    if (v.loop) v.gain.gain.setTargetAtTime(v.base * att, t, 0.08)
+  }
+
+  private updateSpatial(): void {
+    for (const v of this.voices) if (v.x !== undefined) this.spatialise(v)
+  }
+}
+
+// ── Buffer analysis: leading-silence trim + loudness normalisation ───────────
+function analyse(buffer: AudioBuffer, trimDb: number): Analysed {
+  const ch = buffer.getChannelData(0)
+  let peak = 0
+  for (let i = 0; i < ch.length; i++) { const v = Math.abs(ch[i]); if (v > peak) peak = v }
+  if (peak < 1e-5) return { buffer, start: 0, gain: 1 }
+  const thr = Math.max(peak * 10 ** (trimDb / 20), TRIM_ABS)
+  let first = 0, last = ch.length - 1
+  while (first < ch.length && Math.abs(ch[first]) < thr) first++
+  while (last > first && Math.abs(ch[last]) < thr) last--
+  let sum = 0
+  for (let i = first; i <= last; i++) sum += ch[i] * ch[i]
+  const rms  = Math.sqrt(sum / Math.max(1, last - first + 1))
+  const gain = Math.min(TARGET_RMS / Math.max(rms, 1e-6), MAX_BOOST, PEAK_CEIL / peak)
+  return { buffer, start: Math.max(0, first / buffer.sampleRate - TRIM_PREROLL), gain }
+}
+
+// Crop a long loop to `seconds`, crossfading the tail of the kept part into
+// what followed it so the new seam is as smooth as the original material
+// (decoded PCM is ~0.2 MB/s; a 219 s bed was 42 MB).
+function cropLoop(ctx: BaseAudioContext, src: AudioBuffer, seconds: number): AudioBuffer {
+  const sr = src.sampleRate
+  const L = Math.floor(seconds * sr), X = Math.floor(1.5 * sr)
+  if (src.length < L + X) return src
+  const out = ctx.createBuffer(src.numberOfChannels, L, sr)
+  for (let c = 0; c < src.numberOfChannels; c++) {
+    const i0 = src.getChannelData(c), o = out.getChannelData(c)
+    o.set(i0.subarray(0, L))
+    // Wrapping from o[L-1] lands on o[0]: start it as the continuation i0[L]
+    // and blend (equal power) back into the original opening by X.
+    for (let i = 0; i < X; i++) {
+      const t = (i / X) * Math.PI / 2
+      o[i] = i0[L + i] * Math.cos(t) + i0[i] * Math.sin(t)
+    }
+  }
+  return out
+}
+
+// Stereo exponential-decay noise impulse, darkened by a one-pole low-pass
+function makeImpulse(ctx: BaseAudioContext, decay: number, damp: number): AudioBuffer {
+  const sr = ctx.sampleRate
+  const len = Math.floor(sr * decay)
+  const pre = Math.floor(sr * 0.012)
+  const buf = ctx.createBuffer(2, len + pre, sr)
+  for (let c = 0; c < 2; c++) {
+    const d = buf.getChannelData(c)
+    let lp = 0
+    for (let i = 0; i < len; i++) {
+      const t = i / sr
+      lp += (1 - damp) * ((Math.random() * 2 - 1) - lp)
+      d[pre + i] = lp * Math.exp(-6.9 * t / decay)
+    }
+  }
+  return buf
 }
 
 export const audio = new AudioManager()

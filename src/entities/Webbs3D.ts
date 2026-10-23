@@ -3,8 +3,10 @@ import { WeaponSystem, WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_DATA, WEAPON_COLORS } from '../config/WeaponData'
 import { type CollisionBody, physicsWorld } from '../core/PhysicsWorld'
 import { InputManager } from '../core/InputManager'
-import { SpiderLegs, createFuzzyBodyTexture } from './SpiderLegs'
+import { SpiderLegs, createFuzzyBodyTexture, WEBBS_RIM } from './SpiderLegs'
+import { addRim } from '../env/Materials'
 import { audio } from '../systems/AudioManager'
+import { CAMERA_YAW, CAMERA_DIR_X, CAMERA_DIR_Z } from '../core/CameraRig'
 
 // ─── Scale factor ─────────────────────────────────────────────────────────────
 // 100 Phaser pixels = 1 Three.js world unit
@@ -20,9 +22,29 @@ export const PLAYER_MAX_HP  = 100
 
 const STAMINA_REGEN      = 40             // per second
 const STAMINA_RECOVER_AT = 0.2            // fraction of max to clear winded
+// Regen pauses briefly after each spend — otherwise 40/s regen out-paces every
+// weapon (~30/s at full rate) and stamina never runs out.
+const STAMINA_REGEN_DELAY = 0.6           // s
+const ENERGY_RECOVER_AT  = 0.25           // fraction of max to clear an energy lockout
 const WINDED_SPEED_MULT  = 0.65
 const REGEN_DELAY_S      = 6             // seconds before HP regen starts
 const REGEN_RATE         = 2             // HP per second
+// Body yaw turn rate (per second factor for the lerp).  ~12 → a 90° turn takes
+// ~0.15s: fast enough to feel responsive, slow enough that legs visibly sweep.
+const TURN_RATE          = 12
+// Locomotion response (1/s, exponential).  Bursts to speed in ~0.13s and skids
+// to a stop in ~0.2s instead of starting/stopping on a single frame.
+const MOVE_ACCEL         = 18
+const MOVE_DECEL         = 12
+// Cap on body yaw speed — a 180° reversal takes ~0.35s, so the legs can visibly
+// step around instead of the body snapping and dragging its planted feet.
+const MAX_TURN_SPEED     = 9    // rad/s
+// After a hit Webbs can't be hit again for a beat (blinks) — stops packs from
+// chain-stunning him.  Lethal/unblockable damage ignores it.
+const INVULN_AFTER_HIT   = 0.6  // s
+const HIT_SHOVE          = 4.0  // wu/s impulse away from the attacker
+const DODGE_DECAY        = 4.35 // 1/s
+const DEATH_CURL_TIME    = 0.35 // s (world time — slowed ×0.3 during the death beat) to fold in
 
 // ─── Leg colors (used by Phase C IK legs) ────────────────────────────────────
 export const LEG_COLORS = [
@@ -43,16 +65,20 @@ export class Webbs3D {
   shudderTimer        = 0
   halfHpLeapTriggered = false
   private dodgeTimer  = 0
+  private dyingT      = -1   // ≥ 0 while the death beat plays (input ignored)
+  private invulnT     = 0
+  private attackSlowT = 0
+  private attackSlowMult = 1
   private dodgeVx     = 0
   private dodgeVz     = 0
 
   // Round 8 Issue 6: presented item visual during celebration
   private presentedItemMesh: THREE.Object3D | null = null
 
-  // Round 10 — footstep cadence (Webbs has 8 legs but we trigger one sound per step cycle)
-  private stepTimer = 0
   private deathSoundFired = false
   private windedSoundFired = false
+  private regenDelayT      = 0
+  energyLocked             = false   // emptied: no energy spends until ENERGY_RECOVER_AT
   floorType: 'dirt' | 'stone' = 'dirt'
 
   // ── Gameplay fields (all carried over from Webbs.ts) ──────────────────────
@@ -71,28 +97,30 @@ export class Webbs3D {
   weaponSystem: WeaponSystem
 
   legs: SpiderLegs
-  moveDir = new THREE.Vector2(0, 0)   // last normalized movement direction for gait
+  private moveVx = 0   // smoothed locomotion intent (wu/s)
+  private moveVz = 0
 
   // Celebration pose — set true while pickup celebration is showing (Round 7 Issue 1)
   celebratingPose          = false
   private celebPoseStartMs = 0
   private preCelebRotation = 0   // saved rotation to restore after celebration
 
-  // Camera offset constants must match main.ts CAM_OFFSET so we can rotate Webbs to face the camera
-  private readonly CAM_OFFSET_X = 18
-  private readonly CAM_OFFSET_Z = 18
 
   private bodyMat:          THREE.MeshStandardMaterial | THREE.MeshToonMaterial
   private gradientMap:      THREE.Texture
   private webLauncherMount: THREE.Group | null = null
   private timeSinceDamage   = 9999
   private idleTime          = 0
-  private bodyScale         = 1.0   // applied to speed + collider; set from main.ts
+  private bobY              = 0
+  private bodyScale         = 1.0   // applied to speed + collider + legs; per-zone via setScale()
+  private threeScene:       THREE.Scene
 
   constructor(threeScene: THREE.Scene, x: number, z: number, gradientMap: THREE.Texture, scale = 1.0) {
     this.bodyScale   = scale
     this.gradientMap = gradientMap
+    this.threeScene  = threeScene
     this.group = new THREE.Group()
+    this.group.rotation.order = 'YXZ'   // yaw = heading, then local pitch/roll from the legs
     this.group.position.set(x, 0, z)
     this.weaponSystem = new WeaponSystem(WEAPON_DATA)
 
@@ -179,10 +207,12 @@ export class Webbs3D {
     this.group.add(shadowDisc)
 
     threeScene.add(this.group)
+    addRim(this.group, WEBBS_RIM)
 
     // IK legs — added directly to the scene (world-space positioning)
-    this.legs = new SpiderLegs(threeScene, gradientMap, scale)
+    this.legs = this.buildLegs(scale)
     this.legs.initFeetAt(new THREE.Vector3(x, 0, z), 0)
+    this.group.scale.setScalar(scale)
 
     // Physics body on the XZ ground plane
     this.collisionBody = physicsWorld.add({
@@ -197,13 +227,34 @@ export class Webbs3D {
 
   // ── Called each frame with the current input state ────────────────────────
   update(delta: number, input: InputManager): void {
+    // Dying: no control, legs curl over DEATH_CURL_TIME, the body slides to a stop
+    if (this.dyingT >= 0) {
+      this.dyingT += delta
+      const t = Math.min(1, this.dyingT / DEATH_CURL_TIME)
+      this.legs.collapse = 1 - (1 - t) * (1 - t)
+      this.collisionBody.velocity.x = this.collisionBody.velocity.z = 0
+      this.moveVx = this.moveVz = 0
+      this.group.visible = true
+      return
+    }
     // Lazily attach web-launcher mount once the item is collected
     if (this.hasWebLauncher && !this.webLauncherMount) {
       this.webLauncherMount = this.buildWebLauncherMount()
       this.group.add(this.webLauncherMount)
     }
 
-    const speed = (this.winded ? SPEED_WU * WINDED_SPEED_MULT : SPEED_WU) * this.bodyScale
+    // Committed swings slow him down (weight); see commitAttack()
+    if (this.attackSlowT > 0) this.attackSlowT -= delta
+    const commit = this.attackSlowT > 0 ? this.attackSlowMult : 1
+    const speed = (this.winded ? SPEED_WU * WINDED_SPEED_MULT : SPEED_WU) * this.bodyScale * commit
+
+    // Post-hit invulnerability blink
+    if (this.invulnT > 0) {
+      this.invulnT -= delta
+      this.group.visible = this.invulnT <= 0 || Math.floor(this.invulnT * 18) % 2 === 0
+    } else if (!this.group.visible) {
+      this.group.visible = true
+    }
 
     // Round 9 Issue 2 — camera-aligned WASD.
     // The camera sits at world offset (18, 18, 18) — rotated 45° around Y from
@@ -216,29 +267,37 @@ export class Webbs3D {
     if (input.isDown('KeyA') || input.isDown('ArrowLeft'))  inputX = -1
     if (input.isDown('KeyD') || input.isDown('ArrowRight')) inputX =  1
     if (inputX !== 0 && inputZ !== 0) { inputX *= 0.707; inputZ *= 0.707 }
+    const stick = input.getStick()   // touch: analog, same screen-space axes as WASD
+    if (stick && (stick.x !== 0 || stick.y !== 0)) { inputX = stick.x; inputZ = stick.y }
 
-    // Camera offset must match main.ts CAM_OFFSET. atan2(18,18) = π/4.
-    const camAngle = Math.atan2(this.CAM_OFFSET_X, this.CAM_OFFSET_Z)
-    const camCos   = Math.cos(camAngle)
-    const camSin   = Math.sin(camAngle)
+    // Rotate input by the camera's compass bearing (single source: CameraRig)
+    const camCos   = Math.cos(CAMERA_YAW)
+    const camSin   = Math.sin(CAMERA_YAW)
     const dx =  inputX * camCos + inputZ * camSin
     const dz = -inputX * camSin + inputZ * camCos
 
-    // Round 8 Issue 3: recoil overrides input velocity briefly when hit
+    // Locomotion intent eases toward the input target (see MOVE_ACCEL/DECEL)
+    const ka = 1 - Math.exp(-((dx !== 0 || dz !== 0) ? MOVE_ACCEL : MOVE_DECEL) * delta)
+    this.moveVx += (dx * speed - this.moveVx) * ka
+    this.moveVz += (dz * speed - this.moveVz) * ka
+
+    // Round 8 Issue 3: dodge / recoil override intent briefly
     if (this.dodgeTimer > 0) {
       this.dodgeTimer -= delta
-      this.collisionBody.velocity.x = this.dodgeVx
-      this.collisionBody.velocity.z = this.dodgeVz
-      this.dodgeVx *= 0.93
-      this.dodgeVz *= 0.93
+      this.collisionBody.velocity.x = this.moveVx = this.dodgeVx
+      this.collisionBody.velocity.z = this.moveVz = this.dodgeVz
+      // Frame-rate independent decay (≡ ×0.93 per frame at 60 Hz)
+      const k = Math.exp(-DODGE_DECAY * delta)
+      this.dodgeVx *= k
+      this.dodgeVz *= k
     } else if (this.recoilTimer > 0) {
       this.recoilTimer -= delta
       const k = Math.max(0, this.recoilTimer / 0.18)
-      this.collisionBody.velocity.x = dx * speed * (1 - k) + this.recoilVx * k
-      this.collisionBody.velocity.z = dz * speed * (1 - k) + this.recoilVz * k
+      this.collisionBody.velocity.x = this.moveVx * (1 - k) + this.recoilVx * k
+      this.collisionBody.velocity.z = this.moveVz * (1 - k) + this.recoilVz * k
     } else {
-      this.collisionBody.velocity.x = dx * speed
-      this.collisionBody.velocity.z = dz * speed
+      this.collisionBody.velocity.x = this.moveVx
+      this.collisionBody.velocity.z = this.moveVz
     }
 
     // Round 8 Issue 3: shudder — small random offset on body meshes (NOT physics)
@@ -256,25 +315,19 @@ export class Webbs3D {
       this.abdMesh.position.z  = -0.18
     }
 
-    this.moveDir.set(dx, dz) // normalized (0.707 diagonal already applied above)
-
     if (dx !== 0 || dz !== 0) {
       this.facingX = dx
       this.facingZ = dz
-      this.group.rotation.y = Math.atan2(dx, dz)
-    }
-
-    // Round 10 — footstep cadence.  ~3.5 steps/s while moving on the ground.
-    const moving = (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) && this.dodgeTimer <= 0
-    if (moving) {
-      this.stepTimer += delta
-      if (this.stepTimer >= 0.28) {
-        this.stepTimer = 0
-        audio.play(this.floorType === 'stone' ? 'footstep_stone' : 'footstep_dirt',
-          this.collisionBody.x, this.collisionBody.z)
-      }
-    } else {
-      this.stepTimer = 0
+      // Smoothly turn the whole creature toward the heading instead of snapping.
+      // The legs read this.group.rotation.y each frame, so body + legs rotate as
+      // one unit and each leg keeps its identity through the turn (the weapon on
+      // leg N visibly sweeps to its new position rather than teleporting).
+      const target = Math.atan2(dx, dz)
+      let d = target - this.group.rotation.y
+      while (d >  Math.PI) d -= Math.PI * 2
+      while (d < -Math.PI) d += Math.PI * 2
+      const maxStep = MAX_TURN_SPEED * delta
+      this.group.rotation.y += Math.max(-maxStep, Math.min(maxStep, d * Math.min(1, TURN_RATE * delta)))
     }
 
     // Trigger one-shot death sound on the frame HP hits zero.
@@ -283,19 +336,17 @@ export class Webbs3D {
       audio.play('webbs_death', this.collisionBody.x, this.collisionBody.z)
     }
 
-    // Stamina + energy regen
-    if (this.stamina < this.maxStamina)
+    // Stamina + energy regen (stamina waits out the post-spend delay)
+    if (this.regenDelayT > 0) this.regenDelayT -= delta
+    else if (this.stamina < this.maxStamina)
       this.stamina = Math.min(this.maxStamina, this.stamina + STAMINA_REGEN * this.staminaRegenMult * delta)
     if (this.energy < this.maxEnergy)
       this.energy = Math.min(this.maxEnergy, this.energy + 5 * delta)
+    if (this.energyLocked && this.energy >= this.maxEnergy * ENERGY_RECOVER_AT) this.energyLocked = false
 
     // Winded: engages at 0 stamina, clears above 20% max
     if (this.stamina <= 0) {
-      if (!this.winded && !this.windedSoundFired) {
-        this.windedSoundFired = true
-        audio.play('stamina_winded', this.collisionBody.x, this.collisionBody.z)
-      }
-      this.winded = true
+      this.enterWinded()
     } else if (this.winded && this.stamina >= this.maxStamina * STAMINA_RECOVER_AT) {
       this.winded = false
       this.windedSoundFired = false
@@ -306,15 +357,57 @@ export class Webbs3D {
     if (this.timeSinceDamage > REGEN_DELAY_S && this.hp < this.hpMax && this.hp > 0)
       this.hp = Math.min(this.hpMax, this.hp + REGEN_RATE * delta)
 
-    // Idle body bob — gentle sine on group Y. syncPosition() only writes X/Z so this persists.
+    // Idle breathing — gentle sine layered on the leg-driven body height.
     this.idleTime += delta
-    this.group.position.y = Math.sin(this.idleTime * 2) * 0.012
+    this.bobY = Math.sin(this.idleTime * 2) * 0.012 * this.bodyScale
   }
 
   // ── Call after physicsWorld.update() to sync 3D group from physics body ──
+  // XZ only, from the interpolated render position (smooth between fixed
+  // physics steps).  Height and tilt come from the legs in updateLegs().
   syncPosition(): void {
-    this.group.position.x = this.collisionBody.x
-    this.group.position.z = this.collisionBody.z
+    this.group.position.x = this.collisionBody.renderX
+    this.group.position.z = this.collisionBody.renderZ
+  }
+
+  // Teleport (zone entry / respawn): body, render position and feet all jump together.
+  placeAt(x: number, z: number): void {
+    this.collisionBody.x = x
+    this.collisionBody.z = z
+    this.collisionBody.velocity.x = 0
+    this.collisionBody.velocity.z = 0
+    this.collisionBody.clearForces()
+    this.moveVx = this.moveVz = 0
+    this.group.position.set(x, physicsWorld.groundHeight(x, z), z)
+    this.legs.initFeetAt(this.group.position, this.group.rotation.y)
+  }
+
+  get scale(): number { return this.bodyScale }
+
+  // Per-zone creature scale. Zones are authored at different world scales (the den
+  // is 5× the colony), so Webbs is resized on entry instead of being one size
+  // everywhere — keeps him proportionate to each zone's corridors and enemies.
+  setScale(s: number): void {
+    if (s === this.bodyScale) return
+    const tier = this.legs.legTier
+    this.bodyScale = s
+    this.group.scale.setScalar(s)
+    this.legs.destroy()
+    this.legs = this.buildLegs(s)
+    this.legs.setLegTier(tier)
+    this.legs.initFeetAt(this.group.position, this.group.rotation.y)
+    this.collisionBody.radius = BODY_R_NORMAL * s
+  }
+
+  private buildLegs(s: number): SpiderLegs {
+    const legs = new SpiderLegs(this.threeScene, this.gradientMap, s)
+    legs.ground = (x, z) => physicsWorld.groundHeight(x, z)
+    // Footsteps follow real foot plants (one per tetrapod landing) instead of a timer
+    legs.onStep = (x, z) => {
+      if (this.dodgeTimer > 0) return
+      audio.play(this.floorType === 'stone' ? 'footstep_stone' : 'footstep_dirt', x, z)
+    }
+    return legs
   }
 
   // ── Call after syncPosition() — advances gait and solves IK ──────────────
@@ -323,9 +416,8 @@ export class Webbs3D {
       // Round 7 Issue 1: animate rotation toward camera over 300ms, then call leg pose.
       const elapsedMs = performance.now() - this.celebPoseStartMs
 
-      const camLen  = Math.hypot(this.CAM_OFFSET_X, this.CAM_OFFSET_Z)
-      const camDirX = this.CAM_OFFSET_X / camLen
-      const camDirZ = this.CAM_OFFSET_Z / camLen
+      const camDirX = CAMERA_DIR_X
+      const camDirZ = CAMERA_DIR_Z
       const targetRotation = Math.atan2(camDirX, camDirZ)   // makes body forward point to camera
 
       const rotT = Math.min(elapsedMs / 300, 1)
@@ -334,17 +426,17 @@ export class Webbs3D {
       while (deltaA < -Math.PI) deltaA += Math.PI * 2
       this.group.rotation.y = this.preCelebRotation + deltaA * rotT
 
-      this.legs.updateCelebrationPose(this.group.position, elapsedMs)
+      this.legs.updateCelebrationPose(this.group.position, this.group.rotation.y, camDirX, camDirZ, elapsedMs)
       this.updatePresentedItem(elapsedMs)
     } else {
-      this.legs.update(
-        delta,
-        this.group.position,
-        this.group.rotation.y,
-        this.moveDir,
-        this.weaponSystem,
-      )
+      this.legs.update(delta, this.group.position, this.group.rotation.y, this.weaponSystem)
     }
+    // Body rides the legs: height from the planted feet, pitch/roll from terrain,
+    // acceleration and strikes.
+    const pose = this.legs.pose
+    this.group.position.y = pose.y + this.bobY
+    this.group.rotation.x = pose.pitch
+    this.group.rotation.z = pose.roll
   }
 
   startCelebrationPose(weapon?: WeaponType): void {
@@ -354,7 +446,7 @@ export class Webbs3D {
     // Stop any residual movement so the spider stays put for the pose
     this.collisionBody.velocity.x = 0
     this.collisionBody.velocity.z = 0
-    this.moveDir.set(0, 0)
+    this.moveVx = this.moveVz = 0
     if (weapon !== undefined) this.showPresentedItem(weapon)
   }
 
@@ -364,11 +456,53 @@ export class Webbs3D {
     this.hidePresentedItem()
   }
 
-  // ── Hit feedback — body flash + recoil + shudder + half-HP leap ─────────
-  damage(amount: number): void {
-    if (amount <= 0 || this.maxProtectionActive) return
+  // Pay for an action.  Allowed while any stamina is left (the last swing can
+  // overdraw to 0), then winded until STAMINA_RECOVER_AT.  Returns false if
+  // the action can't be paid for.
+  spendStamina(cost: number): boolean {
+    if (this.winded || this.stamina <= 0) return false
+    this.stamina = Math.max(0, this.stamina - cost)
+    this.regenDelayT = STAMINA_REGEN_DELAY
+    if (this.stamina <= 0) this.enterWinded()
+    return true
+  }
+
+  // Continuous energy use (flame).  Emptying the tank locks it out until it
+  // refills to ENERGY_RECOVER_AT.
+  spendEnergy(amount: number): boolean {
+    if (this.energyLocked) return false
+    this.energy = Math.max(0, this.energy - amount)
+    if (this.energy <= 0) this.energyLocked = true
+    return true
+  }
+
+  private enterWinded(): void {
+    if (!this.winded && !this.windedSoundFired) {
+      this.windedSoundFired = true
+      audio.play('stamina_winded', this.collisionBody.x, this.collisionBody.z)
+    }
+    this.winded = true
+  }
+
+  // Movement multiplier for `seconds` while an attack is committed.
+  commitAttack(mult: number, seconds: number): void {
+    this.attackSlowMult = this.attackSlowT > 0 ? Math.min(this.attackSlowMult, mult) : mult
+    this.attackSlowT    = Math.max(this.attackSlowT, seconds)
+  }
+
+  isInvulnerable(): boolean { return this.invulnT > 0 }
+
+  // ── Hit feedback — body flash + shove + shudder + half-HP leap ──────────
+  // `from` (attacker position) shoves Webbs directly away from the blow;
+  // without it he recoils against his facing.  Returns false if the hit was
+  // ignored (invulnerable / max protection).
+  damage(amount: number, opts: { fromX?: number; fromZ?: number; unblockable?: boolean } = {}): boolean {
+    if (amount <= 0 || this.hp <= 0 || this.dyingT >= 0) return false   // already down
+    // Dodging through an attack (i-frames) or recently hit → no damage
+    if (!opts.unblockable && (this.maxProtectionActive || this.invulnT > 0 || this.dodgeTimer > 0)) return false
     this.hp = Math.max(0, this.hp - amount)
     this.timeSinceDamage = 0
+    this.invulnT = INVULN_AFTER_HIT
 
     // Round 10 — pain vocalisation
     audio.play('webbs_damage', this.collisionBody.x, this.collisionBody.z)
@@ -377,9 +511,16 @@ export class Webbs3D {
     this.bodyMat.color.setHex(0xff3344)
     setTimeout(() => { this.bodyMat.color.setHex(0x6a4d8a) }, 140)
 
-    // Round 8 Issue 3: recoil + shudder
-    this.recoilVx    = -this.facingX * 1.6
-    this.recoilVz    = -this.facingZ * 1.6
+    // Shove away from the attacker (physical impulse) + brief control loss
+    if (opts.fromX !== undefined && opts.fromZ !== undefined) {
+      const dx = this.collisionBody.x - opts.fromX, dz = this.collisionBody.z - opts.fromZ
+      const l  = Math.hypot(dx, dz) || 1
+      this.collisionBody.push((dx / l) * HIT_SHOVE * this.bodyScale, (dz / l) * HIT_SHOVE * this.bodyScale)
+      this.recoilVx = 0; this.recoilVz = 0
+    } else {
+      this.recoilVx = -this.facingX * 1.6 * this.bodyScale
+      this.recoilVz = -this.facingZ * 1.6 * this.bodyScale
+    }
     this.recoilTimer = 0.18
     this.shudderTimer = 0.20
 
@@ -390,11 +531,12 @@ export class Webbs3D {
       audio.play('half_hp_pain', this.collisionBody.x, this.collisionBody.z)
       this.startDodgeLeap()
     }
+    return true
   }
 
   // Round 8 Issue 3: backward dodge leap (spacebar + half-HP trigger)
   startDodgeLeap(): void {
-    const leapSpeed = 11.0
+    const leapSpeed = 11.0 * this.bodyScale
     this.dodgeVx    = -this.facingX * leapSpeed
     this.dodgeVz    = -this.facingZ * leapSpeed
     this.dodgeTimer = 0.25
@@ -446,6 +588,37 @@ export class Webbs3D {
 
   isDead(): boolean    { return this.hp <= 0 }
   isInCombat(): boolean { return this.timeSinceDamage < 5.0 }
+
+  get isDying(): boolean { return this.dyingT >= 0 }
+
+  // Killing blow landed: start the death beat (main.ts runs the slow-mo/fade)
+  startDying(): void {
+    if (this.dyingT >= 0) return
+    this.dyingT = 0
+    this.deathSoundFired = true
+    audio.play('webbs_death', this.collisionBody.x, this.collisionBody.z)
+    this.invulnT = 0
+    this.dodgeTimer = this.recoilTimer = this.shudderTimer = 0
+    this.attackSlowT = 0
+  }
+
+  // Back on his feet after a death — no penalty, everything refilled/cleared
+  resetAfterDeath(): void {
+    this.dyingT = -1
+    this.legs.collapse = 0
+    this.resetHp()
+    this.stamina = this.maxStamina
+    this.energy  = this.maxEnergy
+    this.energyLocked = false
+    this.winded = false
+    this.windedSoundFired = false
+    this.regenDelayT = 0
+    this.invulnT = 0
+    this.dodgeTimer = this.recoilTimer = this.shudderTimer = 0
+    this.attackSlowT = 0
+    this.collisionBody.clearForces()
+    this.group.visible = true
+  }
 
   resetHp(amount?: number): void {
     this.hp = amount ?? this.hpMax
@@ -557,6 +730,6 @@ export class Webbs3D {
   }
 
   setBodyRadius(r: number): void {
-    this.collisionBody.radius = r
+    this.collisionBody.radius = r * this.bodyScale
   }
 }

@@ -1,4 +1,6 @@
 import * as THREE from 'three'
+import { disposeTree } from '../core/dispose'
+import { surface, PALETTE } from '../env/Materials'
 import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import { BossNose3D } from '../entities/BossNose3D'
 import { RollerBoss3D } from '../entities/RollerBoss3D'
@@ -20,7 +22,9 @@ const ROCK_INTERVAL   = 3.0    // seconds between volleys
 const SUCTION_CYCLE   = 20.0
 const SUCTION_WARN    = 2.0
 const SUCTION_ACTIVE  = 4.0
-const SUCTION_FORCE   = 5.2    // wu/s² pull toward nose XZ
+// Steady inward drift while suction is active — ~70% of walk speed, so running
+// away slowly escapes and a web wall-anchor (isAnchored) is the reliable counter.
+const SUCTION_SPEED   = 3.8    // wu/s
 const SUCTION_LETHAL_R = 0.65  // if unanchored player reaches this close → instant kill
 
 export type BossResult = 'ongoing' | 'victory' | 'defeat'
@@ -64,6 +68,7 @@ export class BossRollerScene3D {
 
   private bossPhase        = 1
   private retreatTriggered = false
+  private retreatT         = 0    // nose-retreat animation, on game time
   private result: BossResult = 'ongoing'
 
   // Phase 1 rocks
@@ -105,13 +110,13 @@ export class BossRollerScene3D {
 
   private buildArena(): void {
     // Dark cavern floor
-    const floorMat = new THREE.MeshToonMaterial({ color: 0x180c02, gradientMap: this.gradientMap })
+    const floorMat = surface({ color: PALETTE.bossFloor, tex: 'dirt', texScale: 0.45, gradientMap: this.gradientMap })
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D).rotateX(-Math.PI / 2), floorMat)
     floor.receiveShadow = true
     this.add(floor)
 
     // Dirt patches
-    const patchMat = new THREE.MeshBasicMaterial({ color: 0x241402 })
+    const patchMat = surface({ color: PALETTE.bossPatch, tex: 'dirt', texScale: 0.9, gradientMap: this.gradientMap })
     const patches: [number, number][] = [[-7, 0.8], [-2, -1.5], [4, 1.2], [8, -0.6], [-5, 2.0]]
     for (const [px, pz] of patches) {
       const r = 0.4 + Math.random() * 0.5
@@ -120,7 +125,7 @@ export class BossRollerScene3D {
       m.position.set(px, 0.006, pz)
     }
 
-    const wallMat = new THREE.MeshToonMaterial({ color: 0x1a0e02, gradientMap: this.gradientMap })
+    const wallMat = surface({ color: PALETTE.bossWall, tex: 'stone', texScale: 0.7, gradientMap: this.gradientMap })
 
     // Back wall — has hole where nose bursts through
     this.addBox(W + 0.6, 2.0, 0.4, 0, 1.0, -D / 2, wallMat)
@@ -131,7 +136,7 @@ export class BossRollerScene3D {
     this.addBox(0.4, 2.0, D + 0.6,  W / 2, 1.0, 0, wallMat)
 
     // Stalactites along ceiling (top edge, near back)
-    const stalMat = new THREE.MeshToonMaterial({ color: 0x2a1804, gradientMap: this.gradientMap })
+    const stalMat = surface({ color: PALETTE.bossStal, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
     const stalX = [-9, -6, -3, 0, 3, 6, 9]
     for (const sx of stalX) {
       const h = 0.3 + Math.random() * 0.5
@@ -141,7 +146,7 @@ export class BossRollerScene3D {
     }
 
     // Stalagmites from floor (front area)
-    const stagMat = new THREE.MeshToonMaterial({ color: 0x241404, gradientMap: this.gradientMap })
+    const stagMat = surface({ color: PALETTE.bossStag, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
     for (let i = -4; i <= 4; i += 2) {
       const h = 0.15 + Math.random() * 0.25
       const stag = new THREE.Mesh(new THREE.ConeGeometry(0.06, h, 5), stagMat)
@@ -178,8 +183,7 @@ export class BossRollerScene3D {
   }
 
   private buildLighting(): void {
-    const ambient = new THREE.AmbientLight(0x110804, 0.3)
-    this.add(ambient)
+    // Ambient/key now come from env/ZoneLighting (bossRoller preset).
     // Dramatic top-down spotlight
     const spot = new THREE.SpotLight(0xff7733, 2.0, 18, Math.PI / 5, 0.55, 1.5)
     spot.position.set(0, 7, 0)
@@ -204,7 +208,12 @@ export class BossRollerScene3D {
 
   private spawnNose(): void {
     this.nose = new BossNose3D(this.threeScene, NOSE_XZ[0], NOSE_XZ[1], this.gradientMap)
-    this.enemies = [this.nose]
+    // The nose floats 2.2 up and is only hurt by reflected rocks: keep it out of
+    // weapon targeting (melee could hit it directly and skip the mechanic) and
+    // turn off its floor collider (an invisible pillar that also made the
+    // suction kill radius unreachable).
+    this.nose.collisionBody.enabled = false
+    this.enemies = []
   }
 
   // ── Main update (called from main.ts after physicsWorld.update) ───────────
@@ -237,12 +246,6 @@ export class BossRollerScene3D {
 
   // ── Phase 1 ───────────────────────────────────────────────────────────────
 
-  webWallHitTest(x: number, z: number): boolean {
-    return x <= BossRollerScene3D.LEFT  + 0.5 ||
-           x >= BossRollerScene3D.RIGHT - 0.5 ||
-           z <= BossRollerScene3D.BACK  + 0.3 ||
-           z >= BossRollerScene3D.FRONT - 0.3
-  }
 
   private updatePhase1(delta: number, webbs: Webbs3D, hud: HudSystem, isAnchored = false): void {
     // Check nose death
@@ -250,15 +253,14 @@ export class BossRollerScene3D {
       this.retreatTriggered = true
       this.enemies = []
       hud.hideBossHp()
-      // Animate nose shrinking, then start phase 2 after delay
-      const retreatStart = performance.now()
-      const retreatAnim = () => {
-        const t = Math.min((performance.now() - retreatStart) / 700, 1)
-        if (this.nose) this.nose.group.scale.setScalar(Math.max(0.01, 1 - t))
-        if (t < 1) requestAnimationFrame(retreatAnim)
-        else this.startPhase2(hud)
-      }
-      requestAnimationFrame(retreatAnim)
+    }
+    // Nose shrinks back into the ceiling, then phase 2.  Driven by update() so
+    // it pauses with the game and can't fire after the scene is torn down.
+    if (this.retreatTriggered && this.bossPhase === 1) {
+      this.retreatT += delta
+      const t = Math.min(this.retreatT / 0.7, 1)
+      if (this.nose) this.nose.group.scale.setScalar(Math.max(0.01, 1 - t))
+      if (t >= 1) { this.startPhase2(hud); return }
     }
 
     if (!this.retreatTriggered) {
@@ -308,6 +310,7 @@ export class BossRollerScene3D {
         radius:   ROCK_RADIUS,
         velocity: { x: (dx / len) * speed, z: (dz / len) * speed },
         isStatic: false, enabled: true,
+        ballistic: true, restitution: 0.55,   // physics owns rock velocity → real wall bounces
       })
 
       this.rocks.push({ mesh, body, reflected: false })
@@ -321,7 +324,7 @@ export class BossRollerScene3D {
       const rock = this.rocks[i]
 
       // Sync visual (physicsWorld already moved the body)
-      rock.mesh.position.set(rock.body.x, ROCK_RADIUS, rock.body.z)
+      rock.mesh.position.set(rock.body.renderX, ROCK_RADIUS, rock.body.renderZ)   // interpolated
 
       // Suction pull on rocks
       if (this.suctionActive) {
@@ -350,11 +353,11 @@ export class BossRollerScene3D {
       }
 
       // Player rock contact (unreflected)
+      // Rocks are solid bodies — the solver keeps them from overlapping Webbs,
+      // so test contact, not centre distance.
       if (!rock.reflected) {
-        const dx = webbs.collisionBody.x - rock.body.x
-        const dz = webbs.collisionBody.z - rock.body.z
-        if (dx * dx + dz * dz < (webbs.collisionBody.radius + ROCK_RADIUS) ** 2) {
-          webbs.damage(18)
+        if (physicsWorld.touching(webbs.collisionBody, rock.body, 0.03)) {
+          webbs.damage(18, { fromX: rock.body.x, fromZ: rock.body.z })
           this.removeRock(i)
           continue
         }
@@ -372,8 +375,7 @@ export class BossRollerScene3D {
 
   private removeRock(i: number): void {
     const rock = this.rocks[i]
-    this.threeScene.remove(rock.mesh)
-    rock.mesh.geometry.dispose()
+    disposeTree(rock.mesh)
     physicsWorld.remove(rock.body)
     this.rocks.splice(i, 1)
   }
@@ -442,11 +444,10 @@ export class BossRollerScene3D {
         const dx  = NOSE_XZ[0] - webbs.collisionBody.x
         const dz  = NOSE_XZ[1] - webbs.collisionBody.z
         const len = Math.hypot(dx, dz) || 1
-        webbs.collisionBody.velocity.x += (dx / len) * SUCTION_FORCE * delta * 60
-        webbs.collisionBody.velocity.z += (dz / len) * SUCTION_FORCE * delta * 60
+        webbs.collisionBody.addDrift((dx / len) * SUCTION_SPEED, (dz / len) * SUCTION_SPEED)
         // Lethal absorb
         if (Math.hypot(dx, dz) < SUCTION_LETHAL_R) {
-          webbs.damage(999)
+          webbs.damage(999, { unblockable: true })
           this.result = 'defeat'
         }
       }
@@ -508,23 +509,18 @@ export class BossRollerScene3D {
     if (this.roller.isBodySlamming() && this.rollerContactCooldown <= 0) {
       const dx  = webbs.collisionBody.x - this.roller.collisionBody.x
       const dz  = webbs.collisionBody.z - this.roller.collisionBody.z
-      const r2  = webbs.collisionBody.radius + this.roller.config.bodyRadius + 0.2
-      if (dx * dx + dz * dz < r2 * r2) {
-        webbs.damage(25)
+      if (physicsWorld.touching(webbs.collisionBody, this.roller.collisionBody, 0.2)) {
+        webbs.damage(25, { fromX: this.roller.collisionBody.x, fromZ: this.roller.collisionBody.z })
         const len = Math.hypot(dx, dz) || 1
-        webbs.collisionBody.velocity.x += (dx / len) * 3.4
-        webbs.collisionBody.velocity.z += (dz / len) * 3.4
+        webbs.collisionBody.push((dx / len) * 3.4, (dz / len) * 3.4)
         this.rollerContactCooldown = 0.8
       }
     }
 
     // Regular contact damage (patrol)
-    if (!this.roller.isBodySlamming() && this.rollerContactCooldown <= 0) {
-      const dx = webbs.collisionBody.x - this.roller.collisionBody.x
-      const dz = webbs.collisionBody.z - this.roller.collisionBody.z
-      const r2 = webbs.collisionBody.radius + this.roller.config.bodyRadius + 0.05
-      if (dx * dx + dz * dz < r2 * r2) {
-        webbs.damage(this.roller.config.damage)
+    if (!this.roller.isBodySlamming() && !this.roller.isStunned() && this.rollerContactCooldown <= 0) {
+      if (physicsWorld.touching(webbs.collisionBody, this.roller.collisionBody, 0.05)) {
+        webbs.damage(this.roller.config.damage, { fromX: this.roller.collisionBody.x, fromZ: this.roller.collisionBody.z })
         this.rollerContactCooldown = 0.75
       }
     }
@@ -532,8 +528,10 @@ export class BossRollerScene3D {
 
   private checkTailSwipe(rx: number, rz: number, facingDir: number, webbs: Webbs3D): void {
     const TAIL_RANGE = 1.15
-    const tailAngle  = facingDir === 1 ? Math.PI : 0   // tail is on opposite side from snout
-    const halfSweep  = 0.65 * Math.PI
+    // Tail points along -facing X (atan2(dx, dz): +X = π/2).  Was ±Z, so a
+    // player at the snout got hit by the "tail".
+    const tailAngle  = facingDir === 1 ? -Math.PI / 2 : Math.PI / 2
+    const halfSweep  = 0.4 * Math.PI
 
     const dx   = webbs.collisionBody.x - rx
     const dz   = webbs.collisionBody.z - rz
@@ -545,10 +543,7 @@ export class BossRollerScene3D {
     while (diff < -Math.PI) diff += Math.PI * 2
     if (Math.abs(diff) > halfSweep) return
 
-    webbs.damage(20)
-    const len = Math.hypot(dx, dz) || 1
-    webbs.collisionBody.velocity.x += (dx / len) * 2.8
-    webbs.collisionBody.velocity.z += (dz / len) * 2.8
+    webbs.damage(20, { fromX: rx, fromZ: rz })
   }
 
   private spawnShockwave(cx: number, cz: number): void {
@@ -574,14 +569,13 @@ export class BossRollerScene3D {
       if (!sw.hitPlayer && sw.elapsed < sw.duration) {
         const dist = Math.hypot(webbs.collisionBody.x - sw.cx, webbs.collisionBody.z - sw.cz)
         if (Math.abs(dist - r) < 0.3) {
-          webbs.damage(22)
+          webbs.damage(22, { fromX: sw.cx, fromZ: sw.cz })
           sw.hitPlayer = true
         }
       }
 
       if (sw.elapsed >= sw.duration) {
-        this.threeScene.remove(sw.mesh)
-        sw.mesh.geometry.dispose()
+        disposeTree(sw.mesh)
         this.shockwaves.splice(i, 1)
       }
     }
@@ -607,8 +601,7 @@ export class BossRollerScene3D {
       r.mesh.scale.setScalar(1 + t * 2.5)
       ;(r.mesh.material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - t)
       if (t >= 1) {
-        this.threeScene.remove(r.mesh)
-        r.mesh.geometry.dispose()
+        disposeTree(r.mesh)
         this.vfxRings.splice(i, 1)
       }
     }
@@ -634,29 +627,22 @@ export class BossRollerScene3D {
 
   destroy(): void {
     audio.stopLoop('amb_boss')
-    audio.stopLoop('boss_idle')
+    if (this.roller) audio.stopOwner(this.roller)
     for (let i = this.rocks.length - 1; i >= 0; i--) this.removeRock(i)
 
     // Shockwaves
-    for (const sw of this.shockwaves) {
-      this.threeScene.remove(sw.mesh); sw.mesh.geometry.dispose()
-    }
+    for (const sw of this.shockwaves) disposeTree(sw.mesh)
     this.shockwaves = []
 
     // VFX rings
-    for (const r of this.vfxRings) {
-      this.threeScene.remove(r.mesh); r.mesh.geometry.dispose()
-    }
+    for (const r of this.vfxRings) disposeTree(r.mesh)
     this.vfxRings = []
 
     // Boss entities
     this.nose?.cleanup()
     this.roller?.cleanup()
 
-    for (const obj of this.tracked) {
-      this.threeScene.remove(obj)
-      if ((obj as THREE.Mesh).isMesh) (obj as THREE.Mesh).geometry.dispose()
-    }
+    for (const obj of this.tracked) disposeTree(obj)
     this.tracked = []
     physicsWorld.bounds = null
   }

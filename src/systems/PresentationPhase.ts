@@ -2,6 +2,7 @@ import type { Webbs3D } from '../entities/Webbs3D'
 import type { ParticleBurstSystem3D } from './ParticleBurstSystem3D'
 import { WeaponType } from './WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
+import type { DiscoveryVariant } from '../ui/PickupCelebration3D'
 
 // Round 7 Issue 1 — pickup presentation timeline:
 //   T=0.0s : pause + hide HTML overlay + Webbs starts rotating toward camera (0.3s)
@@ -12,7 +13,7 @@ import { WEAPON_COLORS } from '../config/WeaponData'
 //   ...    : tutorial card (player dismisses)
 //   done   : game unpauses
 
-type Phase = 'idle' | 'webbsPose' | 'discoveryCard' | 'tutorialCard' | 'done'
+type Phase = 'idle' | 'webbsPose' | 'settle' | 'discoveryCard' | 'tutorialCard' | 'done'
 
 const POSE_DURATION_MS    = 2500
 const BURST_DELAY_MS      = 700
@@ -23,16 +24,18 @@ export class PresentationPhase {
   private phaseStartMs = 0
   private burstFired   = false
 
-  onShowDiscoveryCard: ((wt: WeaponType) => void) | null = null
+  onShowDiscoveryCard: ((wt: WeaponType, variant: DiscoveryVariant) => void) | null = null
   onShowTutorialCard:  ((wt: WeaponType) => void) | null = null
   onComplete:          (() => void) | null = null
   // Hook for hiding the HTML menu overlay so the player sees pure 3D during Phase 1
   hideOverlay:         (() => void) | null = null
 
   pendingWeapon: WeaponType | null = null
+  private pendingVariant: DiscoveryVariant = 'found'
 
-  start(weapon: WeaponType, webbs: Webbs3D, _particles: ParticleBurstSystem3D): void {
-    this.pendingWeapon = weapon
+  start(weapon: WeaponType, webbs: Webbs3D, _particles: ParticleBurstSystem3D, variant: DiscoveryVariant = 'found'): void {
+    this.pendingWeapon  = weapon
+    this.pendingVariant = variant
     this.phase         = 'webbsPose'
     this.phaseStartMs  = performance.now()
     this.burstFired    = false
@@ -46,6 +49,14 @@ export class PresentationPhase {
   }
 
   update(webbs: Webbs3D, particles: ParticleBurstSystem3D): void {
+    // Settle beat between the pose and the card — timed on the game loop
+    if (this.phase === 'settle') {
+      if (performance.now() - this.phaseStartMs >= SETTLE_BEAT_MS) {
+        this.phase = 'discoveryCard'
+        this.onShowDiscoveryCard?.(this.pendingWeapon!, this.pendingVariant)
+      }
+      return
+    }
     if (this.phase !== 'webbsPose') return
     const elapsed = performance.now() - this.phaseStartMs
 
@@ -70,9 +81,8 @@ export class PresentationPhase {
     // T=2.5s — end the pose, beat for 200ms, then show discovery card.
     if (elapsed >= POSE_DURATION_MS) {
       webbs.endCelebrationPose()
-      this.phase = 'discoveryCard'
-      const wt = this.pendingWeapon!
-      setTimeout(() => { this.onShowDiscoveryCard?.(wt) }, SETTLE_BEAT_MS)
+      this.phase        = 'settle'
+      this.phaseStartMs = performance.now()
     }
   }
 
