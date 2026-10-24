@@ -1,6 +1,7 @@
 import type { WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_STATS } from '../config/WeaponData'
 import { weaponIconSvg } from './WeaponIcon3D'
+import { mountWeaponPreview } from './WeaponPreview'
 import type { InputManager } from '../core/InputManager'
 import type { TextDisplay3D } from './TextDisplay3D'
 import { h, richText } from './theme'
@@ -41,7 +42,12 @@ const STYLE = /* css */`
   background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--c) 35%, transparent), rgba(10,8,6,.9) 70%);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent), 0 0 50px color-mix(in srgb, var(--c) 35%, transparent);
   animation: nl-pop 620ms var(--nl-ease-back) 80ms both; }
-.nl-disc .medal svg { animation: nl-float 2.6s ease-in-out 700ms infinite; filter: drop-shadow(0 6px 14px rgba(0,0,0,.6)); }
+.nl-disc .medal svg, .nl-disc .medal img { animation: nl-float 2.6s ease-in-out 700ms infinite; filter: drop-shadow(0 6px 14px rgba(0,0,0,.6)); }
+.nl-disc .medal canvas { position:relative; z-index:1; filter: drop-shadow(0 8px 16px rgba(0,0,0,.55)); }
+.nl-disc .medal::before { content:''; position:absolute; inset:10px; border-radius:50%;
+  background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--c) 40%, transparent) 0deg 6deg, transparent 6deg 20deg);
+  -webkit-mask: radial-gradient(circle, #000 20%, transparent 70%); mask: radial-gradient(circle, #000 20%, transparent 70%);
+  animation: nl-spin 14s linear infinite; opacity:.55; }
 .nl-disc .medal::after { content:''; position:absolute; top:-20%; bottom:-20%; width:34%; left:0;
   background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent); animation: nl-shine 1.1s ease-in-out 650ms both; }
 .nl-disc .ripple { position:absolute; width:150px; height:150px; border-radius:50%; border:2px solid var(--c); top:34px; left:50%; margin-left:-75px;
@@ -61,6 +67,7 @@ export class PickupCelebration3D {
   private card:    HTMLDivElement | null = null
   private prompt:  HTMLElement | null = null
   private closing  = false
+  private stopPreview: (() => void) | null = null
 
   isOpen   = false
   onClose?: () => void
@@ -93,7 +100,10 @@ export class PickupCelebration3D {
     const card = h('div', 'nl-panel nl-disc') as HTMLDivElement
     card.appendChild(h('div', 'nl-eyebrow eyebrow', `★  ${EYEBROW[variant]}  ★`))
     const medal = h('div', 'medal')
-    medal.innerHTML = weaponIconSvg(weaponType, c, 92)
+    // The real model, turning; the flat icon only if there's no WebGL for it
+    this.stopPreview?.()
+    this.stopPreview = mountWeaponPreview(medal, weaponType, 150)
+    if (!this.stopPreview) medal.innerHTML = weaponIconSvg(weaponType, c, 92)
     card.appendChild(medal)
     card.appendChild(h('div', 'ripple'))
 
@@ -155,6 +165,7 @@ export class PickupCelebration3D {
   }
 
   private hide(): void {
+    this.stopPreview?.(); this.stopPreview = null
     this.wrap.style.display = 'none'
     this.wrap.style.opacity = '1'
     this.wrap.style.transition = ''

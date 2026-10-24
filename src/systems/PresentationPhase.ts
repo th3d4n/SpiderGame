@@ -3,19 +3,24 @@ import type { ParticleBurstSystem3D } from './ParticleBurstSystem3D'
 import { WeaponType } from './WeaponSystem'
 import { WEAPON_COLORS } from '../config/WeaponData'
 import type { DiscoveryVariant } from '../ui/PickupCelebration3D'
+import { DiscoveryFX3D, DISCOVERY_FX_SECONDS } from './DiscoveryFX3D'
+import { CAMERA_DIR_X, CAMERA_DIR_Z } from '../core/CameraRig'
+import { audio } from './AudioManager'
+import * as THREE from 'three'
 
-// Round 7 Issue 1 — pickup presentation timeline:
-//   T=0.0s : pause + hide HTML overlay + Webbs starts rotating toward camera (0.3s)
-//   T=0.3s : rotation done, legs start lifting (0.4s)
-//   T=0.7s : particle burst BEHIND Webbs + secondary burst at item position
-//   T=2.5s : pose ends, Webbs settles back (200ms beat)
-//   T=2.7s : discovery card fades in (player dismisses with Space/M)
+// Pickup presentation timeline:
+//   T=0.0s : pause + hide HTML overlay, camera pushes in, Webbs turns to camera
+//            (0.3s); DiscoveryFX3D opens a light shaft and the item rises
+//   T=0.3s : legs lift to present it
+//   T=0.7s : HIT — flash, shockwaves, god rays, particle bursts
+//   T=3.0s : item zips away, pose ends, Webbs settles back (200ms beat)
+//   T=3.2s : discovery card fades in (player dismisses with Space/M)
 //   ...    : tutorial card (player dismisses)
 //   done   : game unpauses
 
 type Phase = 'idle' | 'webbsPose' | 'settle' | 'discoveryCard' | 'tutorialCard' | 'done'
 
-const POSE_DURATION_MS    = 2500
+const POSE_DURATION_MS    = DISCOVERY_FX_SECONDS * 1000
 const BURST_DELAY_MS      = 700
 const SETTLE_BEAT_MS      = 200
 
@@ -23,6 +28,8 @@ export class PresentationPhase {
   private phase: Phase = 'idle'
   private phaseStartMs = 0
   private burstFired   = false
+  private fx: DiscoveryFX3D | null = null
+  private lastMs = 0
 
   onShowDiscoveryCard: ((wt: WeaponType, variant: DiscoveryVariant) => void) | null = null
   onShowTutorialCard:  ((wt: WeaponType) => void) | null = null
@@ -43,9 +50,13 @@ export class PresentationPhase {
     // CRITICAL — hide the HTML overlay so nothing renders over the 3D Webbs pose.
     this.hideOverlay?.()
 
-    // Webbs handles its own rotation + leg lift via startCelebrationPose()
-    // Round 8 Issue 6: pass weapon so the presented item visual is built
-    webbs.startCelebrationPose(weapon)
+    // Webbs handles his own rotation + leg lift; the item and effects are the FX's
+    webbs.startCelebrationPose()
+    this.fx?.dispose()
+    const scene = webbs.group.parent as THREE.Scene
+    this.fx = new DiscoveryFX3D(scene, weapon, webbs.group.position.clone().setY(webbs.group.position.y - 0.0), webbs.scale, webbs.gradient)
+    this.lastMs = performance.now()
+    audio.play('celeb_swell')
   }
 
   update(webbs: Webbs3D, particles: ParticleBurstSystem3D): void {
@@ -58,28 +69,28 @@ export class PresentationPhase {
       return
     }
     if (this.phase !== 'webbsPose') return
-    const elapsed = performance.now() - this.phaseStartMs
+    const now = performance.now()
+    const elapsed = now - this.phaseStartMs
+    this.fx?.update(Math.min(0.05, (now - this.lastMs) / 1000))
+    this.lastMs = now
 
-    // T=0.7s — fire particle bursts AFTER the lift completes.
+    // T=0.7s — particle bursts on the hit: behind Webbs and at the item
     if (!this.burstFired && elapsed >= BURST_DELAY_MS) {
       this.burstFired = true
       const color = WEAPON_COLORS[this.pendingWeapon!]
-      // Camera sits at (+18, _, +18) — "behind" Webbs is the (-X, -Z) direction.
+      const s = webbs.scale
       const behind = webbs.group.position.clone()
-      behind.y = 0.7
-      behind.x -= 0.4
-      behind.z -= 0.4
-      particles.burst(behind, color, 32, 5.5, 0.10)
-      // Secondary smaller burst at the lifted-item position (in front, toward camera).
+      behind.x -= CAMERA_DIR_X * 0.4 * s; behind.z -= CAMERA_DIR_Z * 0.4 * s; behind.y += 0.7 * s
+      particles.burst(behind, color, 40, 5.5 * s, 0.10 * s)
       const itemPos = webbs.group.position.clone()
-      itemPos.y = 0.9
-      itemPos.x += 0.3
-      itemPos.z += 0.3
-      particles.burst(itemPos, color, 18, 3.5, 0.08)
+      itemPos.x += CAMERA_DIR_X * 0.35 * s; itemPos.z += CAMERA_DIR_Z * 0.35 * s; itemPos.y += 1.15 * s
+      particles.burst(itemPos, 0xffffff, 22, 3.5 * s, 0.07 * s)
+      audio.play('pickup_notify')
     }
 
-    // T=2.5s — end the pose, beat for 200ms, then show discovery card.
+    // T=3.0s — end the pose, beat for 200ms, then show discovery card.
     if (elapsed >= POSE_DURATION_MS) {
+      this.fx?.dispose(); this.fx = null
       webbs.endCelebrationPose()
       this.phase        = 'settle'
       this.phaseStartMs = performance.now()

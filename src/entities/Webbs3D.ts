@@ -1,12 +1,13 @@
 import * as THREE from 'three'
 import { WeaponSystem, WeaponType } from '../systems/WeaponSystem'
-import { WEAPON_DATA, WEAPON_COLORS } from '../config/WeaponData'
+import { WEAPON_DATA } from '../config/WeaponData'
 import { type CollisionBody, physicsWorld } from '../core/PhysicsWorld'
 import { InputManager } from '../core/InputManager'
 import { SpiderLegs, WEBBS_RIM } from './SpiderLegs'
 import { buildWebbsBody } from './WebbsBody'
 import { addRim } from '../env/Materials'
 import { audio } from '../systems/AudioManager'
+import { buildWeaponModel, pulseWeaponModel, WEB_LAUNCHER_MUZZLE } from './WeaponModels'
 import { CAMERA_YAW, CAMERA_DIR_X, CAMERA_DIR_Z } from '../core/CameraRig'
 
 // ─── Scale factor ─────────────────────────────────────────────────────────────
@@ -47,6 +48,12 @@ const HIT_SHOVE          = 4.0  // wu/s impulse away from the attacker
 const DODGE_DECAY        = 4.35 // 1/s
 const DEATH_CURL_TIME    = 0.35 // s (world time — slowed ×0.3 during the death beat) to fold in
 
+// Web Thrower on his back (body-local; see buildWebLauncherMount)
+const LAUNCHER_POS   = new THREE.Vector3(0, 0.71, -0.1)
+const LAUNCHER_SCALE = 1.15
+const LAUNCHER_PITCH = -0.12   // barrel tipped slightly up
+const _xAxis         = new THREE.Vector3(1, 0, 0)
+
 // ─── Leg colors (used by Phase C IK legs) ────────────────────────────────────
 export const LEG_COLORS = [
   0xff4444, 0xff8844, 0xffff44, 0x44ff44,
@@ -74,7 +81,6 @@ export class Webbs3D {
   private dodgeVz     = 0
 
   // Round 8 Issue 6: presented item visual during celebration
-  private presentedItemMesh: THREE.Object3D | null = null
 
   private deathSoundFired = false
   private windedSoundFired = false
@@ -174,6 +180,7 @@ export class Webbs3D {
       this.webLauncherMount = this.buildWebLauncherMount()
       this.group.add(this.webLauncherMount)
     }
+    if (this.webLauncherMount) pulseWeaponModel(this.webLauncherMount, this.idleTime)
 
     // Committed swings slow him down (weight); see commitAttack()
     if (this.attackSlowT > 0) this.attackSlowT -= delta
@@ -359,7 +366,6 @@ export class Webbs3D {
       this.group.rotation.y = this.preCelebRotation + deltaA * rotT
 
       this.legs.updateCelebrationPose(this.group.position, this.group.rotation.y, camDirX, camDirZ, elapsedMs)
-      this.updatePresentedItem(elapsedMs)
     } else {
       this.legs.update(delta, this.group.position, this.group.rotation.y, this.weaponSystem)
     }
@@ -371,7 +377,8 @@ export class Webbs3D {
     this.group.rotation.z = pose.roll
   }
 
-  startCelebrationPose(weapon?: WeaponType): void {
+  // The presented item itself is DiscoveryFX3D's (PresentationPhase owns it)
+  startCelebrationPose(): void {
     this.celebratingPose   = true
     this.celebPoseStartMs  = performance.now()
     this.preCelebRotation  = this.group.rotation.y
@@ -379,13 +386,11 @@ export class Webbs3D {
     this.collisionBody.velocity.x = 0
     this.collisionBody.velocity.z = 0
     this.moveVx = this.moveVz = 0
-    if (weapon !== undefined) this.showPresentedItem(weapon)
   }
 
   endCelebrationPose(): void {
     this.celebratingPose  = false
     this.group.rotation.y = this.preCelebRotation
-    this.hidePresentedItem()
   }
 
   // Pay for an action.  Allowed while any stamina is left (the last swing can
@@ -475,48 +480,33 @@ export class Webbs3D {
     audio.play('webbs_dodge', this.collisionBody.x, this.collisionBody.z)
   }
 
-  // Build a web-launcher mount parented to this.group (body-local space).
-  // Ventral mount — slung underneath the body between the legs.
-  // Body sits at y=0.4 with radius 0.3 so underside is around y=0.10–0.20.
+  // The Web Thrower rides on his back, between head and abdomen, barrel over
+  // the head — visible from the iso camera (the old ventral drum never was).
   private buildWebLauncherMount(): THREE.Group {
-    const gm = this.gradientMap
-    const g  = new THREE.Group()
-
-    // Launcher housing — compact drum slung under the body
-    const housing = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.09, 0.09, 0.13, 10),
-      new THREE.MeshToonMaterial({ color: 0x777777, gradientMap: gm }),
-    )
-    housing.rotation.x = Math.PI / 2   // lay horizontal
-    housing.position.set(0, 0.18, 0.08)   // ventral, slightly forward
-
-    // Nozzle — short barrel pointing forward (+Z in body space)
-    const nozzle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.025, 0.035, 0.18, 6),
-      new THREE.MeshToonMaterial({ color: 0x555555, gradientMap: gm }),
-    )
-    nozzle.rotation.x = Math.PI / 2   // horizontal, pointing along Z
-    nozzle.position.set(0, 0.16, 0.22)   // in front of housing
-
-    // Silk reservoir — small glowing sphere on the side of the housing
-    const reservoir = new THREE.Mesh(
-      new THREE.SphereGeometry(0.045, 8, 6),
-      new THREE.MeshStandardMaterial({
-        color: 0xddeeff, emissive: 0x99bbff, emissiveIntensity: 0.8,
-      }),
-    )
-    reservoir.position.set(0.08, 0.18, 0.05)
-
-    // Strap — thin band visually attaching the housing to Webbs' underside
-    const strap = new THREE.Mesh(
-      new THREE.BoxGeometry(0.18, 0.02, 0.04),
-      new THREE.MeshToonMaterial({ color: 0x332211, gradientMap: gm }),
-    )
-    strap.position.set(0, 0.28, 0.08)
-
-    g.add(housing, nozzle, reservoir, strap)
+    const g = buildWeaponModel(WeaponType.WebLauncher, this.gradientMap) ?? new THREE.Group()
+    // Leather saddle it sits on, with a strap round his middle
+    const leather = new THREE.MeshToonMaterial({ color: 0x4a2e1c, gradientMap: this.gradientMap })
+    const pad = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 8), leather)
+    pad.scale.set(1.2, 0.35, 1.5); pad.position.set(0, -0.06, -0.03)
+    // Half-ring under his body: from one side of the saddle, round the belly, to the other
+    const strap = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.012, 5, 28, Math.PI), leather)
+    strap.rotation.z = Math.PI; strap.position.set(0, -0.08, -0.03)
+    g.add(pad, strap)
+    g.scale.setScalar(LAUNCHER_SCALE)
+    g.position.copy(LAUNCHER_POS)
+    g.rotation.x = LAUNCHER_PITCH
+    addRim(g, WEBBS_RIM)
     return g
   }
+
+  // World position of the launcher's spinneret (the silk line starts here)
+  webMuzzle(out: THREE.Vector3): THREE.Vector3 {
+    out.copy(WEB_LAUNCHER_MUZZLE).multiplyScalar(LAUNCHER_SCALE)
+       .applyAxisAngle(_xAxis, LAUNCHER_PITCH).add(LAUNCHER_POS)
+    return this.group.localToWorld(out)
+  }
+
+  get gradient(): THREE.Texture { return this.gradientMap }
 
   isDead(): boolean    { return this.hp <= 0 }
   isInCombat(): boolean { return this.timeSinceDamage < 5.0 }
@@ -557,108 +547,6 @@ export class Webbs3D {
     this.timeSinceDamage = 9999
     this.halfHpLeapTriggered = false   // Round 8 Issue 3: allow re-triggering
     this.deathSoundFired = false       // Round 10: allow re-triggering after respawn
-  }
-
-  // ─── Round 8 Issue 6: presented item during celebration pose ──────────────
-  showPresentedItem(weapon: WeaponType): void {
-    this.hidePresentedItem()
-    // Build a scaled-up version of the equipped-weapon visual
-    const gm  = this.gradientMap
-    const tip = this.buildPresentedTip(weapon, gm)
-    tip.scale.set(3.5, 3.5, 3.5)
-
-    const color = WEAPON_COLORS[weapon] ?? 0xffffff
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(0.25, 16, 12),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending }),
-    )
-
-    const wrap = new THREE.Group()
-    wrap.add(glow)
-    wrap.add(tip)
-    wrap.position.set(0.3, 1.1, 0.3)
-    this.group.add(wrap)
-    this.presentedItemMesh = wrap
-  }
-
-  hidePresentedItem(): void {
-    if (!this.presentedItemMesh) return
-    this.group.remove(this.presentedItemMesh)
-    this.presentedItemMesh.traverse(obj => {
-      if (obj instanceof THREE.Mesh) {
-        obj.geometry.dispose()
-        ;(obj.material as THREE.Material).dispose()
-      }
-    })
-    this.presentedItemMesh = null
-  }
-
-  updatePresentedItem(elapsedMs: number): void {
-    if (!this.presentedItemMesh) return
-    const bobY = Math.sin(elapsedMs / 1000 * 3) * 0.05
-    this.presentedItemMesh.position.y = 1.1 + bobY
-    this.presentedItemMesh.rotation.y = elapsedMs / 1000 * 1.5
-    const glow = this.presentedItemMesh.children[0] as THREE.Mesh
-    const glowMat = glow.material as THREE.MeshBasicMaterial
-    glowMat.opacity = 0.4 + Math.sin(elapsedMs / 1000 * 4) * 0.2
-  }
-
-  // Simple weapon tip for the celebration — separate from SpiderLegs' mesh
-  // factory so we don't need to reach into private state there.
-  private buildPresentedTip(weapon: WeaponType, gm: THREE.Texture): THREE.Group {
-    const g = new THREE.Group()
-    const color = WEAPON_COLORS[weapon] ?? 0xcccccc
-    switch (weapon) {
-      case WeaponType.BoxingGloves: {
-        const shaft = new THREE.Mesh(
-          new THREE.ConeGeometry(0.025, 0.22, 6),
-          new THREE.MeshToonMaterial({ color: 0xddccaa, gradientMap: gm }),
-        )
-        shaft.rotation.x = Math.PI / 2
-        shaft.position.z = 0.11
-        g.add(shaft)
-        break
-      }
-      case WeaponType.Sword: {
-        const blade = new THREE.Mesh(
-          new THREE.BoxGeometry(0.045, 0.045, 0.42),
-          new THREE.MeshToonMaterial({ color: 0xd8d8d8, gradientMap: gm }),
-        )
-        blade.position.z = 0.23
-        const guard = new THREE.Mesh(
-          new THREE.BoxGeometry(0.22, 0.05, 0.05),
-          new THREE.MeshToonMaterial({ color: 0x999999, gradientMap: gm }),
-        )
-        guard.position.z = 0.05
-        g.add(blade, guard)
-        break
-      }
-      case WeaponType.Axe: {
-        const head = new THREE.Mesh(
-          new THREE.BoxGeometry(0.12, 0.10, 0.04),
-          new THREE.MeshToonMaterial({ color: 0x888888, gradientMap: gm }),
-        )
-        g.add(head)
-        break
-      }
-      case WeaponType.WebLauncher: {
-        const bead = new THREE.Mesh(
-          new THREE.SphereGeometry(0.10, 12, 8),
-          new THREE.MeshStandardMaterial({ color: 0xddeeff, emissive: 0x99bbff, emissiveIntensity: 0.6 }),
-        )
-        g.add(bead)
-        break
-      }
-      default: {
-        const sphere = new THREE.Mesh(
-          new THREE.SphereGeometry(0.08, 8, 6),
-          new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4 }),
-        )
-        g.add(sphere)
-        break
-      }
-    }
-    return g
   }
 
   setBodyRadius(r: number): void {

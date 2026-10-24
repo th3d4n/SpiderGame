@@ -75,8 +75,9 @@ export class HomeBaseScene3D {
 
   // Interactables/props live in the LIFE cluster (× LIFE_SCALE ≈ 2.08), NOT the
   // full den radius — keeps the home intimate inside the big room.
-  static readonly WORKBENCH_X    = -10.4   // -5.0  × LIFE_SCALE
-  static readonly WORKBENCH_Z    = -15.6   // -7.5  × LIFE_SCALE
+  // Clear of the tipped bottle cap, banner and funnel web (sightline-tested)
+  static readonly WORKBENCH_X    = -18.0
+  static readonly WORKBENCH_Z    = -20.0
   // Card sits clear of the big junk box that hid it from the iso camera (sightline-tested)
   static readonly CARD_X         =   6.68
   static readonly CARD_Z         =   6.61
@@ -509,10 +510,10 @@ export class HomeBaseScene3D {
       if (b) this.staticBodies.push(b)
     }
 
-    // Workbench — top is 1.4P × 0.9P, axis-aligned
+    // Workbench — top is 1.4P × 0.9P, turned π/4 like the model
     const P = PROP_SCALE
     this.staticBodies.push(physicsWorld.addStaticBox(
-      HomeBaseScene3D.WORKBENCH_X, HomeBaseScene3D.WORKBENCH_Z, 0.7 * P * 0.95, 0.45 * P * 0.95))
+      HomeBaseScene3D.WORKBENCH_X, HomeBaseScene3D.WORKBENCH_Z, 0.7 * P * 0.95, 0.45 * P * 0.95, Math.PI / 4))
 
     // Gift box (side 0.55P) — removed when the gift is collected
     if (this.giftGroup) {

@@ -31,6 +31,7 @@ import { EquipScreen3D } from './ui/EquipScreen3D'
 import { CraftingMenu3D } from './ui/CraftingMenu3D'
 import { TextDisplay3D, type TextDisplayData } from './ui/TextDisplay3D'
 import { PickupCelebration3D } from './ui/PickupCelebration3D'
+import { warmWeaponThumbs } from './ui/WeaponPreview'
 import { PickupNotification3D } from './ui/PickupNotification3D'
 import { ConsumableSystem, ConsumableType, CONSUMABLE_NAMES, CONSUMABLE_INFO } from './systems/ConsumableSystem'
 import { QuickItems } from './ui/QuickItems'
@@ -537,7 +538,6 @@ craftingMenu.onFirstDiscover = (wt) => {
   craftingMenu.close()
   gamePaused  = true
   celebZoom   = true
-  audio.play('celeb_swell')   // Round 10 — opening swell into discovery
   audio.play('crafting_complete')
   presentation.start(wt, webbs, particles, 'crafted')
   xpSystem.award('craft')
@@ -628,15 +628,41 @@ const touch          = new TouchControls(document.getElementById('game-container
 quickItems.onUse = (k) => { const code = `Key${k}`; input.press(code); requestAnimationFrame(() => input.release(code)) }
 hud.onSlotTap = (i) => { if (webbs.weaponSystem.isSlotUnlocked(i)) { lastActiveSlot = i; audio.play('ui_hover') } }
 
+// ─── Colony lock ──────────────────────────────────────────────────────────────
+// Webbs won't leave the den until he has read all three clues (the last one
+// lies right at the tunnel mouth).  A soft wall just short of the exit trigger
+// stops him walking further west and says why.  Saves that already reached the
+// colony stay unlocked.
+const COLONY_LOCK_MARGIN = 2.0   // wu east of the exit trigger — still inside clue 2's E radius
+const COLONY_LOCK_MSG    = "You don't know enough about what's out there to leave yet. Go look for more clues."
+let   colonyLockToastT   = 0
+
+function colonyUnlocked(): boolean {
+  return (registry.get<number[]>('cluesFoundIds') ?? []).length >= 3
+      || !!registry.get<boolean>('antColonyFirstVisit')
+      || (registry.get<string[]>('bossesDefeated') ?? []).length > 0
+}
+
+function holdAtColonyMouth(dt: number): void {
+  if (colonyLockToastT > 0) colonyLockToastT -= dt
+  if (currentZone !== 'homeBase' || transitioning || colonyUnlocked()) return
+  const wallX = (activeScene as HomeBaseScene3D).exitTriggerX + COLONY_LOCK_MARGIN
+  const b = webbs.collisionBody
+  if (b.x > wallX + 0.4 || b.velocity.x >= 0) return
+  b.velocity.x = 0
+  if (colonyLockToastT <= 0) { hud.toast(COLONY_LOCK_MSG, 'info', 4600); colonyLockToastT = 6 }
+}
+
 // ─── Zoom ─────────────────────────────────────────────────────────────────────
 // Play happens close in (PLAY_ZOOM) so the details read.  The wheel / a pinch
-// can pull out as far as the old default view (ZOOM_MIN) — or a little closer
-// — to look around; a moment after the player lets go, the view drifts slowly
-// back to PLAY_ZOOM on its own.  A new session starts at the wide view, so the
+// can push in to ZOOM_MAX or pull out as far as the old default view (ZOOM_MIN);
+// a moment after the player lets go, the view drifts slowly back to PLAY_ZOOM
+// on its own, from either side.  A new session starts at the wide view, so the
 // same drift is the opening slow push-in on Webbs.  `userZoom` stays separate
 // from the celebration/death overrides (see tickZoom).
 const ZOOM_MAX       = 5.0    // most zoomed-IN (the closest the game has ever allowed)
-const PLAY_ZOOM      = ZOOM_MAX   // play sits fully zoomed in; players can only pull out
+const PLAY_ZOOM      = 3.75   // default playing view; players can push in to ZOOM_MAX or pull out
+const CELEB_ZOOM     = 5.5    // discoveries push in past the normal max for a close-up
 const ZOOM_MIN       = 2.0    // most zoomed-OUT = the previous default framing
 const ZOOM_STEP      = 0.15
 const ZOOM_HOLD      = 1.6    // s after the last zoom input before drifting back
@@ -695,6 +721,8 @@ let denProgression: SurvivorsProgression | null = new SurvivorsProgression(
 )
 denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
 startDenGuide()
+// Weapon icons are renders of the 3D models — draw them once the game is up
+window.setTimeout(warmWeaponThumbs, 1500)
 
 weaponUseSystem.setEnemies((activeScene as HomeBaseScene3D).enemies)
 webLauncher.setEnemies((activeScene as HomeBaseScene3D).enemies)
@@ -806,7 +834,7 @@ function isMeleeWeapon(wt: WeaponType): boolean {
 // Round 6 Issue 8 / Round 8 Issue 6: smooth zoom lerp toward celebration override.
 // Celebration zoom bumped 2.8 → 4.2 so the presented item is clearly readable.
 function tickZoom(delta: number): void {
-  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(4.2, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
+  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(CELEB_ZOOM, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
   rig.tickZoom(delta)
 }
 
@@ -1169,9 +1197,12 @@ function gameLoop() {
     const px = webbs.collisionBody.x
 
     if (currentZone === 'homeBase') {
-      if ((activeScene as HomeBaseScene3D).checkExitLeft(px)) {
+      const hbs = activeScene as HomeBaseScene3D
+      if (hbs.checkExitLeft(px)) {
         webbs.collisionBody.velocity.x = Math.max(0, webbs.collisionBody.velocity.x)
-        transitionTo('antColony')
+        // Something (a dodge, a web pull) carried him past the soft wall: put him back
+        if (!colonyUnlocked()) webbs.placeAt(hbs.exitTriggerX + COLONY_LOCK_MARGIN, webbs.collisionBody.z)
+        else transitionTo('antColony')
       }
     } else if (currentZone === 'antColony') {
       const ac = activeScene as AntColonyScene3D
@@ -1183,6 +1214,7 @@ function gameLoop() {
   // ── Player update ────────────────────────────────────────────────────────
 
   webbs.update(delta, input)
+  holdAtColonyMouth(delta)
   physicsWorld.update(delta)
   webbs.syncPosition()
 
@@ -1432,7 +1464,7 @@ function gameLoop() {
 
   // Follow with a lean toward the cursor; zoom target follows the celebration
   // override or the wheel (rig.update eases both, plus any shake).
-  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(4.2, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
+  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(CELEB_ZOOM, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
   if (cameraShakeRemaining > 0) {
     rig.shake(cameraShakeIntensity, cameraShakeRemaining)
     cameraShakeRemaining = 0

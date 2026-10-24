@@ -376,6 +376,15 @@ animates (stool, hammock, hearth, 3 survivors) → `ENDING_TEXT` story → `Endi
   - **Occluder fix:** `CameraOccluder` now restores each material's original `depthWrite`. It used to force it back to true, which was another source of dark silk. Materials with depthWrite off aren't registered as occluders.
   - `denFloorY(x, z)` (DenBuilder) is the floor height, used to drape flat silk.
 
+- **Weapons, discovery and colony lock:**
+  - **Weapon models** (`src/entities/WeaponModels.ts`): one model set used everywhere a weapon appears — leg tips (SpiderLegs), the discovery close-up, the card's live preview and the UI icons. The set: chitin shard sword, crescent chitin axe, party toothpick with a cellophane frill, silk-wound recurve bow with a thistle arrow, venom-gland flame breather, dragonfly-wing glider, and a brass silk-spinner Web Launcher.
+  - **Web Launcher placement:** it rides on Webbs' back (`LAUNCHER_*` in Webbs3D), and the silk line starts at `webbs.webMuzzle()`.
+  - **UI icons** (`src/ui/WeaponPreview.ts`): renders of the 3D models from a small second renderer (warmed 1.5 s after start). The card medal shows the model turning live. Without WebGL, the old SVG glyphs are used instead.
+  - **Discovery close-up** (`src/systems/DiscoveryFX3D.ts`, 3.0 s): the camera pushes in to `CELEB_ZOOM` 5.5 and a vignette closes in. A warm light shaft opens and the item rises spinning. At 0.7 s comes the hit: flash, two shockwave rings, god rays, orbiting sparkles and particle bursts. Then the item zips away into the card. Webbs3D no longer builds a presented item; the FX does.
+  - **Zoom:** default `PLAY_ZOOM` 3.75. Players can push in to 5.0 or pull out to 2.0, and it drifts back from either side.
+  - **Colony lock:** the den exit is locked until all three clues are read. A soft wall 2 wu short of the trigger (`holdAtColonyMouth` in main.ts) stops Webbs and shows the message. Saves that already reached the colony stay unlocked.
+  - **Workbench:** moved to (−18, −20), clear of the tipped bottle cap, banner and funnel. The spare-leg stand now sits past its end, and its collider is rotated to match the model.
+
 **All §5 review items are now addressed.** Open next: playtesting on real devices
 (touch feel, auto-aim, mix levels), Chapter Two (the Hive boss → leg tier 2, Web Glider
 and Flame Breather), and anything the playtest turns up.

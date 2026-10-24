@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { buildWeaponModel } from './WeaponModels'
 import { addRim } from '../env/Materials'
 
 // Cool silhouette rim for Webbs — matches his icy eye glow
@@ -833,130 +834,9 @@ export class SpiderLegs {
 
   // Build a THREE.Group whose local +Z axis is the "weapon forward" direction.
   // Position the group at the leg tip and orient +Z toward the facing direction.
+  // Models are shared with the discovery close-up and UI (entities/WeaponModels).
   private buildWeaponMesh(type: WeaponType): THREE.Group | null {
-    const gm = this.gradientMap
-    switch (type) {
-      case WeaponType.Sword: {
-        const g = new THREE.Group()
-        // Blade: thin box extending along +Z
-        const blade = new THREE.Mesh(
-          new THREE.BoxGeometry(0.045, 0.045, 0.42),
-          new THREE.MeshToonMaterial({ color: 0xd8d8d8, gradientMap: gm }),
-        )
-        blade.position.z = 0.23
-        // Crossguard perpendicular to blade
-        const guard = new THREE.Mesh(
-          new THREE.BoxGeometry(0.22, 0.05, 0.05),
-          new THREE.MeshToonMaterial({ color: 0x999999, gradientMap: gm }),
-        )
-        guard.position.z = 0.05
-        g.add(blade, guard)
-        return g
-      }
-      case WeaponType.Axe: {
-        const g = new THREE.Group()
-        // Handle: cylinder along Z
-        const handle = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.025, 0.025, 0.30, 6),
-          new THREE.MeshToonMaterial({ color: 0x5c3d1a, gradientMap: gm }),
-        )
-        handle.rotation.x = Math.PI / 2
-        handle.position.z = 0.15
-        // Axe head: flat box offset to one side of the tip
-        const head = new THREE.Mesh(
-          new THREE.BoxGeometry(0.10, 0.28, 0.08),
-          new THREE.MeshToonMaterial({ color: 0x888888, gradientMap: gm }),
-        )
-        head.position.z = 0.31
-        g.add(handle, head)
-        return g
-      }
-      case WeaponType.BoxingGloves: {
-        // Toothpick Stabber: long thin tapered spike
-        const g = new THREE.Group()
-        const shaft = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.020, 0.013, 0.50, 6),
-          new THREE.MeshToonMaterial({ color: 0xc8a96e, gradientMap: gm }),
-        )
-        shaft.rotation.x = Math.PI / 2
-        shaft.position.z = 0.25
-        const point = new THREE.Mesh(
-          new THREE.ConeGeometry(0.020, 0.10, 6),
-          new THREE.MeshToonMaterial({ color: 0xe0c080, gradientMap: gm }),
-        )
-        point.rotation.x = Math.PI / 2  // tip points in +Z
-        point.position.z = 0.55
-        g.add(shaft, point)
-        return g
-      }
-      case WeaponType.Bow: {
-        // Arrow: shaft + arrowhead
-        const g = new THREE.Group()
-        const shaft = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.012, 0.012, 0.42, 6),
-          new THREE.MeshToonMaterial({ color: 0x8b6914, gradientMap: gm }),
-        )
-        shaft.rotation.x = Math.PI / 2
-        shaft.position.z = 0.21
-        const head = new THREE.Mesh(
-          new THREE.ConeGeometry(0.028, 0.10, 6),
-          new THREE.MeshToonMaterial({ color: 0xcc99ff, gradientMap: gm }),
-        )
-        head.rotation.x = Math.PI / 2  // tip points in +Z
-        head.position.z = 0.47
-        g.add(shaft, head)
-        return g
-      }
-      case WeaponType.FlameBreather: {
-        // Nozzle: dark cylinder + glowing tip
-        const g = new THREE.Group()
-        const barrel = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.04, 0.04, 0.20, 8),
-          new THREE.MeshToonMaterial({ color: 0x333333, gradientMap: gm }),
-        )
-        barrel.rotation.x = Math.PI / 2
-        barrel.position.z = 0.10
-        const tipMesh = new THREE.Mesh(
-          new THREE.ConeGeometry(0.05, 0.08, 6),
-          new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff6600, emissiveIntensity: 0.6 }),
-        )
-        tipMesh.rotation.x = Math.PI / 2
-        tipMesh.position.z = 0.24
-        g.add(barrel, tipMesh)
-        return g
-      }
-      case WeaponType.Glider: {
-        // Folded wing flap
-        const g = new THREE.Group()
-        const wing = new THREE.Mesh(
-          new THREE.PlaneGeometry(0.18, 0.10),
-          new THREE.MeshToonMaterial({ color: 0x87ceeb, gradientMap: gm, transparent: true, opacity: 0.75, side: THREE.DoubleSide }),
-        )
-        wing.rotation.x = Math.PI / 6
-        wing.position.z = 0.08
-        g.add(wing)
-        return g
-      }
-      case WeaponType.WebLauncher: {
-        // Compact silk dispenser
-        const g = new THREE.Group()
-        const housing = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.05, 0.05, 0.10, 8),
-          new THREE.MeshToonMaterial({ color: 0x777777, gradientMap: gm }),
-        )
-        housing.rotation.x = Math.PI / 2
-        housing.position.z = 0.06
-        const bead = new THREE.Mesh(
-          new THREE.SphereGeometry(0.04, 8, 6),
-          new THREE.MeshStandardMaterial({ color: 0xddeeff, emissive: 0x99bbff, emissiveIntensity: 0.5 }),
-        )
-        bead.position.z = 0.14
-        g.add(housing, bead)
-        return g
-      }
-      default:
-        return null
-    }
+    return buildWeaponModel(type, this.gradientMap, WEAPON_COLORS[type])
   }
 
   destroy(): void {

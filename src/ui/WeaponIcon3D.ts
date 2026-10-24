@@ -1,8 +1,17 @@
 import { WeaponType } from '../systems/WeaponSystem'
+import { weaponThumb } from './WeaponPreview'
 
-// Returns SVG path/shape elements (no wrapper <svg> tag) centered at 0,0.
-// Coordinates fit within a roughly 22×22 unit box (matching WeaponIcon.ts 2D source).
+// Weapon icons are pictures of the real 3D models (WeaponPreview thumbnails);
+// the flat vector glyphs below are the fallback when WebGL isn't available.
+
+// SVG content (no wrapper <svg> tag) centred at 0,0 in a 22×22 box
 export function weaponIconPaths(weapon: WeaponType, color: string): string {
+  if (weapon === WeaponType.Empty) return ''
+  const url = weaponThumb(weapon)
+  return url ? `<image href="${url}" x="-11" y="-11" width="22" height="22"/>` : weaponGlyph(weapon, color)
+}
+
+function weaponGlyph(weapon: WeaponType, color: string): string {
   switch (weapon) {
     case WeaponType.Sword:
       return `<polygon points="-7,-2 -7,2 8,0" fill="${color}" stroke="#222" stroke-width="0.5"/>
@@ -32,9 +41,12 @@ export function weaponIconPaths(weapon: WeaponType, color: string): string {
   }
 }
 
-// Full <svg> element suitable for DOM innerHTML (e.g. EquipScreen, CraftingMenu).
+// Icon element for DOM innerHTML (e.g. EquipScreen, CraftingMenu).
 export function weaponIconSvg(weapon: WeaponType, color: string, size = 22): string {
-  const paths = weaponIconPaths(weapon, color)
+  if (weapon === WeaponType.Empty) return ''
+  const url = weaponThumb(weapon)
+  if (url) return `<img src="${url}" width="${size}" height="${size}" alt="" draggable="false" style="display:block">`
+  const paths = weaponGlyph(weapon, color)
   if (!paths) return ''
   return `<svg width="${size}" height="${size}" viewBox="-11 -11 22 22" xmlns="http://www.w3.org/2000/svg">${paths}</svg>`
 }

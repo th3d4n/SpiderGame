@@ -6,9 +6,13 @@ import { detectQualityTier } from '../core/Quality'
 
 // ─── Chamber constants — must match HomeBaseScene3D ───────────────────────────
 const CHAMBER_R = DEN_RADIUS              // 52 — floor/wall radius (structure)
-// Workbench sits in the LIFE cluster, matching HomeBaseScene3D.WORKBENCH_X/Z
-const WB_X      = -5.0  * LIFE_SCALE      // -10.4
-const WB_Z      = -7.5  * LIFE_SCALE      // -15.6
+// Workbench position — must match HomeBaseScene3D.WORKBENCH_X/Z
+const WB_X      = -18.0
+const WB_Z      = -20.0
+// The spare leg stands past the bench's right-hand end (the bench is turned
+// π/4, broadside to the camera), so the tall pole never covers the tabletop.
+const STAND_X   = WB_X + 3.4
+const STAND_Z   = WB_Z - 3.0
 // West exit gap arc — panels 3+4 of the octagon (135°–225°).  Burrow mounds
 // and blocked tunnels must not be placed inside this range.
 // Mound-free arc around the west exit.  Matches the DOORWAY (posts at z = ±22.3,
@@ -397,14 +401,14 @@ export function buildInventions(mat: DenMaterials, add: AddFn): THREE.Group {
   const S = LIFE_SCALE   // offsets from the (life-zone) workbench
   // Spare robotic leg segment upright on a stand
   const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.2*P, 0.3*P, 0.6*P, 12), mat.metalCap)
-  stand.position.set(WB_X + 1.0*S, 0.3*P, WB_Z + 0.5*S)
+  stand.position.set(STAND_X, 0.3*P, STAND_Z)
   group.add(stand)
 
   const legSeg = new THREE.Mesh(
     new THREE.CylinderGeometry(0.06*P, 0.05*P, 1.4*P, 8),
     new THREE.MeshStandardMaterial({ color: 0x3b3b42, metalness: 0.85, roughness: 0.35 }),
   )
-  legSeg.position.set(WB_X + 1.0*S, 1.2*P, WB_Z + 0.5*S)
+  legSeg.position.set(STAND_X, 1.2*P, STAND_Z)
   legSeg.rotation.z = 0.2
   group.add(legSeg)
 
@@ -413,7 +417,7 @@ export function buildInventions(mat: DenMaterials, add: AddFn): THREE.Group {
     new THREE.TorusGeometry(0.08*P, 0.02*P, 6, 12),
     new THREE.MeshStandardMaterial({ color: 0x00d9ff, emissive: 0x00aaff, emissiveIntensity: 1.6 }),
   )
-  spark.position.set(WB_X + 1.0*S, 1.8*P, WB_Z + 0.5*S)
+  spark.position.set(STAND_X, 1.8*P, STAND_Z)
   spark.rotation.x = Math.PI / 2
   group.add(spark)
 

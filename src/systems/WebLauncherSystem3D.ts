@@ -357,9 +357,9 @@ export class WebLauncherSystem3D {
 
   // ── Line rendering ─────────────────────────────────────────────────────────────
 
-  // Nozzle tip of the ventral launcher (body-local, scaled with Webbs)
+  // Spinneret tip of the back-mounted launcher
   private spinneret(webbs: Webbs3D, out: THREE.Vector3): THREE.Vector3 {
-    return webbs.group.localToWorld(out.set(0, 0.16, 0.31))
+    return webbs.webMuzzle(out)
   }
   private spinneretY(webbs: Webbs3D): number { return this.spinneret(webbs, _spin).y }
 
