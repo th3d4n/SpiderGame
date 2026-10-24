@@ -20,7 +20,7 @@
 //
 // Files live under `/public/audio/<file>.webm` (Opus) with `.mp3` fallback.
 
-import { AUDIO_SPRITES } from './audioSprites'
+import { AUDIO_SPRITES, AUDIO_HASH } from './audioSprites'
 
 export type SoundKey =
   // Player
@@ -439,7 +439,10 @@ export class AudioManager {
   }
 
   private async fetchDecode(file: string, ext: string): Promise<AudioBuffer> {
-    const res = await fetch(`/audio/${file}.${ext}`)
+    // ?v= is the file's content hash: a changed sound gets a new URL, so no
+    // cache (browser or CDN edge) can hand back the old file
+    const v = AUDIO_HASH[file]
+    const res = await fetch(`/audio/${file}.${ext}${v ? `?v=${v}` : ''}`)
     if (!res.ok) throw new Error(`${res.status}`)
     return await this.ctx.decodeAudioData(await res.arrayBuffer())
   }
