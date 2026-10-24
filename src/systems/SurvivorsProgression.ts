@@ -164,10 +164,11 @@ export class SurvivorsProgression {
     if (!h) return
 
     // Clone so we don't dirty the shared silk material instance
-    const repairMat = clonePatched(this.den.mat.silk)
+    const src       = (h.userData.repairMat as THREE.MeshStandardMaterial | undefined) ?? this.den.mat.silk
+    const repairMat = clonePatched(src)
     repairMat.opacity = 0.2   // start barely visible, bloom into pristine
     h.material = repairMat
-    this.tween.to(repairMat, 'opacity', 0.85, dur)
+    this.tween.to(repairMat, 'opacity', src.opacity, dur)
 
     // Lerp vertices back to the un-torn shape captured at build time
     const pos     = h.geometry.attributes.position as THREE.BufferAttribute

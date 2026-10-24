@@ -168,20 +168,24 @@ const RIM_FRAG = /* glsl */`
 }
 `
 
-interface PatchOpts { triplanar?: number; rim?: { color: number; strength: number } }
+// nearFade: alpha ramps 0 → 1 between these view-space distances, so thin
+// transparent things (silk) vanish instead of smearing across a close camera.
+interface PatchOpts { triplanar?: number; rim?: { color: number; strength: number }; nearFade?: [number, number] }
+type PatchData = { triScale?: { value: number }; rimColor?: { value: THREE.Color }; rimStrength?: { value: number }; nearFade?: { value: THREE.Vector2 }; patched?: string }
 
 // Material.clone() drops onBeforeCompile/customProgramCacheKey but JSON-copies
 // userData (incl. the `patched` flag), so a plain clone silently loses its
 // tri-planar mapping and rim.  Clone through here instead.
 export function clonePatched<T extends THREE.Material>(src: T): T {
   const c = src.clone() as T
-  const s = src.userData as { triScale?: { value: number }; rimColor?: { value: THREE.Color }; rimStrength?: { value: number }; patched?: string }
+  const s = src.userData as PatchData
   const ud = c.userData
-  delete ud.patched; delete ud.triScale; delete ud.rimColor; delete ud.rimStrength
+  delete ud.patched; delete ud.triScale; delete ud.rimColor; delete ud.rimStrength; delete ud.nearFade
   if (s.patched) {
     patchMaterial(c, {
       triplanar: s.triScale?.value,
       rim: s.rimColor && s.rimStrength ? { color: s.rimColor.value.getHex(), strength: s.rimStrength.value } : undefined,
+      nearFade: s.nearFade ? [s.nearFade.value.x, s.nearFade.value.y] : undefined,
     })
   }
   return c
@@ -190,13 +194,14 @@ export function clonePatched<T extends THREE.Material>(src: T): T {
 // Patch any lit three material (Toon/Standard/Lambert) in place.  Safe to call
 // more than once; options merge into the existing patch.
 export function patchMaterial(mat: THREE.Material, opts: PatchOpts): void {
-  const ud = mat.userData as { triScale?: { value: number }; rimColor?: { value: THREE.Color }; rimStrength?: { value: number }; patched?: string }
+  const ud = mat.userData as PatchData
   if (opts.triplanar !== undefined) ud.triScale = { value: opts.triplanar }
+  if (opts.nearFade) ud.nearFade = { value: new THREE.Vector2(...opts.nearFade) }
   if (opts.rim) {
     ud.rimColor    = { value: new THREE.Color(opts.rim.color) }
     ud.rimStrength = { value: opts.rim.strength }
   }
-  const key = `${ud.triScale ? 'T' : ''}${ud.rimColor ? 'R' : ''}`
+  const key = `${ud.triScale ? 'T' : ''}${ud.rimColor ? 'R' : ''}${ud.nearFade ? 'N' : ''}`
   if (ud.patched === key) return
   ud.patched = key
   mat.onBeforeCompile = (shader) => {
@@ -212,6 +217,13 @@ export function patchMaterial(mat: THREE.Material, opts: PatchOpts): void {
       shader.uniforms.uRimStrength = ud.rimStrength
       shader.fragmentShader = RIM_FRAG_DECL + shader.fragmentShader
         .replace('#include <opaque_fragment>', RIM_FRAG + '\n#include <opaque_fragment>')
+    }
+    if (ud.nearFade) {
+      shader.uniforms.uNearFade = ud.nearFade
+      shader.vertexShader = 'varying float vNearZ;\n' + shader.vertexShader
+        .replace('#include <project_vertex>', '#include <project_vertex>\nvNearZ = -mvPosition.z;')
+      shader.fragmentShader = 'uniform vec2 uNearFade;\nvarying float vNearZ;\n' + shader.fragmentShader
+        .replace('#include <opaque_fragment>', 'diffuseColor.a *= smoothstep(uNearFade.x, uNearFade.y, vNearZ);\n#include <opaque_fragment>')
     }
   }
   mat.customProgramCacheKey = () => 'nolegs-' + key

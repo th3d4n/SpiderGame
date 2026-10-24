@@ -100,19 +100,21 @@ const SPAWN_PLAN: Array<{ kind: SpawnKind; x: number; z: number; delay: number }
 ]
 
 // ── 20 chests, 6 mimics ────────────────────────────────────────────────────────
+// A few sit off their corridor line so a wall south-east of them (between the
+// item and the iso camera) can't hide them anywhere in their jitter range.
 const CHEST_DATA: Array<{ x: number; cz: number; isMimic: boolean }> = [
   // C0
   { x: -17, cz: -10, isMimic: false }, { x:  -6, cz: -10, isMimic: true  },
-  { x:   5, cz: -10, isMimic: false }, { x:  14, cz: -10, isMimic: false },
+  { x:   5, cz: -11.25, isMimic: false }, { x:  14, cz: -10, isMimic: false },
   // C1
   { x: -14, cz:  -5, isMimic: false }, { x:  -3, cz:  -5, isMimic: true  },
   { x:   8, cz:  -5, isMimic: false }, { x:  17, cz:  -5, isMimic: false },
   // C2 (entry)
   { x: -18, cz:   0, isMimic: false }, { x:  -9, cz:   0, isMimic: false },
-  { x:   3, cz:   0, isMimic: true  }, { x:  11, cz:   0, isMimic: false },
+  { x:   3, cz:  -1, isMimic: true  }, { x:  11, cz:   0, isMimic: false },
   // C3
-  { x: -15, cz:   5, isMimic: false }, { x:  -5, cz:   5, isMimic: false },
-  { x:   4, cz:   5, isMimic: true  }, { x:  16, cz:   5, isMimic: false },
+  { x: -14.5, cz: 4.75, isMimic: false }, { x:  -6, cz: 4.25, isMimic: false },
+  { x:   3.5, cz: 4.25, isMimic: true  }, { x: 16.5, cz: 4.25, isMimic: false },
   // C4
   { x: -16, cz:  10, isMimic: false }, { x:  -4, cz:  10, isMimic: true  },
   { x:   6, cz:  10, isMimic: false }, { x:  15, cz:  10, isMimic: true  },
@@ -129,7 +131,7 @@ const HP_MODULE_DATA: Array<{ x: number; cz: number }> = [
   { x: -19, cz: -10 }, { x: -10, cz: -10 }, { x:   6, cz: -10 },
   { x: -16, cz:  -5 }, { x:   0, cz:  -5 }, { x:  12, cz:  -5 },
   { x: -13, cz:   0 }, { x:   0, cz:   0 }, { x:  13, cz:   0 },
-  { x: -18, cz:   5 }, { x:  -4, cz:   5 }, { x:  10, cz:   5 },
+  { x: -18.5, cz: 4.25 }, { x:  -4, cz:   5 }, { x:  10, cz:   5 },   // first one kept clear of the wall in front
   { x: -12, cz:  10 }, { x:   4, cz:  10 }, { x:  17, cz:  10 },
 ]
 

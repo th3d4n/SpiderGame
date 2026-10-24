@@ -354,6 +354,27 @@ animates (stool, hammock, hearth, 3 survivors) → `ENDING_TEXT` story → `Endi
   iris rings, dark chelicerae + fangs, pedipalps, spinnerets, instanced fur. Same
   socket geometry for the legs. `addRim` now honours `material.userData.noRim`.
 - Dev: `__nolegs.zoom(z|null)` and `__nolegs.photo([camX,camY,camZ,lookX,lookY,lookZ]|null)`.
+- **Close play camera** (main.ts "Zoom"): play sits at `PLAY_ZOOM` = `ZOOM_MAX` = 5.0,
+  the closest zoom the game has allowed, so players can only pull out. Wheel/pinch
+  range is 2.0 (the old view) → 5.0. 1.6 s after the last zoom input the view eases back
+  to 5.0 (`ZOOM_RETURN` 0.8/s). Sessions start at 2.0, so the same drift is the
+  opening push-in once the story closes. Touch: two-finger pinch off the controls.
+- **Text boxes:** Space/Enter = next (finish the line, then go to the next page), M = skip.
+  The touch Skip chip presses M.
+- **Sightlines:** each major item was ray-tested along the camera direction, and blocked
+  items were moved. In the den: the card (behind the big junk box) and two pickups (one
+  behind that box, one under a hanging silk sheet). In the colony: six chests and one
+  berry that a wall south-east of them could hide within their z-jitter. To recheck, cast
+  from the item toward the camera, dir (sin45·cos32, sin32, cos45·cos32).
+
+- **Spider-den pass** (`src/env/DenSilk.ts`):
+  - **Textures:** drawn once on canvas (512 on the low tier): orb web, sheet tangle, tiling gauze, hammock net.
+  - **Dressing:** six orb webs on the far walls, orb-web seals over the four blocked tunnels, sheet webs where the floor meets the wall, and a woven silk mat under the family table. Also 20 draglines with dewdrops, a pantry of silk-wrapped food on a line, and a nursery of hatched egg sacs.
+  - **Restyled:** the hammocks are net silk with a real sag. The funnel and the entrance curtain are gauze, and the bridges are sheet web.
+  - **How silk renders:** it's transparent with `depthWrite: false`, so the ink pass doesn't draw it as black wire and it never hides items. Same-material pieces are merged into single meshes (about eight draw calls).
+  - **Near fade:** `patchMaterial({ nearFade: [8, 16] })` fades silk near the lens, because the close camera sits at the height of the ceiling cables. `clonePatched` keeps the fade.
+  - **Occluder fix:** `CameraOccluder` now restores each material's original `depthWrite`. It used to force it back to true, which was another source of dark silk. Materials with depthWrite off aren't registered as occluders.
+  - `denFloorY(x, z)` (DenBuilder) is the floor height, used to drape flat silk.
 
 **All §5 review items are now addressed.** Open next: playtesting on real devices
 (touch feel, auto-aim, mix levels), Chapter Two (the Hive boss → leg tier 2, Web Glider

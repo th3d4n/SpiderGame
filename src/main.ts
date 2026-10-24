@@ -628,22 +628,39 @@ const touch          = new TouchControls(document.getElementById('game-container
 quickItems.onUse = (k) => { const code = `Key${k}`; input.press(code); requestAnimationFrame(() => input.release(code)) }
 hud.onSlotTap = (i) => { if (webbs.weaponSystem.isSlotUnlocked(i)) { lastActiveSlot = i; audio.play('ui_hover') } }
 
-// ─── Mouse-wheel zoom ─────────────────────────────────────────────────────────
-// Round 6 Issue 8: wheel adjusts a separate `userZoom`; the game loop lerps the
-// camera toward `celebZoom ? 2.8 : userZoom` so the celebration override works
-// without permanently overwriting the player's chosen zoom.
+// ─── Zoom ─────────────────────────────────────────────────────────────────────
+// Play happens close in (PLAY_ZOOM) so the details read.  The wheel / a pinch
+// can pull out as far as the old default view (ZOOM_MIN) — or a little closer
+// — to look around; a moment after the player lets go, the view drifts slowly
+// back to PLAY_ZOOM on its own.  A new session starts at the wide view, so the
+// same drift is the opening slow push-in on Webbs.  `userZoom` stays separate
+// from the celebration/death overrides (see tickZoom).
+const ZOOM_MAX       = 5.0    // most zoomed-IN (the closest the game has ever allowed)
+const PLAY_ZOOM      = ZOOM_MAX   // play sits fully zoomed in; players can only pull out
+const ZOOM_MIN       = 2.0    // most zoomed-OUT = the previous default framing
+const ZOOM_STEP      = 0.15
+const ZOOM_HOLD      = 1.6    // s after the last zoom input before drifting back
+const ZOOM_RETURN    = 0.8    // 1/s — slow ease back to PLAY_ZOOM (~4 s to settle)
+let   userZoom       = ZOOM_MIN
+let   zoomHoldT      = 0.6    // the opening push-in starts shortly after play begins
 
-const ZOOM_MIN  = 1.6   // most zoomed-OUT
-const ZOOM_MAX  = 5.0   // most zoomed-IN — raised for the 5× den (Webbs reads small at FRUSTUM 36)
-const ZOOM_STEP = 0.15
-let   userZoom  = 2.0
-
+function nudgeZoom(next: number): void {
+  userZoom  = THREE.MathUtils.clamp(next, ZOOM_MIN, ZOOM_MAX)
+  zoomHoldT = ZOOM_HOLD
+}
 window.addEventListener('wheel', (e: WheelEvent) => {
   if (mainMenuActive) return
   e.preventDefault()
   const dir = e.deltaY > 0 ? -1 : 1   // wheel up = zoom in
-  userZoom = THREE.MathUtils.clamp(userZoom + dir * ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
+  nudgeZoom(userZoom + dir * ZOOM_STEP)
 }, { passive: false })
+touch.onPinch = (ratio) => { if (!mainMenuActive) nudgeZoom(userZoom * ratio) }   // fingers apart = closer
+
+// Per frame during play: hold, then ease back toward the close play view
+function driftZoom(dt: number): void {
+  if (zoomHoldT > 0) { zoomHoldT -= dt; return }
+  userZoom += (PLAY_ZOOM - userZoom) * (1 - Math.exp(-ZOOM_RETURN * dt))
+}
 
 // ─── Zone management ──────────────────────────────────────────────────────────
 
@@ -789,7 +806,7 @@ function isMeleeWeapon(wt: WeaponType): boolean {
 // Round 6 Issue 8 / Round 8 Issue 6: smooth zoom lerp toward celebration override.
 // Celebration zoom bumped 2.8 → 4.2 so the presented item is clearly readable.
 function tickZoom(delta: number): void {
-  rig.zoomTarget = devZoom ?? (celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom)
+  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(4.2, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
   rig.tickZoom(delta)
 }
 
@@ -893,6 +910,7 @@ function gameLoop() {
   if (quality.dynamicRes) dynamicRes.sample(rawDelta)
   let delta = rawDelta
   if (hitStopT > 0) { hitStopT -= rawDelta; delta = rawDelta * HIT_STOP_SCALE }
+  if (!mainMenuActive && !gamePaused && !transitioning) driftZoom(rawDelta)
   autosaveT += rawDelta
   if (autosaveT >= AUTOSAVE_EVERY && !gamePaused && !transitioning && dyingT < 0) { autosaveT = 0; persist() }
   if (endingPhase === 'warming') tickEnding(rawDelta)
@@ -1414,7 +1432,7 @@ function gameLoop() {
 
   // Follow with a lean toward the cursor; zoom target follows the celebration
   // override or the wheel (rig.update eases both, plus any shake).
-  rig.zoomTarget = devZoom ?? (celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom)
+  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(4.2, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
   if (cameraShakeRemaining > 0) {
     rig.shake(cameraShakeIntensity, cameraShakeRemaining)
     cameraShakeRemaining = 0

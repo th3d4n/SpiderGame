@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { surface, clonePatched } from '../env/Materials'
 import { DEN_RADIUS, DEN_SCALE, PROP_SCALE, LIFE_SCALE } from '../env/denScale'
+import { createSilkMaterials, type SilkMaterials } from '../env/DenSilk'
+import { detectQualityTier } from '../core/Quality'
 
 // ─── Chamber constants — must match HomeBaseScene3D ───────────────────────────
 const CHAMBER_R = DEN_RADIUS              // 52 — floor/wall radius (structure)
@@ -16,7 +18,9 @@ const EXIT_GAP_START = Math.PI * 0.85   // 153°
 const EXIT_GAP_END   = Math.PI * 1.15   // 207°
 
 // ─── Material bag type ────────────────────────────────────────────────────────
-export interface DenMaterials {
+// Silk (thread, webOrb, webFloor, webSheet, gauze, gauzeTorn) comes from DenSilk.
+// `silk` / `silkTorn` are the older plain sheets, kept for SurvivorsProgression.
+export interface DenMaterials extends SilkMaterials {
   grad:      THREE.Texture
   earth:     THREE.MeshToonMaterial
   earthDark: THREE.MeshToonMaterial
@@ -89,7 +93,7 @@ function buildCircularGrid(radius: number, rings: number, segs: number): THREE.B
 // Catenary silk strand between two world-space points
 function silkStrand(
   a: THREE.Vector3, b: THREE.Vector3,
-  mat: THREE.Material, sag = 0.6, segs = 12,
+  mat: THREE.Material, sag = 0.6, segs = 12, radius = 0.03,
 ): THREE.Mesh {
   const pts: THREE.Vector3[] = []
   for (let i = 0; i <= segs; i++) {
@@ -99,7 +103,7 @@ function silkStrand(
     pts.push(p)
   }
   return new THREE.Mesh(
-    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), segs, 0.015, 5, false),
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), segs, radius, 3, false),
     mat,
   )
 }
@@ -115,13 +119,15 @@ function silkHammock(
   for (let i = 0; i < pos.count; i++) {
     const nx = pos.getX(i) / (w / 2)
     const nz = pos.getZ(i) / (d / 2)
-    let y = -(1 - nx * nx) * (1 - nz * nz) * (torn ? 0.9 : 0.5)
-    if (torn && nx > 0.4 && nz > 0.4) y -= 1.4  // ripped corner drops hard
+    // Slung from its two ends: deep sag along the length, a gentle curl across
+    let y = -(1 - nx * nx) * (0.6 + 0.4 * (1 - nz * nz)) * w * (torn ? 0.2 : 0.15)
+    if (torn && nx > 0.4 && nz > 0.4) y -= w * 0.3  // ripped corner drops hard
     pos.setY(i, y)
   }
   g.computeVertexNormals()
-  const m = new THREE.Mesh(g, torn ? mat.silkTorn : mat.silk)
+  const m = new THREE.Mesh(g, torn ? mat.netTorn : mat.net)
   m.position.copy(center)
+  m.userData.repairMat = mat.net   // SurvivorsProgression re-spins torn ones in this
   return m
 }
 
@@ -137,6 +143,7 @@ export function buildDenMaterials(gradientMap: THREE.Texture): DenMaterials {
   const earth = (color: number, tex: 'dirt' | 'wood' = 'dirt', scale = 0.16) =>
     surface({ color, tex, texScale: scale, gradientMap })
   return {
+    ...createSilkMaterials(detectQualityTier() === 'low'),
     grad:      gradientMap,
     earth:     earth(0x6a4c34),
     earthDark: earth(0x52392a),
@@ -171,23 +178,22 @@ export function buildDenMaterials(gradientMap: THREE.Texture): DenMaterials {
 // Replaces buildGround()'s flat CircleGeometry.
 // Shape: gentle rolling unevenness + central depression where family gathered
 // + raised rim that reads as the bowl of a burrow.
+export function denFloorY(x: number, z: number): number {
+  const d = Math.sqrt(x * x + z * z)
+  // Soft rolling unevenness — a den floor is not a table
+  let y = Math.sin(x * 0.4) * Math.cos(z * 0.35) * 0.18
+        + Math.sin(x * 1.3 + z) * 0.06
+  // Raised lip near the rim → reads as the bowl of a burrow
+  if (d > CHAMBER_R * 0.72) y += (d - CHAMBER_R * 0.72) * 0.4
+  // (Central depression removed: it sank the floor ~1.2 wu below the y=0 the
+  // furniture is placed at, so props floated.)
+  return y
+}
+
 export function buildDenFloor(mat: DenMaterials, add: AddFn): THREE.Mesh {
   const geo = buildCircularGrid(CHAMBER_R, 22, 56)
   const pos = geo.attributes.position as THREE.BufferAttribute
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    const z = pos.getZ(i)
-    const d = Math.sqrt(x * x + z * z)
-    // Soft rolling unevenness — a den floor is not a table
-    let y = Math.sin(x * 0.4) * Math.cos(z * 0.35) * 0.18
-          + Math.sin(x * 1.3 + z) * 0.06
-    // Raised lip near the rim → reads as the bowl of a burrow
-    if (d > CHAMBER_R * 0.72) y += (d - CHAMBER_R * 0.72) * 0.4
-    // (Central depression removed: it sank the floor ~1.2 wu below the y=0 the
-    // furniture is placed at, so props floated.  Revisit with prop grounding in
-    // the visual pass.)
-    pos.setY(i, y)
-  }
+  for (let i = 0; i < pos.count; i++) pos.setY(i, denFloorY(pos.getX(i), pos.getZ(i)))
   pos.needsUpdate = true
   geo.computeVertexNormals()
   const floor = new THREE.Mesh(geo, mat.floor)
@@ -256,16 +262,13 @@ export function buildSilkArchitecture(mat: DenMaterials, add: AddFn): THREE.Grou
   for (let i = 0; i < anchors.length; i++) {
     for (let j = i + 1; j < anchors.length; j++) {
       if (Math.random() > 0.55) continue
-      group.add(silkStrand(anchors[i], anchors[j], mat.silk, 1.0 + Math.random() * 0.8))
+      group.add(silkStrand(anchors[i], anchors[j], mat.thread, 1.0 + Math.random() * 0.8))
     }
   }
 
   // Funnel web — classic spider-home feature, northwest corner
-  const funnelMat = new THREE.MeshStandardMaterial({
-    color: 0xe8e0d0, roughness: 0.45, metalness: 0.0,
-    transparent: true, opacity: 0.4, side: THREE.DoubleSide,
-    emissive: 0x2a2620, emissiveIntensity: 0.15,
-  })
+  const funnelMat = clonePatched(mat.gauze)
+  funnelMat.opacity = 0.7
   const funnel = new THREE.Mesh(new THREE.ConeGeometry(2.2*S, 3.5*S, 16, 4, true), funnelMat)
   funnel.position.set(-7*S, 2.5*S, -6*S)
   funnel.rotation.x = Math.PI  // mouth opens upward
@@ -298,8 +301,8 @@ export function buildSilkArchitecture(mat: DenMaterials, add: AddFn): THREE.Grou
     group.add(hammock)
     // Suspension lines up toward the ceiling
     const top = b.c.clone(); top.y += 3.5 * S
-    group.add(silkStrand(b.c.clone().add(new THREE.Vector3(-b.w / 2, 0, 0)), top, mat.silk, 0.1))
-    group.add(silkStrand(b.c.clone().add(new THREE.Vector3( b.w / 2, 0, 0)), top, mat.silk, 0.1))
+    group.add(silkStrand(b.c.clone().add(new THREE.Vector3(-b.w / 2, 0, 0)), top, mat.thread, 0.1))
+    group.add(silkStrand(b.c.clone().add(new THREE.Vector3( b.w / 2, 0, 0)), top, mat.thread, 0.1))
   }
   // Expose for SurvivorsProgression.repairHammock() — index order matches level transitions
   group.userData.tornHammocks = tornHammocks
@@ -481,7 +484,7 @@ export function buildBirthdayBash(mat: DenMaterials, add: AddFn): THREE.Group {
     flag.rotation.x = Math.PI; flag.rotation.y = Math.PI / 4
     group.add(flag)
   }
-  group.add(silkStrand(bannerStart, bannerEnd, mat.silkTorn, 0.9))
+  group.add(silkStrand(bannerStart, bannerEnd, mat.thread, 0.9))
 
   // Confetti — pre-flagged transparent so SurvivorsProgression._tidyConfetti can fade them.
   // Three shared materials (one per colour) are fine because _tidyConfetti clones per-piece.
@@ -600,8 +603,8 @@ export function buildExits(mat: DenMaterials, add: AddFn): THREE.Group {
       group.add(rock)
     }
 
-    // Web seal over the collapse — spun shut
-    const seal = new THREE.Mesh(new THREE.CircleGeometry(1.9*S, 16), mat.silkTorn)
+    // Web seal over the collapse — an orb web spun across the dark mouth
+    const seal = new THREE.Mesh(new THREE.CircleGeometry(1.9*S, 24), mat.webOrb)
     seal.position.set(x * 0.94, 2.0*S, z * 0.94)
     seal.lookAt(0, 2.0*S, 0)
     group.add(seal)
@@ -610,7 +613,7 @@ export function buildExits(mat: DenMaterials, add: AddFn): THREE.Group {
   const S = DEN_SCALE
   // Silk web-bridge surface leading to the west exit (toward -X).
   const walkGeo = new THREE.PlaneGeometry(6.0*S, 1.6*S, 6, 2)
-  const walk    = new THREE.Mesh(walkGeo, mat.silk)
+  const walk    = new THREE.Mesh(walkGeo, mat.webSheet)
   walk.rotation.x = -Math.PI / 2 + 0.12
   walk.position.set(-7.8*S, 0.5*S, 0)
   group.add(walk)
@@ -622,12 +625,12 @@ export function buildExits(mat: DenMaterials, add: AddFn): THREE.Group {
   group.add(silkStrand(
     bStart.clone().add(new THREE.Vector3(0, 0,  off)),
     bEnd.clone().add(  new THREE.Vector3(0, 0,  off)),
-    mat.silk, 0.15*S,
+    mat.thread, 0.15*S,
   ))
   group.add(silkStrand(
     bStart.clone().add(new THREE.Vector3(0, 0, -off)),
     bEnd.clone().add(  new THREE.Vector3(0, 0, -off)),
-    mat.silk, 0.15*S,
+    mat.thread, 0.15*S,
   ))
 
   add(group)

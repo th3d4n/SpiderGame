@@ -47,6 +47,7 @@ export class CameraOccluder {
         // Store originals so we can restore when unoccluded
         c.userData._occOrigOpacity     = (c as THREE.MeshStandardMaterial).opacity ?? 1
         c.userData._occOrigTransparent = (c as THREE.MeshStandardMaterial).transparent ?? false
+        c.userData._occOrigDepthWrite  = c.depthWrite
         mats.push(c)
         return c
       })
@@ -94,7 +95,7 @@ export class CameraOccluder {
         m.opacity    = origOp * (1 - t) + this.fadeTarget * t
         const tr = t > 0.001 ? true : origTr
         if (m.transparent !== tr) { m.transparent = tr; m.needsUpdate = true }
-        m.depthWrite  = t > 0.5   ? false : true
+        m.depthWrite  = t > 0.5   ? false : (m.userData._occOrigDepthWrite as boolean ?? true)
       }
     }
   }

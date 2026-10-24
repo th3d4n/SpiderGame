@@ -13,7 +13,7 @@ import { WeaponType } from '../systems/WeaponSystem'
 //   • top bar: Pause → Escape, Equip → KeyI; the weapon ring and brew strip
 //     become tappable (main wires those)
 //   • menus: a Back button presses Escape; story text and reward cards take a
-//     tap anywhere (→ Enter) and a Skip chip (→ Space)
+//     tap anywhere (→ Enter = next) and a Skip chip (→ M)
 // Touch mode turns on with the first touch and off again on any key press or
 // real mouse movement (hybrid laptops).  `?touch=1` forces it for testing.
 // Coordinates are converted into the 1280×720 logical layout, because the
@@ -105,7 +105,10 @@ export class TouchControls {
   private lastWeapon: WeaponType | null = null
   private mode: TouchMenuMode = 'hidden'
   private triedFullscreen = false
+  private pinch = new Map<number, { x: number; y: number }>()   // fingers not on a control
+  private pinchDist = 0
   active = false
+  onPinch?: (ratio: number) => void   // > 1 = fingers spreading (zoom in)
 
   constructor(container: HTMLElement, input: InputManager) {
     this.input = input
@@ -128,7 +131,7 @@ export class TouchControls {
     const equip = this.button('tb top equip play-only', '◈', 'KeyI')
     pause.title = 'Menu'; equip.title = 'Equip'
     const back  = this.button('tb back', '‹ Back', 'Escape')
-    const skip  = this.button('tb skip', 'Skip', 'Space')
+    const skip  = this.button('tb skip', 'Skip', 'KeyM')   // matches the text box: Space = next, M = skip
     const catcher = h('div', 'catch')
     catcher.addEventListener('pointerdown', (e) => { e.preventDefault(); this.input.press('Enter') })
     catcher.addEventListener('pointerup',   () => this.input.release('Enter'))
@@ -140,6 +143,7 @@ export class TouchControls {
     container.appendChild(this.root)
 
     this.bindStick()
+    this.bindPinch()
     this.bindModeSwitching()
     const orient = () => this.updateRotatePrompt()
     window.addEventListener('resize', orient)
@@ -229,6 +233,35 @@ export class TouchControls {
     const end = (e: PointerEvent) => { if (e.pointerId === this.stickId) this.releaseStick() }
     this.zone.addEventListener('pointerup', end)
     this.zone.addEventListener('pointercancel', end)
+  }
+
+  // Two fingers that both landed off the controls (stick zone, buttons) zoom the
+  // view; any other combination (stick + Attack…) is left alone.
+  private bindPinch(): void {
+    const onControl = (t: EventTarget | null) =>
+      t instanceof Element && !!t.closest('#nl-touch .tb, #nl-touch .zone, #nl-touch .catch, #weapon-ring, #nl-quick')
+    window.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' || !this.active || this.mode !== 'play' || onControl(e.target)) return
+      e.preventDefault()   // no emulated mouse click → no stray attack from a pinch finger
+      this.pinch.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (this.pinch.size === 2) this.pinchDist = this.spread()
+    })
+    window.addEventListener('pointermove', (e) => {
+      const p = this.pinch.get(e.pointerId)
+      if (!p) return
+      p.x = e.clientX; p.y = e.clientY
+      if (this.pinch.size !== 2 || this.pinchDist <= 0) return
+      const d = this.spread()
+      if (d > 0) { this.onPinch?.(d / this.pinchDist); this.pinchDist = d }
+    })
+    const end = (e: PointerEvent) => { if (this.pinch.delete(e.pointerId)) this.pinchDist = 0 }
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+  }
+
+  private spread(): number {
+    const [a, b] = [...this.pinch.values()]
+    return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0
   }
 
   private releaseStick(): void {

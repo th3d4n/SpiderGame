@@ -6,7 +6,7 @@ import { h, richText } from './theme'
 // Story pages, notes, clues and tutorials.
 //  • 'panel' (default): a note card with an accent ribbon.
 //  • 'story': cinematic — letterbox bars, large serif text over the dimmed world.
-// Text types on (M / Enter finishes the line, then advances); Space skips.
+// Text types on (Space / Enter finishes the line, then goes to the next page); M skips.
 // "[Q]"-style tokens render as keycaps.
 
 export interface TextDisplayData {
@@ -83,7 +83,7 @@ export class TextDisplay3D {
     this.root.style.setProperty('--a', accent)
     this.root.innerHTML = ''
 
-    const hints = '<span><span class="nl-key">M</span> continue</span><span><span class="nl-key">Space</span> skip</span>'
+    const hints = '<span><span class="nl-key">Space</span> next</span><span><span class="nl-key">M</span> skip</span>'
     if (story) {
       const scrim = h('div', 'nl-scrim')
       scrim.style.background = 'rgba(5,4,3,.72)'
@@ -130,13 +130,13 @@ export class TextDisplay3D {
     // The key that opened this (Space/Enter on the title, E on a card) is still
     // "just down" this frame — ignore input briefly so it can't skip the text.
     if (performance.now() - this.shownAt < 250) return
-    if (input.justDown('KeyM') || input.justDown('Enter')) {
+    if (input.justDown('Space') || input.justDown('Enter')) {
       const full = this.pages[this.pageIndex]
       if (this.shown < full.length) { this.shown = full.length; this.render() }       // finish the line
       else if (this.pageIndex < this.pages.length - 1) { this.showPage(this.pageIndex + 1); audio.play('ui_text_advance') }
       else this.close()
     }
-    if (input.justDown('Space')) this.close()
+    if (input.justDown('KeyM')) this.close()
   }
 
   close(): void {

@@ -6,6 +6,7 @@ import type { Enemy3D } from '../entities/Enemy3D'
 import { audio } from '../systems/AudioManager'
 import { DEN_SCALE, PROP_SCALE } from '../env/denScale'
 import { buildAntColonyEntrance } from '../env/AntColonyEntrance'
+import { buildDenSilk } from '../env/DenSilk'
 import { buildMaterialPickup, buildBirthdayCard, buildGift, buildToothpickFind, buildWorkbench as buildWorkbenchProp } from '../env/Props'
 import {
   buildDenMaterials,
@@ -18,6 +19,7 @@ import {
   buildBirthdayBash,
   buildAttackEvidence,
   buildExits,
+  denFloorY,
   type DenHandles,
 } from './DenBuilder'
 
@@ -53,8 +55,8 @@ function createNoiseTexture(
 // Their geometry stays Webbs-sized (see buildMaterialPickups — no size scaling).
 const MATERIAL_PICKUPS = [
   { id: 0,  x: -10.4,  z: -10.4,  mat: 'SilkThread',  qty: 3, color: 0xddeeff },
-  { id: 1,  x:   8.32, z: -11.44, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },
-  { id: 2,  x:  12.48, z:   4.16, mat: 'WebFluid',     qty: 2, color: 0x44aaff },
+  { id: 1,  x:   5.91, z: -10.79, mat: 'ChitinShard',  qty: 2, color: 0x88aa44 },   // moved out from under a hanging silk sheet
+  { id: 2,  x:   9.98, z:  -0.17, mat: 'WebFluid',     qty: 2, color: 0x44aaff },   // was behind the big junk box from the camera
   { id: 3,  x:  -5.2,  z:  12.48, mat: 'SilkThread',   qty: 2, color: 0xddeeff },
   { id: 4,  x:   3.12, z: -13.52, mat: 'ChitinShard',  qty: 3, color: 0x88aa44 },
   { id: 5,  x: -12.48, z:   6.24, mat: 'BoneFragment', qty: 2, color: 0xccbbaa },
@@ -75,8 +77,9 @@ export class HomeBaseScene3D {
   // full den radius — keeps the home intimate inside the big room.
   static readonly WORKBENCH_X    = -10.4   // -5.0  × LIFE_SCALE
   static readonly WORKBENCH_Z    = -15.6   // -7.5  × LIFE_SCALE
-  static readonly CARD_X         =  11.44  //  5.5  × LIFE_SCALE
-  static readonly CARD_Z         =   9.36  //  4.5  × LIFE_SCALE
+  // Card sits clear of the big junk box that hid it from the iso camera (sightline-tested)
+  static readonly CARD_X         =   6.68
+  static readonly CARD_Z         =   6.61
   static readonly GIFT_X         =  11.44  //  5.5  × LIFE_SCALE
   static readonly GIFT_Z         =  -6.24  // -3.0  × LIFE_SCALE
   static readonly TOOTHPICK_X    =  -6.24  // -3.0  × LIFE_SCALE
@@ -172,6 +175,7 @@ export class HomeBaseScene3D {
     const bash   = buildBirthdayBash(denMat, add)
     const attack = buildAttackEvidence(denMat, add)
     const exits  = buildExits(denMat, add)
+    buildDenSilk(denMat, denFloorY, add)   // orb + sheet webs, silk mat, draglines, pantry, nursery
 
     // Collect handles for SurvivorsProgression (must be set before scene is returned)
     this.denHandles = { mat: denMat, walls, silk, junk, invent, bash, attack, exits }
@@ -370,10 +374,6 @@ export class HomeBaseScene3D {
       cap.position.set(fx, 1.11, fz); cap.castShadow = true; this.add(cap)
     }
 
-    // Cobwebs in alcove corners — positions ×DEN_SCALE, scale ×PROP_SCALE
-    this.buildCobweb(-47.0,  47.0, 0.9 * PROP_SCALE)
-    this.buildCobweb( 47.0, -47.0, 0.7 * PROP_SCALE)
-    this.buildCobweb(-47.0, -47.0, 0.6 * PROP_SCALE)
   }
 
   // ── Attack damage (Round 6 Issue 9) ───────────────────────────────────────────
@@ -419,38 +419,6 @@ export class HomeBaseScene3D {
       if (idx !== -1) this.tracked.splice(idx, 1)
       this.pickupMeshes[id] = null
     }
-  }
-
-  private buildCobweb(x: number, z: number, scale: number): void {
-    const webMat = new THREE.LineBasicMaterial({ color: 0xaaaacc, transparent: true, opacity: 0.5 })
-    const spokes = 7
-    const rings  = 3
-    const pts: THREE.Vector3[] = []
-
-    for (let s = 0; s < spokes; s++) {
-      const angle = (s / spokes) * Math.PI * 2
-      for (let r = 1; r <= rings; r++) {
-        const r0 = (r - 1) / rings * scale
-        const r1 = r       / rings * scale
-        const a0 = (s / spokes) * Math.PI * 2
-        const a1 = ((s + 1) % spokes / spokes) * Math.PI * 2
-        pts.push(
-          new THREE.Vector3(x + Math.cos(a0) * r0 * 0.6, WALL_H - r * 0.2,  z + Math.sin(a0) * r0),
-          new THREE.Vector3(x + Math.cos(a0) * r1 * 0.6, WALL_H - r * 0.22, z + Math.sin(a0) * r1)
-        )
-        pts.push(
-          new THREE.Vector3(x + Math.cos(a0) * r1 * 0.6, WALL_H - r * 0.22, z + Math.sin(a0) * r1),
-          new THREE.Vector3(x + Math.cos(a1) * r1 * 0.6, WALL_H - r * 0.22, z + Math.sin(a1) * r1)
-        )
-      }
-      pts.push(
-        new THREE.Vector3(x, WALL_H, z),
-        new THREE.Vector3(x + Math.cos(angle) * scale * 0.6, WALL_H * 0.35, z + Math.sin(angle) * scale)
-      )
-    }
-
-    const geo = new THREE.BufferGeometry().setFromPoints(pts)
-    this.add(new THREE.LineSegments(geo, webMat))
   }
 
   // ── Lighting ──────────────────────────────────────────────────────────────────
@@ -576,6 +544,7 @@ export class HomeBaseScene3D {
         if (!m.isMesh) return
         if (m === this.floorMesh) return
         if (m.userData.noOcclude) return
+        if (!Array.isArray(m.material) && m.material.depthWrite === false) return   // see-through silk
         box.setFromObject(m)
         box.getSize(size)
         if (size.y >= MIN_H) out.push(m)

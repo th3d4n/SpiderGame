@@ -25,7 +25,7 @@ function silkLine(
     pts.push(p)
   }
   return new THREE.Mesh(
-    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), segs, 0.02 * S, 5, false),
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), segs, 0.02 * S, 3, false),
     mat,
   )
 }
@@ -123,7 +123,7 @@ export function buildAntColonyEntrance(
   for (let i = 0; i < 7; i++) {
     const w      = (0.6 + Math.random() * 0.5) * S
     const h      = (3   + Math.random() * 4)   * S
-    const strand = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat.silkTorn)
+    const strand = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat.gauzeTorn)
     strand.position.copy(center)
     strand.position.y   = 2.2 * S         // hang from top of entrance
     strand.position.z  += (i - 3) * 1.3 * S
@@ -143,7 +143,7 @@ export function buildAntColonyEntrance(
 
   const walk = new THREE.Mesh(
     new THREE.PlaneGeometry(2.4 * S, walkLen, 1, 8),
-    mat.silk,
+    mat.webSheet,
   )
   walk.position.copy(bridgeStart).lerp(bridgeEnd, 0.5)
   walk.lookAt(bridgeEnd.x, bridgeEnd.y + 5 * S, bridgeEnd.z)
@@ -155,12 +155,12 @@ export function buildAntColonyEntrance(
   group.add(silkLine(
     bridgeStart.clone().add(new THREE.Vector3(0, 1.0 * S,  co)),
     bridgeEnd.clone().add(  new THREE.Vector3(0, 1.0 * S,  co)),
-    mat.silk, 0.4 * S, S,
+    mat.thread, 0.4 * S, S,
   ))
   group.add(silkLine(
     bridgeStart.clone().add(new THREE.Vector3(0, 1.0 * S, -co)),
     bridgeEnd.clone().add(  new THREE.Vector3(0, 1.0 * S, -co)),
-    mat.silk, 0.4 * S, S,
+    mat.thread, 0.4 * S, S,
   ))
 
   // Warm bridge-start light — warm(den)→cool(tunnel) is the visual sentence
