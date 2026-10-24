@@ -356,7 +356,7 @@ export class BossRollerScene3D {
       const dx = tip.x - wb.x, dz = tip.z - wb.z, d = Math.hypot(dx, dz) || 1
       if (!isAnchored) {
         wb.addDrift(dx / d * INHALE_PULL, dz / d * INHALE_PULL)
-        if (d < INHALE_KILL + 0.4 && Math.abs(tip.y) < 2.5) {
+        if (d < INHALE_KILL + 0.4 && Math.abs(tip.y) < 2.5 && !webbs.godMode) {
           webbs.damage(999, { unblockable: true })
           this.result = 'defeat'
         }

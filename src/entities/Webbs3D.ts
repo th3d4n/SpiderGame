@@ -428,6 +428,8 @@ export class Webbs3D {
     this.attackSlowT    = Math.max(this.attackSlowT, seconds)
   }
 
+  godMode = false   // secret "pppsssttt" cheat (main.ts) — damage() ignores every hit
+
   isInvulnerable(): boolean { return this.invulnT > 0 }
 
   // ── Hit feedback — body flash + shove + shudder + half-HP leap ──────────
@@ -435,7 +437,7 @@ export class Webbs3D {
   // without it he recoils against his facing.  Returns false if the hit was
   // ignored (invulnerable / max protection).
   damage(amount: number, opts: { fromX?: number; fromZ?: number; unblockable?: boolean } = {}): boolean {
-    if (amount <= 0 || this.hp <= 0 || this.dyingT >= 0) return false   // already down
+    if (amount <= 0 || this.hp <= 0 || this.dyingT >= 0 || this.godMode) return false   // already down
     // Dodging through an attack (i-frames) or recently hit → no damage
     if (!opts.unblockable && (this.maxProtectionActive || this.invulnT > 0 || this.dodgeTimer > 0)) return false
     this.hp = Math.max(0, this.hp - amount)

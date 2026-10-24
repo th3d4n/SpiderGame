@@ -421,6 +421,20 @@ const equipScreen    = new EquipScreen3D(menuOverlay)
 const craftingMenu   = new CraftingMenu3D(menuOverlay)
 craftingMenu.consumables = consumables
 const quickItems     = new QuickItems()
+
+// Secret code: type "pppsssttt" to stop taking damage, "off" to undo it
+let cheatKeys = ''
+window.addEventListener('keydown', e => {
+  if (e.repeat || e.key.length !== 1) return
+  cheatKeys = (cheatKeys + e.key.toLowerCase()).slice(-9)
+  if (cheatKeys.endsWith('pppsssttt') && !webbs.godMode) {
+    webbs.godMode = true; cheatKeys = ''
+    hud.toast('Pssst… Webbs is invulnerable. Type OFF to turn it back off.', 'good', 4200)
+  } else if (cheatKeys.endsWith('off') && webbs.godMode) {
+    webbs.godMode = false; cheatKeys = ''
+    hud.toast('Invulnerability off — you can be hurt again.', 'warn', 3600)
+  }
+})
 const endingCard     = new EndingCard(document.getElementById('game-container')!)
 endingCard.onKeepExploring = () => {
   endingPhase = 'none'
