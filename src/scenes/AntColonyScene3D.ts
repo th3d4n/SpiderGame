@@ -37,6 +37,8 @@ export type ColonyEvent =
   | TrapEvent
   | { kind: 'sac'; remaining: number }
   | { kind: 'sealOpen' }
+  | { kind: 'kill'; x: number; z: number }       // any death — weapon, trap or pit
+  | { kind: 'heal'; amount: number; x: number; z: number }
 
 interface ChestRecord {
   x: number; z: number; isMimic: boolean; opened: boolean
@@ -50,6 +52,11 @@ const CHEST_LOOT = [
   { mat: 'BugPartsAnt', qty: 3 }, { mat: 'DriedFungus', qty: 1 },
 ]
 const CACHE_MATS = ['SilkThread', 'ChitinShard', 'BugPartsAnt', 'WebFluid', 'BoneFragment', 'DriedFungus']
+
+// Kills: always XP; half the time the body leaves a drop of healing nectar
+const DROP_CHANCE = 0.5
+const DROP_HEAL   = 15
+const DROP_LIFE   = 20      // s before it soaks into the dirt (blinks for the last 4)
 
 // Webbs' noise, as the soldiers hear it
 const NOISE = { hit: { range: 8, alarm: 3 }, web: { range: 6, alarm: 1 } }
@@ -96,6 +103,8 @@ export class AntColonyScene3D {
   // Guards hold their post: they engage within `leash` (path distance) and go
   // back home when you get well away (hysteresis ×1.6)
   private posts = new Map<Enemy3D, { x: number; z: number; leash: number; engaged: boolean; field: Int32Array | null }>()
+  private counted = new Set<Enemy3D>()
+  private drops: Array<{ x: number; z: number; mesh: THREE.Group; t: number }> = []
 
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture, ink: InkOutlinePass) {
     this.threeScene  = threeScene
@@ -688,6 +697,7 @@ export class AntColonyScene3D {
   tickVisuals(delta: number, px: number, pz: number, pr = 0.28, pull?: (vx: number, vz: number) => void): void {
     this.vision.update(delta, px, pz)
     this.director.update(delta, px, pz)
+    this.tickDrops(delta, px, pz, pr)
     const trapEvents: TrapEvent[] = []
     this.traps.update(delta, px, pz, pr, this.enemies, trapEvents, pull ?? (() => {}))
     for (const ev of trapEvents) {
@@ -762,7 +772,40 @@ export class AntColonyScene3D {
       if (si >= 0) this.soldiers.splice(si, 1)
     }
     this.enemies.length = 0
-    for (const e of this.freeEnemies) if (!e.isDead()) this.enemies.push(e)
+    for (const e of this.freeEnemies) {
+      if (!e.isDead()) { this.enemies.push(e); continue }
+      // First frame dead: XP, maybe a drop (the sacs are the objective, not loot)
+      if (this.counted.has(e) || e instanceof PheromoneSac3D) continue
+      this.counted.add(e)
+      const x = e.collisionBody.x, z = e.collisionBody.z
+      this.events.push({ kind: 'kill', x, z })
+      if (Math.random() < DROP_CHANCE) this.spawnDrop(x, z)
+    }
+  }
+
+  private spawnDrop(x: number, z: number): void {
+    const g = buildHealthBerry(this.gradientMap, 0.8)
+    g.position.set(x, 0, z)
+    this.add(g)
+    this.drops.push({ x, z, mesh: g, t: 0 })
+  }
+
+  // Walk over a drop to drink it
+  private tickDrops(delta: number, px: number, pz: number, pr: number): void {
+    for (let i = this.drops.length - 1; i >= 0; i--) {
+      const d = this.drops[i]
+      d.t += delta
+      d.mesh.position.y = Math.min(0, -0.4 + d.t * 2) + Math.sin(d.t * 3) * 0.03   // pops up out of the body, then bobs
+      d.mesh.visible = d.t < DROP_LIFE - 4 || Math.floor(d.t * 6) % 2 === 0
+      const got = (px - d.x) ** 2 + (pz - d.z) ** 2 < (pr + 0.3) ** 2 && d.t > 0.3
+      if (got) this.events.push({ kind: 'heal', amount: DROP_HEAL, x: d.x, z: d.z })
+      if (got || d.t > DROP_LIFE) {
+        this.threeScene.remove(d.mesh)
+        const k = this.tracked.indexOf(d.mesh); if (k >= 0) this.tracked.splice(k, 1)
+        disposeTree(d.mesh)
+        this.drops.splice(i, 1)
+      }
+    }
   }
 
   destroy(): void {

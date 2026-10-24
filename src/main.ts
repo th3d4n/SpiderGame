@@ -562,7 +562,7 @@ const OPENING_INTRO: TextDisplayData = {
 // Chapter-one ending — plays once, back in the den after the Roller falls.
 const ENDING_TEXT: TextDisplayData = {
   pages: [
-    'The tunnels are quiet now.\n\nWhatever rolled through them\nwill not roll back.',
+    'The tunnels are quiet now.\n\nWhatever fed on them\nhas crawled back into the dark.',
     'Webbs follows the silk markers home.\n\nSomeone has walked them since.\nThey are brighter than he left them.',
     'Three of them are waiting in the Den.\n\nThey look at his legs for a long time.\nNone of them say "broken".',
     'Someone has righted the stool.\nSomeone has mended the hammock.\n\nThe hearth is lit.',
@@ -671,6 +671,10 @@ const ZOOM_RETURN    = 0.8    // 1/s — slow ease back to PLAY_ZOOM (~4 s to se
 let   userZoom       = ZOOM_MIN
 let   zoomHoldT      = 0.6    // the opening push-in starts shortly after play begins
 
+// The boss arena is played wide: the anteater fills the back wall
+const _camFocus = new THREE.Vector3()
+function zoneZoomCap(): number { return currentZone === 'bossRoller' ? 2.5 : Infinity }
+
 function nudgeZoom(next: number): void {
   userZoom  = THREE.MathUtils.clamp(next, ZOOM_MIN, ZOOM_MAX)
   zoomHoldT = ZOOM_HOLD
@@ -743,7 +747,7 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
   const ZONE_TITLES: Record<ZoneId, string> = {
     homeBase:   'HOME BASE',
     antColony:  'ZONE 1  —  ANT COLONY',
-    bossRoller: 'ZONE 2  —  THE ROLLER',
+    bossRoller: 'ZONE 2  —  THE ANTEATER',
   }
   await ZoneTransitionSystem3D.transition(() => {
     // Dispose zone-specific systems before tearing down the scene
@@ -788,6 +792,7 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
       }
       case 'bossRoller': {
         const s = new BossRollerScene3D(scene, gradientMap)
+        s.releaseWeb = () => webLauncher.release()
         activeScene = s
         weaponUseSystem.setEnemies(s.enemies)
         webLauncher.setEnemies(s.enemies)
@@ -835,7 +840,7 @@ function isMeleeWeapon(wt: WeaponType): boolean {
 // Round 6 Issue 8 / Round 8 Issue 6: smooth zoom lerp toward celebration override.
 // Celebration zoom bumped 2.8 → 4.2 so the presented item is clearly readable.
 function tickZoom(delta: number): void {
-  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(CELEB_ZOOM, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
+  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(CELEB_ZOOM, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : Math.min(userZoom, zoneZoomCap()))
   rig.tickZoom(delta)
 }
 
@@ -1362,9 +1367,12 @@ function gameLoop() {
   if (currentZone !== 'bossRoller') {
     activeScene.updateEnemies(delta, webbs.collisionBody.x, webbs.collisionBody.z)
 
-    // Detect kills (alive previously, now dead) and award XP
-    for (const e of enemiesBefore) {
-      if (e.isDead()) xpSystem.award('kill')
+    // Detect kills (alive previously, now dead) and award XP.  The colony
+    // reports its own (trap and pit kills count too) — see its 'kill' events.
+    if (currentZone !== 'antColony') {
+      for (const e of enemiesBefore) {
+        if (e.isDead()) xpSystem.award('kill')
+      }
     }
 
     for (const enemy of (activeScene as HomeBaseScene3D | AntColonyScene3D).enemies) {
@@ -1388,6 +1396,7 @@ function gameLoop() {
     }
   } else {
     const bs     = activeScene as BossRollerScene3D
+    bs.webOnTongue = !!bs.tongueEnemy && webLauncher.attachedEnemy() === bs.tongueEnemy
     const result = bs.update(delta, webbs, weaponUseSystem, hud, webLauncher.isAttachedToWall())
     webLauncher.setEnemies(bs.enemies)   // the boss swaps its list between phases
 
@@ -1462,6 +1471,16 @@ function gameLoop() {
         persist()
       } else if (ev.kind === 'sealOpen') {
         audio.play('celeb_swell')
+      } else if (ev.kind === 'kill') {
+        xpSystem.award('kill')
+      } else if (ev.kind === 'heal') {
+        if (webbs.hp < webbs.hpMax) {
+          webbs.hp = Math.min(webbs.hpMax, webbs.hp + ev.amount)
+          damageNumbers.spawn(wb.x, webbs.group.position.y + 0.9 * webbs.scale, wb.z, ev.amount, { heal: true })
+        }
+        pickupNotify.notify('Nectar', `+${ev.amount} HP`, '#ff6677')
+        audio.play('potion_drink', wb.x, wb.z)
+        particles.burst(new THREE.Vector3(ev.x, 0.3, ev.z), 0xff6677, 10, 1.4, 0.04)
       }
     }
   } else {
@@ -1480,12 +1499,13 @@ function gameLoop() {
 
   // Follow with a lean toward the cursor; zoom target follows the celebration
   // override or the wheel (rig.update eases both, plus any shake).
-  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(CELEB_ZOOM, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : userZoom)
+  rig.zoomTarget = devZoom ?? (celebZoom ? Math.max(CELEB_ZOOM, userZoom) : dyingT >= 0 ? Math.min(userZoom * 1.3, ZOOM_MAX * 1.15) : Math.min(userZoom, zoneZoomCap()))
   if (cameraShakeRemaining > 0) {
     rig.shake(cameraShakeIntensity, cameraShakeRemaining)
     cameraShakeRemaining = 0
   }
-  rig.update(rawDelta, webbs.group.position, aimPos)
+  const camFocus = currentZone === 'bossRoller' ? (activeScene as BossRollerScene3D).focus(webbs.group.position, _camFocus) : webbs.group.position
+  rig.update(rawDelta, camFocus, aimPos)
   if (devPhoto) {   // dev console close-up camera (__nolegs.photo)
     camera.position.set(devPhoto[0], devPhoto[1], devPhoto[2])
     camera.lookAt(devPhoto[3], devPhoto[4], devPhoto[5])

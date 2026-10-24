@@ -83,6 +83,7 @@ export class WebLauncherSystem3D {
   setPickupHitTest(fn: (x: number, z: number) => PullablePickup3D | null): void { this.pickupHitTest = fn }
 
   isAttachedToWall(): boolean { return this.state?.attached?.kind === 'wall' && !!this.state.rope }
+  attachedEnemy(): Enemy3D | null { return this.state?.attached?.kind === 'enemy' ? this.state.attached.ref : null }
   isActive():         boolean { return this.state !== null }
 
   // Q pressed: cancel active web or fire a new one

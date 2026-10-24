@@ -411,12 +411,35 @@ The old colony was an open 40×26 box with 1-wu walls, 32 lanterns, piles of loo
   - At ≥ 60 it sends a hunter soldier from a far unseen tunnel (cooldown 38 s); at ≥ 95, a worker swarm.
   - In quiet stretches it plays scares: skitters behind walls, red eyes that blink out, the ceiling grinding.
   - HUD: objective chip, a colony mood line (quiet / restless / hunting), and a red edge while hunted.
+- **Kills:** every colony death, by weapon, trap or pit, emits a `kill` event, and main awards XP from that event instead of the generic before/after check, so trap kills count. Half of all kills drop healing nectar (+15 HP, walk over it to drink). Drops last 20 s and blink for the last 4. Sacs don't drop anything.
 - **Loot:** cut way back and moved into dead ends: up to 6 chests (2 mimics), 4 berries, caches and thistles. Each dead end usually carries a price (spike plate, ambush centipede or spitter). Pheromone trails mark the patrol routes.
 - **Lighting:** a darker preset with no key-light shadows (that pass doubled draw calls; the colony renders about 290). Accent-light budget scoring now uses world positions, so lights parented inside objects count properly.
 - **Wiring** (main.ts): `AntColonyScene3D(scene, gm, inkPass)`. `takeEvents()` delivers hurt, shake, dust, sac and sealOpen events, `noise('hit')` fires on weapon hits, Webbs' `terrainMult` comes from resin, and pit pull uses `addDrift`.
 - **Testing gotchas:**
   - Don't null `scene.fog` from the console: `ZoneLighting.update` throws every frame, which freezes the screen and wedges transitions.
   - The browser pane's screenshots can go stale. Grab canvas frames by wrapping `composer.render`.
+
+## 8. Boss rebuild: the Anteater ✅
+
+This replaces the pink-ball "nose" and the pill-bug Roller. The save and zone ids stay `bossRoller` / `'roller'`; only player-facing names changed (zone title, HUD, ending line).
+
+- **Model** (`entities/Anteater3D.ts`):
+  - Head behind the back wall: skull, small glossy eyes, ears and a bristle mane.
+  - A 9-segment bendy snout, tapered, with streaky fur (tri-planar wood grain), bristle collar and ridge, a wet nose pad and flaring nostrils. `aimAt()` spreads a curl over the joints; `reach` shoves it out; `flinch` recoils.
+  - Built at 1.45× so it doesn't fit the arena.
+- **Tongue** (`AnteaterTongue3D`): an Enemy3D for the tip, so the web snags it and weapons hit it. It's laid out each frame as 26 overlapping glossy links with saliva beads. Damage is ×0.12 unless `pinned`.
+- **Arena:** 18×11, a back wall with a cracked hole, and four stone pillars (tongue cover and web anchors). Warm lighting, no more red wash. The camera frames a point 38% of the way from Webbs to the snout, with zoom capped at 2.5 here.
+- **Phase 1, the snout (100 HP):**
+  - Every ~2.6 s it snorts 2–3 rocks at Webbs, nostrils swelling before each volley.
+  - A melee swing (`tryReflect`) bats rocks back with light homing; a rock returned into the snout does 20.
+  - Every 17 s it inhales: a 2 s warning, then 4 s of pull (3.8 wu/s) with a dust stream spiralling into the nostrils. A web on a wall or pillar holds Webbs; reaching the snout is death.
+- **Break:** at 0 HP it shudders, the hole tears wide, rubble falls and it shoves through.
+- **Phase 2, the tongue (220 HP):**
+  - Cycle: idle → aim (0.85 s; a red line on the floor tracks Webbs, then commits) → lash (0.2 s; 18 damage along its length; stopped by pillars and walls via `castBall`) → stuck (1.6 s on the floor) → retract.
+  - Webbing it while stuck → pinned for 4.5 s; hit it for full damage, then it tears free (`releaseWeb`).
+  - Every third attack sweeps ~110° across the floor (16 damage). Below half HP everything runs 25% faster. It still inhales between attacks.
+- **Defeat:** the tongue whips in and the snout recoils through the wall, then the existing victory, loot and ending flow runs.
+- **Wiring** (main.ts): `bs.webOnTongue = webLauncher.attachedEnemy() === bs.tongueEnemy`, `s.releaseWeb = () => webLauncher.release()`, and `focus()` for the camera. RollerBoss3D and BossNose3D were deleted.
 
 **All §5 review items are now addressed.** Open next: playtesting on real devices
 (touch feel, auto-aim, mix levels), Chapter Two (the Hive boss → leg tier 2, Web Glider

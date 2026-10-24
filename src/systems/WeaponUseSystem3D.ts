@@ -5,7 +5,6 @@ import type { Webbs3D } from '../entities/Webbs3D'
 import { registry } from '../core/Registry'
 import { physicsWorld } from '../core/PhysicsWorld'
 import { BeetleTank3D } from '../entities/BeetleTank3D'
-import { RollerBoss3D } from '../entities/RollerBoss3D'
 import { audio } from './AudioManager'
 
 // ─── Weapon use ───────────────────────────────────────────────────────────────
@@ -502,15 +501,8 @@ export class WeaponUseSystem3D {
       const len = Math.hypot(bax, baz) || 1
       if (cf.x * (bax / len) + cf.z * (baz / len) < -0.5) return WeakPointZone.Underbelly
     }
-    // Roller snout: attacker near the snout end of its long axis
-    if (enemy instanceof RollerBoss3D) {
-      const fd = enemy.getFacingDir()
-      const snoutX = enemy.collisionBody.x + 0.62 * fd
-      const dsx = wx - snoutX, dsz = wz - enemy.collisionBody.z
-      if (dsx * dsx + dsz * dsz < 0.6 * 0.6) return WeakPointZone.Head
-    }
     // Front-facing hits on head-weak enemies (centipede) land on the head
-    if (enemy.config.weakPoints?.includes(WeakPointZone.Head) && !(enemy instanceof RollerBoss3D)) {
+    if (enemy.config.weakPoints?.includes(WeakPointZone.Head)) {
       const y  = enemy.group.rotation.y
       const fx = Math.sin(y), fz = Math.cos(y)
       const ax = wx - enemy.collisionBody.x, az = wz - enemy.collisionBody.z

@@ -15,6 +15,7 @@ const STYLE = /* css */`
 .nl-dmg.weak { color: #ffd76a; font-size: 22px; }
 .nl-dmg.kill { font-size: 24px; }
 .nl-dmg.hurt { color: #ff6a5c; }
+.nl-dmg.heal { color: #7dffa0; }
 .nl-dmg small { display:block; font-family: var(--nl-ui); font-size: 9px; letter-spacing: 2px; text-align:center; color: #ffd76a; }
 `
 
@@ -34,10 +35,10 @@ export class DamageNumbers {
     document.getElementById('hud-overlay')!.appendChild(this.root)
   }
 
-  spawn(x: number, y: number, z: number, amount: number, kind: { weak?: boolean; kill?: boolean; hurt?: boolean } = {}): void {
+  spawn(x: number, y: number, z: number, amount: number, kind: { weak?: boolean; kill?: boolean; hurt?: boolean; heal?: boolean } = {}): void {
     if (amount < 0.5) return
-    const el = h('div', `nl-dmg${kind.weak ? ' weak' : ''}${kind.kill ? ' kill' : ''}${kind.hurt ? ' hurt' : ''}`)
-    el.innerHTML = `${kind.hurt ? '−' : ''}${Math.round(amount)}${kind.weak ? '<small>WEAK</small>' : ''}`
+    const el = h('div', `nl-dmg${kind.weak ? ' weak' : ''}${kind.kill ? ' kill' : ''}${kind.hurt ? ' hurt' : ''}${kind.heal ? ' heal' : ''}`)
+    el.innerHTML = `${kind.hurt ? '−' : kind.heal ? '+' : ''}${Math.round(amount)}${kind.weak ? '<small>WEAK</small>' : ''}`
     this.root.appendChild(el)
     this.nums.push({ el, world: new THREE.Vector3(x, y, z), born: performance.now(), drift: (Math.random() - 0.5) * 30 })
     while (this.nums.length > 24) this.nums.shift()!.el.remove()

@@ -2,646 +2,661 @@ import * as THREE from 'three'
 import { disposeTree } from '../core/dispose'
 import { surface, PALETTE } from '../env/Materials'
 import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
-import { BossNose3D } from '../entities/BossNose3D'
-import { RollerBoss3D } from '../entities/RollerBoss3D'
+import { Anteater3D, AnteaterTongue3D } from '../entities/Anteater3D'
 import type { Enemy3D } from '../entities/Enemy3D'
 import type { Webbs3D } from '../entities/Webbs3D'
 import type { WeaponUseSystem3D } from '../systems/WeaponUseSystem3D'
 import type { HudSystem } from '../ui/HudSystem'
 import { audio } from '../systems/AudioManager'
 
-const W = 22   // X: -11 … +11
-const D = 7.2  // Z: -3.6 … +3.6
+// ─── Boss: the Anteater ───────────────────────────────────────────────────────
+// (The save/zone id is still 'bossRoller' / 'roller'.)
+//
+// Phase 1 — THE SNOUT.  Only its snout fits through the hole in the back wall.
+//   It snorts rocks at Webbs; a melee swing bats a rock back, and a rock
+//   returned into the snout hurts it.  Every so often it INHALES: everything
+//   slides toward the nostrils, and only a web anchored to a wall or pillar
+//   holds Webbs.  Reaching the snout during an inhale is death.
+// Phase 2 — THE TONGUE.  It smashes the wall open, shoves its head through and
+//   lashes its tongue along the floor (a red line warns where).  After a lash
+//   the tongue lies on the floor for a moment — web it and it's PINNED: beat
+//   on it until it tears free.  Some lashes sweep sideways across the arena.
+//   Pillars stop the tongue.  It still inhales now and then.
 
-const NOSE_XZ: [number, number] = [0, -2.0]   // XZ position in arena
+const W = 18                     // x −9 … +9
+const D = 11                     // z −5.5 … +5.5
+const BACK_Z  = -D / 2
+const HOLE_Y  = 1.9
+const HOLE_R  = 1.35
+const BEAST_SCALE = 1.45   // it should not fit
+const PILLARS: Array<[number, number]> = [[-4.6, -0.6], [4.6, -0.6], [-2.2, 2.6], [2.2, 2.6]]
+const PILLAR_R = 0.5
 
-const ROCK_SPEED_MIN  = 1.7
-const ROCK_SPEED_MAX  = 3.0
-const ROCK_RADIUS     = 0.12
-const ROCK_INTERVAL   = 3.0    // seconds between volleys
-const SUCTION_CYCLE   = 20.0
-const SUCTION_WARN    = 2.0
-const SUCTION_ACTIVE  = 4.0
-// Steady inward drift while suction is active — ~70% of walk speed, so running
-// away slowly escapes and a web wall-anchor (isAnchored) is the reliable counter.
-const SUCTION_SPEED   = 3.8    // wu/s
-const SUCTION_LETHAL_R = 0.65  // if unanchored player reaches this close → instant kill
+const SNOUT_HP     = 100
+const ROCK_HIT     = 20
+const ROCK_R       = 0.17
+const SNORT_EVERY  = 2.6
+const INHALE_EVERY = 17
+const INHALE_WARN  = 2.0
+const INHALE_TIME  = 4.0
+const INHALE_PULL  = 3.8
+const INHALE_KILL  = 0.9
+
+const TONGUE_REACH = 10
+const AIM_TIME     = 0.85
+const LASH_TIME    = 0.2
+const STUCK_TIME   = 1.6
+const PIN_TIME     = 4.5
+const RETRACT_TIME = 0.45
+const SWEEP_TIME   = 1.15
+const LASH_DMG     = 18
+const SWEEP_DMG    = 16
 
 export type BossResult = 'ongoing' | 'victory' | 'defeat'
 
-interface RockBody {
-  mesh:      THREE.Mesh
-  body:      CollisionBody
-  reflected: boolean
-}
+interface RockBody { mesh: THREE.Mesh; body: CollisionBody; reflected: boolean; life: number }
+interface Ring { mesh: THREE.Mesh; t: number; dur: number; grow: number }
+type TongueState = 'idle' | 'aim' | 'lash' | 'stuck' | 'pinned' | 'retract' | 'sweep'
 
-interface VfxRing {
-  mesh:    THREE.Mesh
-  elapsed: number
-}
-
-interface Shockwave {
-  mesh:     THREE.Mesh
-  elapsed:  number
-  duration: number
-  cx: number; cz: number
-  maxR:     number
-  hitPlayer: boolean
-}
+const _v = new THREE.Vector3()
 
 export class BossRollerScene3D {
   static readonly SPAWN_X = 0
-  static readonly SPAWN_Z = 2.5
-  static readonly LEFT  = -W / 2   // -11
-  static readonly RIGHT =  W / 2   // +11
-  static readonly BACK  = -D / 2   // -3.6
-  static readonly FRONT =  D / 2   // +3.6
+  static readonly SPAWN_Z = 3.9
+  static readonly LEFT  = -W / 2
+  static readonly RIGHT =  W / 2
+  static readonly BACK  = BACK_Z
+  static readonly FRONT =  D / 2
 
   enemies: Enemy3D[] = []
+  pendingLoot: Record<string, number> | null = null
+  // main.ts wires this to webLauncher.release() — a pinned tongue tears free
+  releaseWeb: (() => void) | null = null
 
   private threeScene:  THREE.Scene
   private gradientMap: THREE.Texture
   private tracked:     THREE.Object3D[] = []
+  private bodies:      CollisionBody[] = []
+  private anteater:    Anteater3D
+  private tongue:      AnteaterTongue3D | null = null
+  private result:      BossResult = 'ongoing'
+  private phase:       1 | 2 = 1
+  private snoutHp      = SNOUT_HP
+  private flashT       = 0
+  private t            = 0
 
-  private nose?:    BossNose3D
-  private roller?:  RollerBoss3D
-
-  private bossPhase        = 1
-  private retreatTriggered = false
-  private retreatT         = 0    // nose-retreat animation, on game time
-  private result: BossResult = 'ongoing'
-
-  // Phase 1 rocks
-  private rocks:          RockBody[] = []
-  private rockTimer       = ROCK_INTERVAL
-
-  // Phase 1 suction
-  private suctionCycleTimer  = SUCTION_CYCLE
-  private suctionWarnTimer   = 0
-  private suctionActiveTimer = 0
-  private suctionWarning     = false
-  private suctionActive      = false
-
-  // Phase 2
-  private rollerContactCooldown = 0
-  private shockwaves: Shockwave[] = []
-
-  // Visual effects
-  private vfxRings: VfxRing[] = []
+  // Phase 1
+  private rocks: RockBody[] = []
+  private snortT = SNORT_EVERY
+  private snortCharge = 0
+  // Inhale (both phases)
+  private inhaleT = INHALE_EVERY
+  private inhaleState: 'none' | 'warn' | 'pull' = 'none'
+  private inhaleTimer = 0
+  private stream: THREE.Points
+  // Phase change
+  private breakT = -1
+  private wallMesh!: THREE.Mesh
+  private holeRim!: THREE.Mesh
+  private rubble: THREE.Group = new THREE.Group()
+  // Phase 2 tongue
+  private tState: TongueState = 'idle'
+  private tTimer = 1.5
+  private aimDir = new THREE.Vector2(0, 1)
+  private reachNow = 0
+  private reachMax = 0
+  private sweepFrom = 0
+  private sweepTo = 0
+  private lashCount = 0
+  private lashHit = false
+  private warnLine: THREE.Mesh
+  private dieT = -1
+  private toldPin = false
+  private rings: Ring[] = []
 
   constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
     this.threeScene  = threeScene
     this.gradientMap = gradientMap
-
-    audio.playLoop('amb_boss')   // Round 10 — boss arena ambience
-
-
-    physicsWorld.bounds = {
-      minX: -10.8, maxX: 10.8,
-      minZ: -3.4,  maxZ: 3.4,
-    }
+    audio.playLoop('amb_boss')
+    physicsWorld.bounds = { minX: -W / 2 + 0.2, maxX: W / 2 - 0.2, minZ: BACK_Z + 0.25, maxZ: D / 2 - 0.2 }
 
     this.buildArena()
     this.buildLighting()
-    this.spawnNose()
+    this.anteater = new Anteater3D(threeScene, gradientMap, new THREE.Vector3(0, HOLE_Y, BACK_Z - 1.3), BEAST_SCALE)
+
+    // Telegraph strip for the tongue
+    this.warnLine = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 1).rotateX(-Math.PI / 2).translate(0, 0, 0.5),
+      new THREE.MeshBasicMaterial({ color: 0xff3a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }))
+    this.warnLine.position.y = 0.03
+    this.add(this.warnLine)
+
+    // Dust stream that pours into the nostrils during an inhale
+    const n = 160, pos = new Float32Array(n * 3)
+    for (let k = 0; k < n; k++) this.resetMote(pos, k, true)
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    this.stream = new THREE.Points(g, new THREE.PointsMaterial({ color: 0xd8c4a0, size: 0.07, transparent: true, opacity: 0, depthWrite: false }))
+    this.add(this.stream)
   }
 
-  // ── Arena construction ────────────────────────────────────────────────────
-
+  // ── Arena ─────────────────────────────────────────────────────────────────
   private buildArena(): void {
-    // Dark cavern floor
     const floorMat = surface({ color: PALETTE.bossFloor, tex: 'dirt', texScale: 0.45, gradientMap: this.gradientMap })
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D).rotateX(-Math.PI / 2), floorMat)
     floor.receiveShadow = true
     this.add(floor)
-
-    // Dirt patches
-    const patchMat = surface({ color: PALETTE.bossPatch, tex: 'dirt', texScale: 0.9, gradientMap: this.gradientMap })
-    const patches: [number, number][] = [[-7, 0.8], [-2, -1.5], [4, 1.2], [8, -0.6], [-5, 2.0]]
-    for (const [px, pz] of patches) {
-      const r = 0.4 + Math.random() * 0.5
-      this.add(new THREE.Mesh(new THREE.CircleGeometry(r, 8).rotateX(-Math.PI / 2), patchMat))
-      const m = this.tracked[this.tracked.length - 1] as THREE.Mesh
-      m.position.set(px, 0.006, pz)
-    }
-
     const wallMat = surface({ color: PALETTE.bossWall, tex: 'stone', texScale: 0.7, gradientMap: this.gradientMap })
-
-    // Back wall — has hole where nose bursts through
-    this.addBox(W + 0.6, 2.0, 0.4, 0, 1.0, -D / 2, wallMat)
-    // Front wall (low sill)
-    this.addBox(W + 0.6, 0.8, 0.3, 0, 0.4,  D / 2, wallMat)
-    // Left and right walls
-    this.addBox(0.4, 2.0, D + 0.6, -W / 2, 1.0, 0, wallMat)
-    this.addBox(0.4, 2.0, D + 0.6,  W / 2, 1.0, 0, wallMat)
-
-    // Stalactites along ceiling (top edge, near back)
-    const stalMat = surface({ color: PALETTE.bossStal, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
-    const stalX = [-9, -6, -3, 0, 3, 6, 9]
-    for (const sx of stalX) {
-      const h = 0.3 + Math.random() * 0.5
-      const stal = new THREE.Mesh(new THREE.ConeGeometry(0.09, h, 6), stalMat)
-      stal.position.set(sx, 2.0 - h / 2, -D / 2 + 0.1)
-      this.add(stal)
+    // Back wall with the hole the snout comes through (drawn as a dark disc + rim)
+    this.wallMesh = this.addBox(W + 0.6, 3.2, 0.5, 0, 1.6, BACK_Z - 0.25, wallMat)
+    const hole = new THREE.Mesh(new THREE.CircleGeometry(HOLE_R, 28), new THREE.MeshBasicMaterial({ color: 0x050302 }))
+    hole.position.set(0, HOLE_Y, BACK_Z + 0.01); this.add(hole)
+    this.holeRim = new THREE.Mesh(new THREE.TorusGeometry(HOLE_R + 0.06, 0.2, 8, 28), surface({ color: 0x4a3828, tex: 'stone', texScale: 1, gradientMap: this.gradientMap }))
+    this.holeRim.position.set(0, HOLE_Y, BACK_Z + 0.05); this.add(this.holeRim)
+    // Cracks radiating from the hole
+    const crackMat = new THREE.MeshBasicMaterial({ color: 0x120c08 })
+    for (let k = 0; k < 9; k++) {
+      const a = (k / 9) * Math.PI * 2 + Math.random() * 0.3, l = 0.6 + Math.random() * 1.2
+      const c = new THREE.Mesh(new THREE.PlaneGeometry(0.05, l), crackMat)
+      c.position.set(Math.sin(a) * (HOLE_R + 0.15 + l / 2), HOLE_Y + Math.cos(a) * (HOLE_R + 0.15 + l / 2), BACK_Z + 0.02); c.rotation.z = -a
+      this.add(c)
     }
+    this.addBox(W + 0.6, 1.0, 0.4, 0, 0.5, D / 2 + 0.2, wallMat)
+    this.addBox(0.4, 3.2, D + 0.6, -W / 2 - 0.2, 1.6, 0, wallMat)
+    this.addBox(0.4, 3.2, D + 0.6,  W / 2 + 0.2, 1.6, 0, wallMat)
 
-    // Stalagmites from floor (front area)
-    const stagMat = surface({ color: PALETTE.bossStag, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
-    for (let i = -4; i <= 4; i += 2) {
-      const h = 0.15 + Math.random() * 0.25
-      const stag = new THREE.Mesh(new THREE.ConeGeometry(0.06, h, 5), stagMat)
-      stag.position.set(i * 1.8 + (Math.random() - 0.5), h / 2, D / 2 - 0.6)
-      stag.rotation.x = Math.PI   // point up
-      this.add(stag)
+    // Pillars: cover from the tongue, anchors for the web
+    const pillarMat = surface({ color: PALETTE.bossStag, tex: 'stone', texScale: 1.1, gradientMap: this.gradientMap })
+    for (const [x, z] of PILLARS) {
+      const col = new THREE.Mesh(new THREE.CylinderGeometry(PILLAR_R * 0.75, PILLAR_R, 2.6, 10), pillarMat)
+      col.position.set(x, 1.3, z); col.castShadow = col.receiveShadow = true; this.add(col)
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(PILLAR_R * 0.8, 0.8, 10), pillarMat)
+      cap.position.set(x, 3.0, z); this.add(cap)
+      this.bodies.push(physicsWorld.add({ x, z, radius: PILLAR_R, velocity: { x: 0, z: 0 }, isStatic: true, enabled: true }))
     }
-
-    // Protective ridge under the nose (visual barrier suggesting inaccessibility)
-    const ridgeMat = new THREE.MeshToonMaterial({ color: 0x4a2e08, gradientMap: this.gradientMap })
-    const ridge = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.14, 0.18), ridgeMat)
-    ridge.position.set(NOSE_XZ[0], 0.07, NOSE_XZ[1] + 0.9)
-    this.add(ridge)
-    for (let i = -2; i <= 2; i++) {
-      const rock = new THREE.Mesh(new THREE.SphereGeometry(0.18 + Math.abs(i) * 0.02, 8, 6), ridgeMat)
-      rock.position.set(NOSE_XZ[0] + i * 0.56, 0.18, NOSE_XZ[1] + 0.9)
-      this.add(rock)
+    // Bones of earlier meals
+    const boneMat = new THREE.MeshToonMaterial({ color: 0xb8a882, gradientMap: this.gradientMap })
+    for (let k = 0; k < 18; k++) {
+      const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.03, 0.2, 3, 5), boneMat)
+      b.position.set((Math.random() - 0.5) * (W - 2), 0.03, (Math.random() - 0.5) * (D - 2)); b.rotation.set(Math.PI / 2, 0, Math.random() * 3)
+      this.add(b)
     }
-
-    // Ceiling hole where nose descends (dark ellipse painted on back wall)
-    const holeMat = new THREE.MeshBasicMaterial({ color: 0x060402 })
-    const holeGeo = new THREE.CircleGeometry(0.7, 16)
-    const hole = new THREE.Mesh(holeGeo, holeMat)
-    hole.position.set(NOSE_XZ[0], 2.2, -D / 2 + 0.02)
-    hole.rotation.y = 0   // faces +z
-    this.add(hole)
+    this.add(this.rubble)
   }
 
-  private addBox(w: number, h: number, d: number, x: number, y: number, z: number, mat: THREE.Material): void {
+  private addBox(w: number, h: number, d: number, x: number, y: number, z: number, mat: THREE.Material): THREE.Mesh {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
-    mesh.position.set(x, y, z)
-    mesh.castShadow = true; mesh.receiveShadow = true
+    mesh.position.set(x, y, z); mesh.castShadow = true; mesh.receiveShadow = true
     this.add(mesh)
+    return mesh
   }
 
   private buildLighting(): void {
-    // Ambient/key now come from env/ZoneLighting (bossRoller preset).
-    // Dramatic top-down spotlight
-    const spot = new THREE.SpotLight(0xff7733, 2.0, 18, Math.PI / 5, 0.55, 1.5)
-    spot.position.set(0, 7, 0)
-    spot.target.position.set(0, 0, 0.5)
-    spot.castShadow = false
-    this.add(spot)
-    this.add(spot.target)
-    // Eerie red glow from the nose direction
-    const noseGlow = new THREE.PointLight(0xff3311, 0.8, 7.0)
-    noseGlow.position.set(NOSE_XZ[0], 2.2, NOSE_XZ[1])
-    this.add(noseGlow)
-    // Red accent lights on the walls
-    const redL = new THREE.PointLight(0xcc2200, 0.5, 5.0)
-    redL.position.set(-8, 1.0, 0)
-    this.add(redL)
-    const redR = new THREE.PointLight(0xcc2200, 0.5, 5.0)
-    redR.position.set(8, 1.0, 0)
-    this.add(redR)
+    // A shaft of light from above onto the arena; warm torches on the side walls;
+    // a dim ember glow deep inside the hole (behind the snout, not on it)
+    const spot = new THREE.SpotLight(0xffd2a0, 2.6, 24, Math.PI / 4, 0.55, 1.5)
+    spot.position.set(0, 10, 1.5); spot.target.position.set(0, 0, -0.5)
+    this.add(spot); this.add(spot.target)
+    const holeGlow = new THREE.PointLight(0xff6a2a, 0.9, 5)
+    holeGlow.position.set(0, HOLE_Y + 0.4, BACK_Z - 0.6); this.add(holeGlow)
+    for (const x of [-7.5, 7.5]) { const l = new THREE.PointLight(0xff8a3a, 0.5, 7); l.position.set(x, 1.6, 1); this.add(l) }
   }
 
-  // ── Boss spawning ─────────────────────────────────────────────────────────
-
-  private spawnNose(): void {
-    this.nose = new BossNose3D(this.threeScene, NOSE_XZ[0], NOSE_XZ[1], this.gradientMap)
-    // The nose floats 2.2 up and is only hurt by reflected rocks: keep it out of
-    // weapon targeting (melee could hit it directly and skip the mechanic) and
-    // turn off its floor collider (an invisible pillar that also made the
-    // suction kill radius unreachable).
-    this.nose.collisionBody.enabled = false
-    this.enemies = []
-  }
-
-  // ── Main update (called from main.ts after physicsWorld.update) ───────────
-
-  update(
-    delta:            number,
-    webbs:            Webbs3D,
-    weaponUseSystem:  WeaponUseSystem3D,
-    hud:              HudSystem,
-    isAnchored        = false,
-  ): BossResult {
+  // ── Frame ─────────────────────────────────────────────────────────────────
+  update(delta: number, webbs: Webbs3D, weaponUseSystem: WeaponUseSystem3D, hud: HudSystem, isAnchored = false): BossResult {
     if (this.result !== 'ongoing') return this.result
-
-    this.rollerContactCooldown = Math.max(0, this.rollerContactCooldown - delta)
-
-    // Keep weapon system targeting current enemies
+    this.t += delta
     weaponUseSystem.setEnemies(this.enemies)
+    const wb = webbs.collisionBody
+    const target = _v.set(wb.x, 0.3, wb.z)
 
-    if (this.bossPhase === 1) {
-      this.updatePhase1(delta, webbs, hud, isAnchored)
+    if (this.dieT >= 0) return this.updateDeath(delta, hud)
+
+    if (this.phase === 1) {
+      if (this.breakT < 0) {
+        hud.showBossHp('THE ANTEATER', this.snoutHp, SNOUT_HP)
+        this.anteater.aimAt(target, Math.min(1, delta * 1.5))
+        this.updateSnort(delta, webbs, hud)
+        this.updateInhale(delta, webbs, hud, isAnchored)
+      } else {
+        this.updateBreak(delta, hud)
+      }
+      this.updateRocks(delta, webbs)
     } else {
-      this.updatePhase2(delta, webbs, weaponUseSystem, hud)
+      this.updateTongue(delta, webbs, hud)
+      if (this.tState === 'idle' || this.tState === 'retract') this.updateInhale(delta, webbs, hud, isAnchored)
+      if (this.tongue) hud.updateBossHp(this.tongue.hp, this.tongue.hpMax)
     }
 
-    this.updateShockwaves(delta, webbs)
-    this.updateVFX(delta)
-
+    this.flashT = Math.max(0, this.flashT - delta)
+    this.anteater.hitFlash(this.flashT > 0)
+    this.anteater.update(delta, {
+      sniff: this.phase === 1 && this.inhaleState === 'none',
+      inhale: this.inhaleState === 'pull' ? 1 : this.inhaleState === 'warn' ? 0.4 : 0,
+      flare: this.snortCharge,
+    })
+    this.updateStream(delta)
+    this.updateRings(delta)
     return this.result
   }
 
-  // ── Phase 1 ───────────────────────────────────────────────────────────────
-
-
-  private updatePhase1(delta: number, webbs: Webbs3D, hud: HudSystem, isAnchored = false): void {
-    // Check nose death
-    if (this.nose && this.nose.isDead() && !this.retreatTriggered) {
-      this.retreatTriggered = true
-      this.enemies = []
-      hud.hideBossHp()
-    }
-    // Nose shrinks back into the ceiling, then phase 2.  Driven by update() so
-    // it pauses with the game and can't fire after the scene is torn down.
-    if (this.retreatTriggered && this.bossPhase === 1) {
-      this.retreatT += delta
-      const t = Math.min(this.retreatT / 0.7, 1)
-      if (this.nose) this.nose.group.scale.setScalar(Math.max(0.01, 1 - t))
-      if (t >= 1) { this.startPhase2(hud); return }
-    }
-
-    if (!this.retreatTriggered) {
-      hud.showBossHp("ROLLER'S NOSE", this.nose?.hp ?? 0, this.nose?.hpMax ?? 80)
-
-      // Rock volley timer
-      this.rockTimer -= delta
-      if (this.rockTimer <= 0) {
-        this.rockTimer = ROCK_INTERVAL
-        this.spawnRocks(webbs)
-      }
-
-      // Suction cycle
-      this.updateSuction(delta, webbs, hud, isAnchored)
-    }
-
-    // Update nose (static — just handles damage flash)
-    if (this.nose && !this.nose.isExpired()) {
-      this.nose.update(delta, webbs.collisionBody.x, webbs.collisionBody.z)
-    }
-
-    // Update rocks
-    this.updateRocks(delta, webbs)
-  }
-
-  private spawnRocks(webbs: Webbs3D): void {
-    const count = 2 + Math.floor(Math.random() * 2)
-    const [nx, nz] = NOSE_XZ
-
-    for (let i = 0; i < count; i++) {
-      const spread = (Math.random() - 0.5) * 2.5
-      const tx = webbs.collisionBody.x + spread
-      const tz = webbs.collisionBody.z
-      const dx = tx - nx, dz = tz - nz
-      const len = Math.hypot(dx, dz) || 1
-      const speed = ROCK_SPEED_MIN + Math.random() * (ROCK_SPEED_MAX - ROCK_SPEED_MIN)
-
-      const geo = new THREE.SphereGeometry(ROCK_RADIUS, 7, 6)
-      const mat = new THREE.MeshToonMaterial({ color: 0x8b6914, gradientMap: this.gradientMap })
-      const mesh = new THREE.Mesh(geo, mat)
-      mesh.position.set(nx, ROCK_RADIUS, nz)
+  // ── Phase 1: snorted rocks ──────────────────────────────────────────────────
+  private updateSnort(delta: number, webbs: Webbs3D, hud: HudSystem): void {
+    if (this.inhaleState !== 'none') return
+    this.snortT -= delta
+    // Nostrils swell for half a second before each volley
+    this.snortCharge = this.snortT < 0.5 ? (0.5 - Math.max(0, this.snortT)) * 1.6 : 0
+    if (this.snortT > 0) return
+    this.snortT = SNORT_EVERY * (0.85 + Math.random() * 0.3)
+    this.snortCharge = 0
+    const tip = this.anteater.tip(new THREE.Vector3())
+    const n = 2 + Math.floor(Math.random() * 2)
+    audio.play('boss_charge', tip.x, tip.z, { rate: 1.3, volume: 0.9 })
+    for (let k = 0; k < n; k++) {
+      const tx = webbs.collisionBody.x + (Math.random() - 0.5) * 3, tz = webbs.collisionBody.z + (Math.random() - 0.5) * 1.5
+      const dx = tx - tip.x, dz = tz - tip.z, l = Math.hypot(dx, dz) || 1
+      const sp = 2.6 + Math.random() * 1.6
+      const mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(ROCK_R, 0), new THREE.MeshToonMaterial({ color: 0x8b7a5a, gradientMap: this.gradientMap }))
       mesh.castShadow = true
       this.threeScene.add(mesh)
-
-      const body = physicsWorld.add({
-        x: nx, z: nz,
-        radius:   ROCK_RADIUS,
-        velocity: { x: (dx / len) * speed, z: (dz / len) * speed },
-        isStatic: false, enabled: true,
-        ballistic: true, restitution: 0.55,   // physics owns rock velocity → real wall bounces
-      })
-
-      this.rocks.push({ mesh, body, reflected: false })
+      const sx = tip.x + dx / l * 0.5, sz = Math.max(BACK_Z + 0.5, tip.z + dz / l * 0.5)
+      const body = physicsWorld.add({ x: sx, z: sz, radius: ROCK_R, velocity: { x: dx / l * sp, z: dz / l * sp }, isStatic: false, enabled: true, ballistic: true, restitution: 0.6 })
+      this.rocks.push({ mesh, body, reflected: false, life: 9 })
     }
+    this.ring(tip.x, Math.max(BACK_Z + 0.4, tip.z), 0xd8c4a0, 0.5, 2.5)
+    if (this.snoutHp === SNOUT_HP && this.rocks.length <= n) hud.flashBossMessage('SWING AT THE ROCKS — KNOCK THEM BACK UP ITS NOSE')
   }
 
   private updateRocks(delta: number, webbs: Webbs3D): void {
-    const ARENA_X = 10.5, ARENA_Z = 3.1
-
+    const tip = this.anteater.tip(new THREE.Vector3())
     for (let i = this.rocks.length - 1; i >= 0; i--) {
-      const rock = this.rocks[i]
-
-      // Sync visual (physicsWorld already moved the body)
-      rock.mesh.position.set(rock.body.renderX, ROCK_RADIUS, rock.body.renderZ)   // interpolated
-
-      // Suction pull on rocks
-      if (this.suctionActive) {
-        const toDx = NOSE_XZ[0] - rock.body.x
-        const toDz = NOSE_XZ[1] - rock.body.z
-        const len  = Math.hypot(toDx, toDz) || 1
-        rock.body.velocity.x += (toDx / len) * 5.0 * delta
-        rock.body.velocity.z += (toDz / len) * 5.0 * delta
+      const r = this.rocks[i]
+      r.life -= delta
+      r.mesh.position.set(r.body.renderX, ROCK_R + (r.reflected ? 0.35 : 0), r.body.renderZ)
+      r.mesh.rotation.x += delta * 8; r.mesh.rotation.z += delta * 5
+      if (this.inhaleState === 'pull') {
+        const dx = tip.x - r.body.x, dz = tip.z - r.body.z, l = Math.hypot(dx, dz) || 1
+        r.body.velocity.x += dx / l * 6 * delta; r.body.velocity.z += dz / l * 6 * delta
       }
-
-      // Manual bounce at arena edges (physicsWorld clamps, we then reverse velocity)
-      if (rock.body.x <= -ARENA_X) rock.body.velocity.x =  Math.abs(rock.body.velocity.x) * 0.55
-      if (rock.body.x >=  ARENA_X) rock.body.velocity.x = -Math.abs(rock.body.velocity.x) * 0.55
-      if (rock.body.z <= -ARENA_Z) rock.body.velocity.z =  Math.abs(rock.body.velocity.z) * 0.55
-      if (rock.body.z >=  ARENA_Z) rock.body.velocity.z = -Math.abs(rock.body.velocity.z) * 0.55
-
-      // Reflected rock hits nose?
-      if (rock.reflected && this.nose && !this.nose.isDead()) {
-        const dist = Math.hypot(rock.body.x - NOSE_XZ[0], rock.body.z - NOSE_XZ[1])
-        if (dist < 0.55) {
-          this.nose.takeDamage(20)
-          this.spawnVfxRing(NOSE_XZ[0], NOSE_XZ[1], 0xff5577)
+      if (r.reflected && this.phase === 1 && this.breakT < 0) {
+        // Homing a touch so a decent swing finds the snout as it sways
+        const dx = tip.x - r.body.x, dz = tip.z - r.body.z, l = Math.hypot(dx, dz) || 1
+        r.body.velocity.x += dx / l * 9 * delta; r.body.velocity.z += dz / l * 9 * delta
+        if (l < 0.85) {
+          this.hurtSnout(ROCK_HIT)
+          this.ring(tip.x, Math.max(BACK_Z + 0.3, tip.z), 0xffcc44, 0.4, 3)
           this.removeRock(i)
           continue
         }
       }
-
-      // Player rock contact (unreflected)
-      // Rocks are solid bodies — the solver keeps them from overlapping Webbs,
-      // so test contact, not centre distance.
-      if (!rock.reflected) {
-        if (physicsWorld.touching(webbs.collisionBody, rock.body, 0.03)) {
-          webbs.damage(18, { fromX: rock.body.x, fromZ: rock.body.z })
-          this.removeRock(i)
-          continue
-        }
-      }
-
-      // Cull rocks that escape the arena (shouldn't happen often due to bounce)
-      if (
-        rock.body.x < -13 || rock.body.x > 13 ||
-        rock.body.z < -5  || rock.body.z > 5
-      ) {
+      if (!r.reflected && physicsWorld.touching(webbs.collisionBody, r.body, 0.03)) {
+        webbs.damage(14, { fromX: r.body.x, fromZ: r.body.z })
         this.removeRock(i)
+        continue
       }
+      if (r.life <= 0) this.removeRock(i)
     }
   }
 
   private removeRock(i: number): void {
-    const rock = this.rocks[i]
-    disposeTree(rock.mesh)
-    physicsWorld.remove(rock.body)
+    const r = this.rocks[i]
+    disposeTree(r.mesh)
+    physicsWorld.remove(r.body)
     this.rocks.splice(i, 1)
   }
 
-  // Try to reflect rocks near the player when a melee weapon fires.
-  // Called by main.ts after activateWeapon() when weapon is melee.
+  // Melee swing (main.ts calls this when a melee weapon fires)
   tryReflect(webbs: Webbs3D, aimDx: number, aimDz: number): void {
-    if (this.bossPhase !== 1) return
-    const REFLECT_REACH  = 1.0
-    const len            = Math.hypot(aimDx, aimDz) || 1
-    const facingAngle    = Math.atan2(aimDx / len, aimDz / len)
-    const halfSweep      = 1.1  // ~63° either side
-
-    for (const rock of this.rocks) {
-      if (rock.reflected) continue
-      const dx   = rock.body.x - webbs.collisionBody.x
-      const dz   = rock.body.z - webbs.collisionBody.z
-      const dist = Math.sqrt(dx * dx + dz * dz)
-      if (dist > REFLECT_REACH) continue
-
-      let diff = Math.atan2(dx, dz) - facingAngle
-      while (diff >  Math.PI) diff -= Math.PI * 2
+    if (this.phase !== 1) return
+    const reach = 1.25, half = 1.15
+    const face = Math.atan2(aimDx, aimDz)
+    const tip = this.anteater.tip(new THREE.Vector3())
+    for (const r of this.rocks) {
+      if (r.reflected) continue
+      const dx = r.body.x - webbs.collisionBody.x, dz = r.body.z - webbs.collisionBody.z
+      const d = Math.hypot(dx, dz)
+      if (d > reach) continue
+      let diff = Math.atan2(dx, dz) - face
+      while (diff > Math.PI) diff -= Math.PI * 2
       while (diff < -Math.PI) diff += Math.PI * 2
-      if (Math.abs(diff) > halfSweep) continue
-
-      // Reflect toward nose
-      const toDx = NOSE_XZ[0] - rock.body.x
-      const toDz = NOSE_XZ[1] - rock.body.z
-      const tLen = Math.hypot(toDx, toDz) || 1
-      rock.body.velocity.x = (toDx / tLen) * 4.2
-      rock.body.velocity.z = (toDz / tLen) * 4.2
-      rock.reflected = true
-      ;(rock.mesh.material as THREE.MeshToonMaterial).color.setHex(0xffcc44)
-      this.spawnVfxRing(rock.body.x, rock.body.z, 0xffdd44)
+      if (Math.abs(diff) > half) continue
+      const tx = tip.x - r.body.x, tz = tip.z - r.body.z, tl = Math.hypot(tx, tz) || 1
+      r.body.velocity.x = tx / tl * 7; r.body.velocity.z = tz / tl * 7
+      r.reflected = true; r.life = 3
+      ;(r.mesh.material as THREE.MeshToonMaterial).color.setHex(0xffcc44)
+      ;(r.mesh.material as THREE.MeshToonMaterial).emissive = new THREE.Color(0xaa6600)
+      this.ring(r.body.x, r.body.z, 0xffdd44, 0.25, 2.5)
+      audio.play('sword_hit_ground', r.body.x, r.body.z, { rate: 1.4 })
     }
   }
 
-  private updateSuction(delta: number, webbs: Webbs3D, hud: HudSystem, isAnchored = false): void {
-    if (!this.suctionWarning && !this.suctionActive) {
-      this.suctionCycleTimer -= delta
-      if (this.suctionCycleTimer <= 0) {
-        this.suctionCycleTimer = SUCTION_CYCLE
-        this.suctionWarning    = true
-        this.suctionWarnTimer  = SUCTION_WARN
-        hud.flashBossMessage('⚠ SUCTION INCOMING ⚠')
-      }
-    }
+  private hurtSnout(n: number): void {
+    this.snoutHp = Math.max(0, this.snoutHp - n)
+    this.flashT = 0.15
+    this.anteater.flinch = 1
+    audio.play('boss_hit', 0, BACK_Z)
+    audio.impact('heavy', 0, BACK_Z)
+    if (this.snoutHp <= 0) this.startBreak()
+  }
 
-    if (this.suctionWarning) {
-      this.suctionWarnTimer -= delta
-      if (this.suctionWarnTimer <= 0) {
-        this.suctionWarning    = false
-        this.suctionActive     = true
-        this.suctionActiveTimer = SUCTION_ACTIVE
-        hud.flashBossMessage('MOVE AWAY OR DIE')
+  // ── Inhale (suction) ──────────────────────────────────────────────────────
+  private updateInhale(delta: number, webbs: Webbs3D, hud: HudSystem, isAnchored: boolean): void {
+    const wb = webbs.collisionBody
+    if (this.inhaleState === 'none') {
+      this.inhaleT -= delta
+      if (this.inhaleT <= 0) {
+        this.inhaleState = 'warn'; this.inhaleTimer = INHALE_WARN
+        hud.flashBossMessage('⚠ IT\'S INHALING — WEB A WALL OR PILLAR [Q] ⚠')
+        audio.play('boss_windup', 0, BACK_Z)
       }
-    }
-
-    if (this.suctionActive) {
-      this.suctionActiveTimer -= delta
-      if (this.suctionActiveTimer <= 0) {
-        this.suctionActive = false
-        hud.flashBossMessage('')
-      } else if (!isAnchored) {
-        // Pull player toward nose XZ — web wall-anchor cancels this entirely
-        const dx  = NOSE_XZ[0] - webbs.collisionBody.x
-        const dz  = NOSE_XZ[1] - webbs.collisionBody.z
-        const len = Math.hypot(dx, dz) || 1
-        webbs.collisionBody.addDrift((dx / len) * SUCTION_SPEED, (dz / len) * SUCTION_SPEED)
-        // Lethal absorb
-        if (Math.hypot(dx, dz) < SUCTION_LETHAL_R) {
+    } else if (this.inhaleState === 'warn') {
+      this.inhaleTimer -= delta
+      if (this.inhaleTimer <= 0) { this.inhaleState = 'pull'; this.inhaleTimer = INHALE_TIME; audio.playLoop('boss_suction', 0, BACK_Z, this) }
+    } else {
+      this.inhaleTimer -= delta
+      const tip = this.anteater.tip(new THREE.Vector3())
+      const dx = tip.x - wb.x, dz = tip.z - wb.z, d = Math.hypot(dx, dz) || 1
+      if (!isAnchored) {
+        wb.addDrift(dx / d * INHALE_PULL, dz / d * INHALE_PULL)
+        if (d < INHALE_KILL + 0.4 && Math.abs(tip.y) < 2.5) {
           webbs.damage(999, { unblockable: true })
           this.result = 'defeat'
         }
       }
+      if (this.inhaleTimer <= 0) {
+        this.inhaleState = 'none'
+        this.inhaleT = INHALE_EVERY * (this.phase === 2 ? 0.9 : 1)
+        audio.stopLoop('boss_suction', this)
+        hud.flashBossMessage('')
+      }
     }
   }
 
-  // ── Phase 1 → Phase 2 transition ──────────────────────────────────────────
+  private resetMote(pos: Float32Array, k: number, scatter: boolean): void {
+    const a = Math.random() * Math.PI * 2, r = scatter ? Math.random() * 7 : 4 + Math.random() * 4
+    pos[k * 3] = Math.cos(a) * r
+    pos[k * 3 + 1] = 0.1 + Math.random() * 1.2
+    pos[k * 3 + 2] = Math.max(BACK_Z + 0.3, BACK_Z + 2 + Math.abs(Math.sin(a)) * r)
+  }
+
+  private updateStream(delta: number): void {
+    const mat = this.stream.material as THREE.PointsMaterial
+    const on = this.inhaleState === 'pull' ? 1 : 0
+    mat.opacity += (on * 0.75 - mat.opacity) * Math.min(1, delta * 4)
+    if (mat.opacity < 0.02) return
+    const tip = this.anteater.tip(new THREE.Vector3())
+    const pos = this.stream.geometry.attributes.position as THREE.BufferAttribute
+    const arr = pos.array as Float32Array
+    for (let k = 0; k < pos.count; k++) {
+      const x = arr[k * 3], y = arr[k * 3 + 1], z = arr[k * 3 + 2]
+      const dx = tip.x - x, dy = tip.y - y, dz = tip.z - z, d = Math.hypot(dx, dy, dz)
+      if (d < 0.3) { this.resetMote(arr, k, false); continue }
+      const sp = (3 + 9 / (d + 0.5)) * delta
+      // Spiral in
+      arr[k * 3] = x + dx / d * sp + dz / d * sp * 0.3
+      arr[k * 3 + 1] = y + dy / d * sp
+      arr[k * 3 + 2] = z + dz / d * sp - dx / d * sp * 0.3
+    }
+    pos.needsUpdate = true
+  }
+
+  // ── Phase change: the wall gives ───────────────────────────────────────────
+  private startBreak(): void {
+    this.breakT = 0
+    this.inhaleState = 'none'
+    audio.stopLoop('boss_suction', this)
+    audio.play('boss_phase_change', 0, BACK_Z)
+    for (let i = this.rocks.length - 1; i >= 0; i--) this.removeRock(i)
+  }
+
+  private updateBreak(delta: number, hud: HudSystem): void {
+    this.breakT += delta
+    const t = this.breakT
+    hud.flashBossMessage(t < 1.2 ? 'IT\'S BREAKING THROUGH!' : '')
+    // Shudders, shoves, the hole tears wide
+    this.anteater.flinch = 0.6
+    this.anteater.reach = 1 + Math.min(1, t / 1.6) * 0.6
+    this.holeRim.scale.setScalar(1 + Math.min(1, t / 1.2) * 0.9)
+    this.holeRim.position.y = HOLE_Y - Math.min(1, t / 1.2) * 0.5
+    if (Math.random() < delta * 14) {
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.12 + Math.random() * 0.22, 0), (this.wallMesh.material as THREE.Material))
+      rock.position.set((Math.random() - 0.5) * 3, 0.15, BACK_Z + 0.4 + Math.random() * 1.2)
+      rock.rotation.set(Math.random() * 3, Math.random() * 3, 0)
+      this.rubble.add(rock)
+      audio.impact('medium', rock.position.x, rock.position.z)
+    }
+    if (t > 2.0) this.startPhase2(hud)
+  }
 
   private startPhase2(hud: HudSystem): void {
-    this.bossPhase = 2
-
-    // Clear any remaining rocks
-    for (let i = this.rocks.length - 1; i >= 0; i--) this.removeRock(i)
-
-    // Spawn the Roller boss on the left side
-    this.roller = new RollerBoss3D(this.threeScene, -8, 0, this.gradientMap)
-    this.enemies = [this.roller]
-
-    hud.showBossHp('ROLLER', this.roller.hp, this.roller.hpMax)
-    hud.flashBossMessage('PHASE 2 — THE ROLLER')
+    this.phase = 2
+    this.breakT = -1
+    this.tongue = new AnteaterTongue3D(this.threeScene, this.gradientMap)
+    this.enemies = [this.tongue]
+    this.tState = 'idle'; this.tTimer = 1.6
+    this.inhaleT = INHALE_EVERY * 0.8
+    hud.showBossHp('THE ANTEATER — ENRAGED', this.tongue.hp, this.tongue.hpMax)
+    hud.flashBossMessage('WATCH THE TONGUE — WEB IT WHEN IT LANDS [Q]')
   }
 
-  // ── Phase 2 ───────────────────────────────────────────────────────────────
-
-  private updatePhase2(delta: number, webbs: Webbs3D, _weaponUseSystem: WeaponUseSystem3D, hud: HudSystem): void {
-    if (!this.roller) return
-
-    this.roller.update(delta, webbs.collisionBody.x, webbs.collisionBody.z)
-    this.roller.syncPosition()
-
-    if (this.roller.isExpired()) {
-      this.roller.cleanup()
-      this.roller   = undefined
-      this.enemies  = []
-      // Drop loot into crafting inventory
-      this.awardBossLoot()
-      this.result = 'victory'
-      hud.flashBossMessage('ANT TUNNELS CLEARED!')
-      hud.hideBossHp()
-      return
-    }
-
-    hud.updateBossHp(this.roller.hp, this.roller.hpMax)
-
-    // Ground pound shockwave
-    if (this.roller.justReleasedGroundPound) {
-      this.spawnShockwave(this.roller.groundPoundReleaseX, this.roller.groundPoundReleaseZ)
-    }
-
-    // Tail swipe damage check (one-shot on start)
-    if (this.roller.justStartedTailSwipe) {
-      this.checkTailSwipe(
-        this.roller.tailSwipeX, this.roller.tailSwipeZ,
-        this.roller.getFacingDir(), webbs,
-      )
-    }
-
-    // Body slam contact damage
-    if (this.roller.isBodySlamming() && this.rollerContactCooldown <= 0) {
-      const dx  = webbs.collisionBody.x - this.roller.collisionBody.x
-      const dz  = webbs.collisionBody.z - this.roller.collisionBody.z
-      if (physicsWorld.touching(webbs.collisionBody, this.roller.collisionBody, 0.2)) {
-        webbs.damage(25, { fromX: this.roller.collisionBody.x, fromZ: this.roller.collisionBody.z })
-        const len = Math.hypot(dx, dz) || 1
-        webbs.collisionBody.push((dx / len) * 3.4, (dz / len) * 3.4)
-        this.rollerContactCooldown = 0.8
-      }
-    }
-
-    // Regular contact damage (patrol)
-    if (!this.roller.isBodySlamming() && !this.roller.isStunned() && this.rollerContactCooldown <= 0) {
-      if (physicsWorld.touching(webbs.collisionBody, this.roller.collisionBody, 0.05)) {
-        webbs.damage(this.roller.config.damage, { fromX: this.roller.collisionBody.x, fromZ: this.roller.collisionBody.z })
-        this.rollerContactCooldown = 0.75
-      }
-    }
+  // ── Phase 2: the tongue ─────────────────────────────────────────────────────
+  // How far the tongue can go from the mouth along (dx, dz) before a pillar/wall
+  private clearReach(from: THREE.Vector3, dx: number, dz: number, webbs: Webbs3D): number {
+    const hit = physicsWorld.castBall(from.x, from.z, dx, dz, TONGUE_REACH, 0.12, webbs.collisionBody)
+    return hit ? Math.max(0.5, Math.hypot(hit.x - from.x, hit.z - from.z) - 0.1) : TONGUE_REACH
   }
 
-  private checkTailSwipe(rx: number, rz: number, facingDir: number, webbs: Webbs3D): void {
-    const TAIL_RANGE = 1.15
-    // Tail points along -facing X (atan2(dx, dz): +X = π/2).  Was ±Z, so a
-    // player at the snout got hit by the "tail".
-    const tailAngle  = facingDir === 1 ? -Math.PI / 2 : Math.PI / 2
-    const halfSweep  = 0.4 * Math.PI
+  private updateTongue(delta: number, webbs: Webbs3D, hud: HudSystem): void {
+    const tg = this.tongue!
+    const wb = webbs.collisionBody
+    const mouth = this.anteater.tip(new THREE.Vector3())
+    const fast = tg.hp < tg.hpMax * 0.5 ? 0.75 : 1
+    this.tTimer -= delta
+    const wl = this.warnLine.material as THREE.MeshBasicMaterial
 
-    const dx   = webbs.collisionBody.x - rx
-    const dz   = webbs.collisionBody.z - rz
-    const dist = Math.hypot(dx, dz)
-    if (dist > TAIL_RANGE) return
+    if (tg.isDead()) { this.startDying(hud); return }
 
-    let diff = Math.atan2(dx, dz) - tailAngle
-    while (diff >  Math.PI) diff -= Math.PI * 2
-    while (diff < -Math.PI) diff += Math.PI * 2
-    if (Math.abs(diff) > halfSweep) return
+    // A web on the tongue pins it
+    if ((this.tState === 'stuck' || this.tState === 'lash') && this.webOnTongue) {
+      this.tState = 'pinned'; this.tTimer = PIN_TIME; tg.pinned = true
+      audio.play('boss_hit', mouth.x, mouth.z, { rate: 0.8 })
+      hud.flashBossMessage(this.toldPin ? 'PINNED!' : 'PINNED! HIT THE TONGUE!')
+      this.toldPin = true
+    }
 
-    webbs.damage(20, { fromX: rx, fromZ: rz })
-  }
-
-  private spawnShockwave(cx: number, cz: number): void {
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.25, 0.38, 24).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xffaa22, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
-    )
-    ring.position.set(cx, 0.04, cz)
-    this.threeScene.add(ring)
-    this.shockwaves.push({ mesh: ring, elapsed: 0, duration: 0.65, cx, cz, maxR: 2.1, hitPlayer: false })
-  }
-
-  private updateShockwaves(delta: number, webbs: Webbs3D): void {
-    for (let i = this.shockwaves.length - 1; i >= 0; i--) {
-      const sw = this.shockwaves[i]
-      sw.elapsed += delta
-      const t = Math.min(sw.elapsed / sw.duration, 1)
-      const r = 0.25 + (sw.maxR - 0.25) * t
-      sw.mesh.scale.setScalar(r / 0.25)
-      ;(sw.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - t)
-
-      // Damage player when shockwave ring passes over them
-      if (!sw.hitPlayer && sw.elapsed < sw.duration) {
-        const dist = Math.hypot(webbs.collisionBody.x - sw.cx, webbs.collisionBody.z - sw.cz)
-        if (Math.abs(dist - r) < 0.3) {
-          webbs.damage(22, { fromX: sw.cx, fromZ: sw.cz })
-          sw.hitPlayer = true
+    switch (this.tState) {
+      case 'idle': {
+        this.anteater.aimAt(_v.set(wb.x, 0.2, wb.z), Math.min(1, delta * 2))
+        this.reachNow = 0
+        if (this.tTimer <= 0 && this.inhaleState === 'none') {
+          this.lashCount++
+          const dx = wb.x - mouth.x, dz = wb.z - mouth.z, l = Math.hypot(dx, dz) || 1
+          this.aimDir.set(dx / l, dz / l)
+          if (this.lashCount % 3 === 0) {
+            // Sweep: start well off to one side, swing across
+            const base = Math.atan2(dx, dz), side = Math.random() < 0.5 ? -1 : 1
+            this.sweepFrom = base - side * 0.95; this.sweepTo = base + side * 0.95
+            this.aimDir.set(Math.sin(this.sweepFrom), Math.cos(this.sweepFrom))
+          }
+          this.tState = 'aim'; this.tTimer = AIM_TIME * fast
+          audio.play('boss_windup', mouth.x, mouth.z, { rate: 1.3 })
         }
+        break
       }
+      case 'aim': {
+        // Track Webbs for most of the wind-up, then commit
+        if (this.lashCount % 3 !== 0 && this.tTimer > 0.25) {
+          const dx = wb.x - mouth.x, dz = wb.z - mouth.z, l = Math.hypot(dx, dz) || 1
+          this.aimDir.lerp(new THREE.Vector2(dx / l, dz / l), Math.min(1, delta * 6)).normalize()
+        }
+        this.anteater.aimAt(_v.set(mouth.x + this.aimDir.x * 4, 0.1, mouth.z + this.aimDir.y * 4), Math.min(1, delta * 6))
+        this.reachMax = this.clearReach(mouth, this.aimDir.x, this.aimDir.y, webbs)
+        this.placeWarn(mouth, this.reachMax, 0.25 + 0.35 * Math.abs(Math.sin(this.t * 16)))
+        if (this.tTimer <= 0) {
+          this.tState = this.lashCount % 3 === 0 ? 'sweep' : 'lash'
+          this.tTimer = this.tState === 'sweep' ? SWEEP_TIME * fast : LASH_TIME
+          this.lashHit = false
+          tg.collisionBody.enabled = this.tState === 'lash'
+          audio.play('boss_charge', mouth.x, mouth.z, { rate: 1.8 })
+        }
+        break
+      }
+      case 'lash': {
+        wl.opacity = 0
+        const k = 1 - Math.max(0, this.tTimer) / LASH_TIME
+        this.reachNow = this.reachMax * k
+        this.tongueHits(mouth, webbs, LASH_DMG)
+        if (this.tTimer <= 0) {
+          this.tState = 'stuck'; this.tTimer = STUCK_TIME * fast
+          this.ring(mouth.x + this.aimDir.x * this.reachMax, mouth.z + this.aimDir.y * this.reachMax, 0xd8607e, 0.3, 2)
+          audio.impact('medium', mouth.x + this.aimDir.x * this.reachMax, mouth.z + this.aimDir.y * this.reachMax)
+        }
+        break
+      }
+      case 'stuck': {
+        // Groping along the floor — the window to web it
+        if (this.tTimer <= 0) { this.tState = 'retract'; this.tTimer = RETRACT_TIME }
+        break
+      }
+      case 'pinned': {
+        tg.setPinnedGlow(this.t)
+        this.anteater.flinch = 0.3
+        if (this.tTimer <= 0) {
+          // Tears free, shrieking
+          tg.pinned = false
+          this.releaseWeb?.()
+          audio.play('boss_phase_change', mouth.x, mouth.z, { rate: 1.3, volume: 0.7 })
+          this.tState = 'retract'; this.tTimer = RETRACT_TIME * 0.6
+        }
+        break
+      }
+      case 'retract': {
+        tg.collisionBody.enabled = false
+        this.reachNow = Math.max(0, this.reachNow - delta * (this.reachMax / RETRACT_TIME))
+        if (this.reachNow <= 0.05) { this.tState = 'idle'; this.tTimer = (1.2 + Math.random() * 0.8) * fast }
+        break
+      }
+      case 'sweep': {
+        wl.opacity = 0
+        const k = 1 - Math.max(0, this.tTimer) / (SWEEP_TIME * fast)
+        // Shoots out over the first fifth, then swings across
+        const ang = this.sweepFrom + (this.sweepTo - this.sweepFrom) * Math.max(0, (k - 0.2) / 0.8)
+        this.aimDir.set(Math.sin(ang), Math.cos(ang))
+        this.anteater.aimAt(_v.set(mouth.x + this.aimDir.x * 4, 0.1, mouth.z + this.aimDir.y * 4), Math.min(1, delta * 10))
+        this.reachMax = this.clearReach(mouth, this.aimDir.x, this.aimDir.y, webbs)
+        this.reachNow = this.reachMax * Math.min(1, k / 0.2)
+        this.tongueHits(mouth, webbs, SWEEP_DMG)
+        if (this.tTimer <= 0) { this.tState = 'retract'; this.tTimer = RETRACT_TIME }
+        break
+      }
+    }
+    if (this.tState !== 'aim') wl.opacity = Math.max(0, wl.opacity - delta * 4)
 
-      if (sw.elapsed >= sw.duration) {
-        disposeTree(sw.mesh)
-        this.shockwaves.splice(i, 1)
+    const tx = mouth.x + this.aimDir.x * this.reachNow, tz = mouth.z + this.aimDir.y * this.reachNow
+    tg.layOut(mouth, tx, tz, delta, this.tState === 'pinned' ? 1 : this.tState === 'stuck' ? 0.4 : 0)
+    tg.update(delta, wb.x, wb.z)
+    tg.syncPosition()
+    if (tg.hp < tg.hpMax && tg.isDead()) this.startDying(hud)
+  }
+
+  webOnTongue = false   // main.ts sets this each frame (web attached to the tongue)
+
+  // The tongue's length passing over Webbs
+  private tongueHits(mouth: THREE.Vector3, webbs: Webbs3D, dmg: number): void {
+    if (this.lashHit) return
+    const wb = webbs.collisionBody
+    const ax = mouth.x, az = mouth.z
+    const bx = ax + this.aimDir.x * this.reachNow, bz = az + this.aimDir.y * this.reachNow
+    const vx = bx - ax, vz = bz - az, l2 = vx * vx + vz * vz || 1
+    const t = Math.max(0, Math.min(1, ((wb.x - ax) * vx + (wb.z - az) * vz) / l2))
+    const d = Math.hypot(wb.x - (ax + vx * t), wb.z - (az + vz * t))
+    if (d < wb.radius + 0.12) {
+      this.lashHit = true
+      if (webbs.damage(dmg, { fromX: ax + vx * t - this.aimDir.y * 0.3, fromZ: az + vz * t + this.aimDir.x * 0.3 })) {
+        audio.impact('heavy', wb.x, wb.z)
       }
     }
   }
 
-  // ── VFX rings ─────────────────────────────────────────────────────────────
-
-  private spawnVfxRing(x: number, z: number, color: number): void {
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.1, 0.18, 16).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
-    )
-    ring.position.set(x, 0.04, z)
-    this.threeScene.add(ring)
-    this.vfxRings.push({ mesh: ring, elapsed: 0 })
+  private placeWarn(mouth: THREE.Vector3, len: number, opacity: number): void {
+    const w = this.warnLine
+    w.position.set(mouth.x, 0.03, mouth.z)
+    w.rotation.y = Math.atan2(this.aimDir.x, this.aimDir.y)
+    w.scale.set(1, 1, len)
+    ;(w.material as THREE.MeshBasicMaterial).opacity = opacity
   }
 
-  private updateVFX(delta: number): void {
-    for (let i = this.vfxRings.length - 1; i >= 0; i--) {
-      const r = this.vfxRings[i]
-      r.elapsed += delta
-      const t = Math.min(r.elapsed / 0.3, 1)
-      r.mesh.scale.setScalar(1 + t * 2.5)
-      ;(r.mesh.material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - t)
-      if (t >= 1) {
-        disposeTree(r.mesh)
-        this.vfxRings.splice(i, 1)
-      }
+  // ── Defeat ────────────────────────────────────────────────────────────────
+  private startDying(hud: HudSystem): void {
+    if (this.dieT >= 0) return
+    this.dieT = 0
+    this.releaseWeb?.()
+    if (this.tongue) { this.tongue.pinned = false; this.tongue.collisionBody.enabled = false }
+    this.enemies = []
+    hud.hideBossHp()
+    hud.flashBossMessage('THE ANTEATER RETREATS!')
+    audio.play('boss_death', 0, BACK_Z)
+    audio.stopLoop('boss_suction', this)
+  }
+
+  private updateDeath(delta: number, hud: HudSystem): BossResult {
+    this.dieT += delta
+    const t = this.dieT
+    // Tongue whips back in, the snout recoils through the wall, dust settles
+    this.reachNow = Math.max(0, this.reachNow - delta * 18)
+    if (this.tongue) {
+      const mouth = this.anteater.tip(new THREE.Vector3())
+      this.tongue.layOut(mouth, mouth.x + this.aimDir.x * this.reachNow, mouth.z + this.aimDir.y * this.reachNow, delta, 1)
+    }
+    this.anteater.flinch = Math.max(0, 1 - t)
+    this.anteater.reach = Math.max(-1.6, this.anteater.reach - delta * 1.4)
+    this.anteater.bend.pitch = Math.max(-0.2, this.anteater.bend.pitch - delta)
+    this.anteater.update(delta)
+    if (t > 2.2 && this.result === 'ongoing') {
+      this.pendingLoot = { CrystalDust: 3, BoneFragment: 2, VenomGland: 2, ChitinShard: 3 }
+      hud.flashBossMessage('ANT TUNNELS CLEARED!')
+      this.result = 'victory'
+    }
+    this.updateRings(delta)
+    return this.result
+  }
+
+  // ── VFX ───────────────────────────────────────────────────────────────────
+  private ring(x: number, z: number, color: number, r: number, grow: number): void {
+    const mesh = new THREE.Mesh(new THREE.RingGeometry(r * 0.8, r, 24).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }))
+    mesh.position.set(x, 0.04, z)
+    this.threeScene.add(mesh)
+    this.rings.push({ mesh, t: 0, dur: 0.4, grow })
+  }
+  private updateRings(delta: number): void {
+    for (let i = this.rings.length - 1; i >= 0; i--) {
+      const r = this.rings[i]
+      r.t += delta
+      const k = Math.min(1, r.t / r.dur)
+      r.mesh.scale.setScalar(1 + k * r.grow)
+      ;(r.mesh.material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - k)
+      if (k >= 1) { disposeTree(r.mesh); this.rings.splice(i, 1) }
     }
   }
 
-  // ── Boss loot ─────────────────────────────────────────────────────────────
+  isPhase1(): boolean { return this.phase === 1 }
 
-  private awardBossLoot(): void {
-    this.pendingLoot = {
-      CrystalDust: 3, BoneFragment: 2, VenomGland: 2, ChitinShard: 3,
-    }
+  // Camera target: pulled from Webbs toward the snout so the beast stays in frame
+  focus(webbsPos: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    const tip = this.anteater.tip(new THREE.Vector3())
+    return out.set(webbsPos.x + (tip.x - webbsPos.x) * 0.38, webbsPos.y, webbsPos.z + (tip.z - webbsPos.z) * 0.38)
   }
-
-  pendingLoot: Record<string, number> | null = null
-
-  // ── Public helper ─────────────────────────────────────────────────────────
-
-  isPhase1(): boolean { return this.bossPhase === 1 }
-
-  // Boss scene manages its own lifecycle inside update() — this stub
-  // satisfies the generic call site in main.ts.
+  get tongueEnemy(): Enemy3D | null { return this.tongue }
   updateEnemies(_delta: number, _px: number, _pz: number): void {}
 
   destroy(): void {
     audio.stopLoop('amb_boss')
-    if (this.roller) audio.stopOwner(this.roller)
+    audio.stopLoop('boss_suction', this)
     for (let i = this.rocks.length - 1; i >= 0; i--) this.removeRock(i)
-
-    // Shockwaves
-    for (const sw of this.shockwaves) disposeTree(sw.mesh)
-    this.shockwaves = []
-
-    // VFX rings
-    for (const r of this.vfxRings) disposeTree(r.mesh)
-    this.vfxRings = []
-
-    // Boss entities
-    this.nose?.cleanup()
-    this.roller?.cleanup()
-
+    for (const r of this.rings) disposeTree(r.mesh)
+    this.rings = []
+    this.tongue?.cleanup()
+    this.anteater.dispose()
+    for (const b of this.bodies) physicsWorld.remove(b)
     for (const obj of this.tracked) disposeTree(obj)
     this.tracked = []
     physicsWorld.bounds = null

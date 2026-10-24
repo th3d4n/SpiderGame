@@ -48,8 +48,8 @@ export const ZONE_LIGHTS: Record<ZoneId, LightPreset> = {
   },
   // Boss pit: dim, red-hot rim of the arena; enough fill to read the fight
   bossRoller: {
-    key:        { color: 0xffb08a, intensity: 0.9, azimuthDeg: 10, elevationDeg: 75 },
-    hemi:       { sky: 0x5a3a3a, ground: 0x140806, intensity: 1.4 },
+    key:        { color: 0xffcaa0, intensity: 1.0, azimuthDeg: 10, elevationDeg: 75 },
+    hemi:       { sky: 0x5a4a3c, ground: 0x140c06, intensity: 1.4 },
     lantern:    { color: 0xffd0a0, intensity: 6, range: 6, height: 1.2 },
     fog:        { color: 0x060303, depth: 30 },
     background: 0x030202,
