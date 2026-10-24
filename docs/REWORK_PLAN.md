@@ -385,6 +385,39 @@ animates (stool, hammock, hearth, 3 survivors) → `ENDING_TEXT` story → `Endi
   - **Colony lock:** the den exit is locked until all three clues are read. A soft wall 2 wu short of the trigger (`holdAtColonyMouth` in main.ts) stops Webbs and shows the message. Saves that already reached the colony stay unlocked.
   - **Workbench:** moved to (−18, −20), clear of the tipped bottle cap, banner and funnel. The spare-leg stand now sits past its end, and its collider is rotated to match the model.
 
+## 7. Ant colony rebuild ✅ (maze · dark · hunters · traps · tension)
+
+The old colony was an open 40×26 box with 1-wu walls, 32 lanterns, piles of loot and six wandering enemies. It's now a dark labyrinth with a goal.
+
+- **Layout** (`scenes/colony/ColonyMaze.ts`):
+  - A seeded recursive-backtracker maze, 15×9 cells on a 0.8-wu tile grid (61×37 tiles, ≈49×30 wu), braided at 40% so it has loops. Organic pinches narrow some tunnels to 2 tiles.
+  - Rooms with few doors: entry (refuge plus workbench), boss antechamber, nest, three sac chambers, antlion pit and crystal grotto.
+  - Queries: `los()` (tile DDA, optional body radius), `castVision()`, and distance-field pathfinding (`setGoal`/`seek` string-pulls along the field; `fieldTo` for one-off goals). `wallRects()` provides the merged walls.
+- **Walls:** 1.7 wu tall (Webbs is about 0.6), warped by a world-space noise field so they read as dug earth, with dirt sides and dark tops. The `CUTAWAY` patch in `Materials.ts` dithers the walls open in a cylinder from the camera to Webbs.
+- **Darkness** (`ColonyVision`): each frame, 540 rays mark the tiles in sight, and everything ever seen is remembered. The ink pass (`visOn`) reconstructs each pixel's world position from depth: in sight and lantern-lit = full colour, remembered = 13%, never seen = black. HDR emissives (enemy eyes, glow fungus) survive the dark. Explored tiles save as a `v2:` bitstring in `fogReveal_antColony`.
+- **Enemies:**
+  - `AntSoldier3D`: 1.25× Webbs' size, glowing eyes. It patrols junction loops, freezes for a beat when it spots you, then chases with pathfinding (4.3 vs Webbs' 5.4), rears and lunges for 16, searches the last-seen spot, and rouses soldiers within 14 path-wu.
+  - Every other enemy uses `Enemy3D.steer`. It returns a target placed along the maze path at path distance, so their old AI works unchanged and attack ranges measure path length. Guards are leashed to their post (they engage within 7 path-wu and walk home beyond ×1.6).
+  - The entry room is a refuge: no patrols, soldiers break off the chase, guards don't engage.
+- **Objective:** three `PheromoneSac3D`s (90 HP, hit by any weapon) seal the Queen's tunnel. Each burst makes huge noise and raises the alarm. The third melts the resin membrane and opens the west exit. Progress saves in `colonySacs`. The seal starts open once the Roller is beaten.
+- **Traps** (`ColonyTraps`), all telegraphed, and they hurt ants too:
+  - spike plates (click, 0.35 s, 18 damage)
+  - cave-ins (trickle and growing shadow, then 26 damage)
+  - resin pools (Webbs at 40% speed)
+  - acid spitter nests (charge glow, 12 per glob, puddles)
+  - antlion pit (pulls up to 3.6 wu/s, jaws snap for 30)
+- **Tension** (`ColonyDirector`):
+  - Alarm 0–100, raised by noise: hits, traps, mimics and sacs.
+  - At ≥ 60 it sends a hunter soldier from a far unseen tunnel (cooldown 38 s); at ≥ 95, a worker swarm.
+  - In quiet stretches it plays scares: skitters behind walls, red eyes that blink out, the ceiling grinding.
+  - HUD: objective chip, a colony mood line (quiet / restless / hunting), and a red edge while hunted.
+- **Loot:** cut way back and moved into dead ends: up to 6 chests (2 mimics), 4 berries, caches and thistles. Each dead end usually carries a price (spike plate, ambush centipede or spitter). Pheromone trails mark the patrol routes.
+- **Lighting:** a darker preset with no key-light shadows (that pass doubled draw calls; the colony renders about 290). Accent-light budget scoring now uses world positions, so lights parented inside objects count properly.
+- **Wiring** (main.ts): `AntColonyScene3D(scene, gm, inkPass)`. `takeEvents()` delivers hurt, shake, dust, sac and sealOpen events, `noise('hit')` fires on weapon hits, Webbs' `terrainMult` comes from resin, and pit pull uses `addDrift`.
+- **Testing gotchas:**
+  - Don't null `scene.fog` from the console: `ZoneLighting.update` throws every frame, which freezes the screen and wedges transitions.
+  - The browser pane's screenshots can go stale. Grab canvas frames by wrapping `composer.render`.
+
 **All §5 review items are now addressed.** Open next: playtesting on real devices
 (touch feel, auto-aim, mix levels), Chapter Two (the Hive boss → leg tier 2, Web Glider
 and Flame Breather), and anything the playtest turns up.

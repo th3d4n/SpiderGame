@@ -577,8 +577,9 @@ const ENDING_TEXT: TextDisplayData = {
 
 const COLONY_INTRO: TextDisplayData = {
   pages: [
-    'The silk markers end here.\n\nPast this point, the ants have carved\ntheir own roads through the dirt.',
-    'Whatever drove the colony out still lives\nat the far end of these tunnels.\n\nMove carefully. Trust your web.\n\nAnd watch the walls — they move.',
+    'The silk markers end here.\n\nPast this point the ants have dug a maze\nin the dark, and they hunt what wanders in.',
+    'The way west — the Queen\'s tunnel — is sealed\nwith resin. Three pheromone sacs hold it shut,\ndeep in the colony.\n\nBurst them. The colony will know when you do.',
+    'Stay out of sight. Listen.\nIf they see you, run — and don\'t run\ninto a dead end.',
   ],
   title:       '— ZONE 1: ANT COLONY —',
   accentColor: '#66aa44',
@@ -770,7 +771,7 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
         break
       }
       case 'antColony': {
-        const s = new AntColonyScene3D(scene, gradientMap)
+        const s = new AntColonyScene3D(scene, gradientMap, inkPass)
         activeScene = s
         weaponUseSystem.setEnemies(s.enemies)
         webLauncher.setEnemies(s.enemies)
@@ -1431,25 +1432,40 @@ function gameLoop() {
 
   if (currentZone === 'antColony') {
     const acs = activeScene as AntColonyScene3D
-    acs.fog.update(webbs.collisionBody.x, webbs.collisionBody.z)
-    acs.tickVisuals(delta, webbs.collisionBody.x, webbs.collisionBody.z)
-    acs.updateWallOcclusion(camera, new THREE.Vector3(webbs.collisionBody.x, 0, webbs.collisionBody.z))
+    const wb = webbs.collisionBody
+    acs.tickVisuals(delta, wb.x, wb.z, wb.radius, (vx, vz) => wb.addDrift(vx, vz))
+    acs.updateWallOcclusion(camera, new THREE.Vector3(wb.x, 0, wb.z))
+    webbs.terrainMult = acs.slowAt(wb.x, wb.z)
+    if (weaponUseSystem.lastHitFrame) acs.noise('hit', wb.x, wb.z)
 
-    // Dead-end room triggers (spike / ambush / loot)
-    const deadEndResult = acs.checkDeadEndTriggers(webbs.collisionBody.x, webbs.collisionBody.z)
-    if (deadEndResult) {
-      if (deadEndResult.type === 'spike') {
-        webbs.damage(deadEndResult.damage)
-        hud.toast(`Spike trap!  −${deadEndResult.damage} HP`, 'danger')
-      } else if (deadEndResult.type === 'ambush') {
-        hud.toast('Ambush!', 'danger')
-      } else if (deadEndResult.type === 'loot') {
-        const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
-        inv[deadEndResult.mat] = (inv[deadEndResult.mat] ?? 0) + deadEndResult.qty
-        registry.set('craftingInventory', inv)
-        pickupNotify.notify(deadEndResult.mat, `×${deadEndResult.qty}`, '#88aa44')
+    // Traps, sacs and the seal report back here
+    for (const ev of acs.takeEvents()) {
+      if (ev.kind === 'hurt') {
+        if (dyingT >= 0) continue
+        const landed = webbs.damage(ev.amount, { fromX: ev.fromX, fromZ: ev.fromZ })
+        if (landed) {
+          hud.flashDamageVignette()
+          audio.impact('hurt', wb.x, wb.z)
+          damageNumbers.spawn(wb.x, webbs.group.position.y + 0.9 * webbs.scale, wb.z, ev.amount, { hurt: true })
+          if (ev.label) hud.toast(ev.label, 'danger', 1600)
+        }
+      } else if (ev.kind === 'shake') {
+        cameraShakeRemaining = Math.max(cameraShakeRemaining, ev.time)
+        cameraShakeIntensity = Math.max(cameraShakeIntensity, ev.amount)
+      } else if (ev.kind === 'dust') {
+        particles.burst(new THREE.Vector3(ev.x, 0.4, ev.z), ev.color, ev.count, 1.6, 0.05)
+      } else if (ev.kind === 'sac') {
+        xpSystem.award('rare_pickup')
+        hud.toast(ev.remaining > 0
+          ? `The sac bursts. A scream runs through the tunnels — they're coming.  (${ev.remaining} left)`
+          : 'The last sac bursts. Far to the west, the resin seal tears open.', 'danger', 5200)
+        persist()
+      } else if (ev.kind === 'sealOpen') {
+        audio.play('celeb_swell')
       }
     }
+  } else {
+    webbs.terrainMult = 1
   }
 
   // ── Hit particles ────────────────────────────────────────────────────────

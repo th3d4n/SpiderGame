@@ -25,6 +25,20 @@ const InkShader = {
     inkColor:    { value: new THREE.Color(0x0b0806) },
     fadeStart:   { value: 30 },       // view-space distance where ink starts to fade
     fadeEnd:     { value: 90 },
+    // Line-of-sight darkness (the colony).  Each pixel's world position comes
+    // back from depth; tVis says which tiles Webbs can see right now, tMem which
+    // he has seen before.  Seen + lantern-lit = full colour, remembered = dim,
+    // never seen = black.  HDR highlights (eyes, glow fungus) survive the dark.
+    visOn:       { value: 0 },
+    tVis:        { value: null as THREE.Texture | null },
+    tMem:        { value: null as THREE.Texture | null },
+    gridMin:     { value: new THREE.Vector2() },
+    gridSize:    { value: new THREE.Vector2(1, 1) },
+    visPlayer:   { value: new THREE.Vector2() },
+    visLitR:     { value: 7.5 },
+    visMem:      { value: 0.13 },
+    projInv:     { value: new THREE.Matrix4() },
+    camWorld:    { value: new THREE.Matrix4() },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -37,6 +51,10 @@ const InkShader = {
     uniform vec2  texel;
     uniform float cameraNear, cameraFar, thickness, threshold, strength, fadeStart, fadeEnd;
     uniform vec3  inkColor;
+    uniform float visOn, visLitR, visMem;
+    uniform sampler2D tVis, tMem;
+    uniform vec2  gridMin, gridSize, visPlayer;
+    uniform mat4  projInv, camWorld;
     varying vec2 vUv;
 
     float lin(vec2 uv) {
@@ -46,6 +64,23 @@ const InkShader = {
 
     void main() {
       vec4  base = texture2D(tDiffuse, vUv);
+      if (visOn > 0.5) {
+        float dz = texture2D(tDepth, vUv).x;
+        float k = 0.0;
+        if (dz < 1.0) {
+          vec4 vp = projInv * vec4(vUv * 2.0 - 1.0, dz * 2.0 - 1.0, 1.0);
+          vp /= vp.w;
+          vec3 wp = (camWorld * vp).xyz;
+          vec2 g = (wp.xz - gridMin) / gridSize;
+          float inside = step(0.0, g.x) * step(g.x, 1.0) * step(0.0, g.y) * step(g.y, 1.0);
+          float seen = texture2D(tVis, g).r;
+          float mem  = texture2D(tMem, g).r;
+          float lit  = seen * (1.0 - smoothstep(visLitR * 0.45, visLitR, length(wp.xz - visPlayer)));
+          k = max(lit, mem * visMem) * inside;
+        }
+        vec3 hi = max(base.rgb - 1.0, 0.0);
+        base.rgb = base.rgb * k + hi * (1.0 - k) * 0.8;
+      }
       vec2  o  = texel * thickness;
       float c  = lin(vUv);
       float l  = lin(vUv - vec2(o.x, 0.0)), r = lin(vUv + vec2(o.x, 0.0));
@@ -97,6 +132,10 @@ export class InkOutlinePass extends Pass {
     this.uniforms.tDepth.value     = readBuffer.depthTexture
     this.uniforms.cameraNear.value = this.camera.near
     this.uniforms.cameraFar.value  = this.camera.far
+    if (this.uniforms.visOn.value > 0.5) {
+      this.uniforms.projInv.value.copy(this.camera.projectionMatrixInverse)
+      this.uniforms.camWorld.value.copy(this.camera.matrixWorld)
+    }
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer)
     this.quad.render(renderer)
   }

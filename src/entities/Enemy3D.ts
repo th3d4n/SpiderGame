@@ -67,6 +67,13 @@ export abstract class Enemy3D {
   // Round 9b — global hooks wired once in main.ts.
   static onDeathParticles: ((x: number, y: number, z: number, color: number, count: number, kind: 'ichor' | 'smoke') => void) | null = null
   static onCameraShake:    ((intensity: number, duration: number) => void) | null = null
+  // Maze navigation (installed by the colony): returns where to steer instead of
+  // straight at the player when a wall is in the way — a point along the path,
+  // as far away as the path is long, so chase/attack ranges measure path
+  // distance.  null = go straight.  { idle } = the player is out of its reach:
+  // skip the AI and just walk (vx, vz) — back to its post.
+  static steer: ((e: Enemy3D, playerX: number, playerZ: number) => { x: number; z: number } | { idle: true; vx: number; vz: number } | null) | null = null
+  usesNav = true
 
   protected threeScene:   THREE.Scene
   protected gradientMap:  THREE.Texture
@@ -217,7 +224,14 @@ export abstract class Enemy3D {
 
     this.tickStagger(delta)
     if (this.staggerTimer <= 0) {
-      this.updateAI(delta, playerX, playerZ)
+      const t = this.usesNav && Enemy3D.steer ? Enemy3D.steer(this, playerX, playerZ) : null
+      if (t && 'idle' in t) {
+        this.collisionBody.velocity.x = t.vx
+        this.collisionBody.velocity.z = t.vz
+        if (t.vx !== 0 || t.vz !== 0) this.group.rotation.y = Math.atan2(t.vx, t.vz)
+      } else {
+        this.updateAI(delta, t ? t.x : playerX, t ? t.z : playerZ)
+      }
     } else {
       // Stunned: drop locomotion intent.  Previously the last AI velocity stayed
       // live, so a beetle hit mid-charge kept charging through its stagger.

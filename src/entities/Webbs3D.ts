@@ -101,6 +101,7 @@ export class Webbs3D {
   maxProtectionActive = false
   staminaRegenMult    = 1.0
   hasWebLauncher      = false
+  terrainMult         = 1      // ground underfoot (colony resin → 0.4)
   weaponSystem: WeaponSystem
 
   legs: SpiderLegs
@@ -185,7 +186,7 @@ export class Webbs3D {
     // Committed swings slow him down (weight); see commitAttack()
     if (this.attackSlowT > 0) this.attackSlowT -= delta
     const commit = this.attackSlowT > 0 ? this.attackSlowMult : 1
-    const speed = (this.winded ? SPEED_WU * WINDED_SPEED_MULT : SPEED_WU) * this.bodyScale * commit
+    const speed = (this.winded ? SPEED_WU * WINDED_SPEED_MULT : SPEED_WU) * this.bodyScale * commit * this.terrainMult
 
     // Post-hit invulnerability blink
     if (this.invulnT > 0) {

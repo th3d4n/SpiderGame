@@ -1,958 +1,662 @@
 import * as THREE from 'three'
 import { disposeTree } from '../core/dispose'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { surface, PALETTE } from '../env/Materials'
+import { surface, PALETTE, patchMaterial, CUTAWAY } from '../env/Materials'
 import { buildMaterialPickup, buildHealthBerry, buildChest, buildWorkbench as buildWorkbenchProp, type ChestParts } from '../env/Props'
 import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
-import type { Enemy3D } from '../entities/Enemy3D'
+import { Enemy3D } from '../entities/Enemy3D'
 import { CentipedeAmbusher3D } from '../entities/CentipedeAmbusher3D'
 import { BeetleTank3D } from '../entities/BeetleTank3D'
 import { AntWorker3D } from '../entities/AntWorker3D'
 import { JumpingSpider3D } from '../entities/JumpingSpider3D'
-import { FogOfWarSystem3D } from '../systems/FogOfWarSystem3D'
+import { AntSoldier3D } from '../entities/AntSoldier3D'
+import { PheromoneSac3D } from '../entities/PheromoneSac3D'
+import type { InkOutlinePass } from '../core/InkOutlinePass'
 import { registry } from '../core/Registry'
 import { audio, type SoundKey } from '../systems/AudioManager'
+import { ColonyMaze, TILE, TW, TH, MIN_X, MIN_Z, MAX_X, MAX_Z, type Room } from './colony/ColonyMaze'
+import { ColonyVision } from './colony/ColonyVision'
+import { ColonyTraps, type TrapEvent } from './colony/ColonyTraps'
+import { ColonyDirector } from './colony/ColonyDirector'
 
-// ── World dimensions ───────────────────────────────────────────────────────────
-const W      = 40    // X: -20 … +20
-const D      = 26    // Z: -13 … +13
-const WALL_H = 1.0   // Round 7 Issue 4: shorter walls for better visibility
+// ─── Ant colony ───────────────────────────────────────────────────────────────
+// A dark labyrinth of ant tunnels between Webbs' den (east) and the Queen's
+// tunnel (west).  The way west is sealed with resin, held by three pheromone
+// sacs in deep chambers — find and burst them, and every burst wakes the
+// colony.  Soldier ants patrol, hear, see and hunt through the maze; traps
+// wait in the corridors; loot sits in dead ends, guarded or trapped.
+//
+// Systems: ColonyMaze (layout, line of sight, pathfinding) · ColonyVision
+// (line-of-sight darkness) · ColonyTraps · ColonyDirector (alarm, hunters,
+// scares, HUD).  Tall walls cut away around Webbs (Materials CUTAWAY).
 
-// ── 5 parallel corridors ───────────────────────────────────────────────────────
-// Each corridor: 3wu wide, running the full X extent.
-// CZ[i] is the center Z of corridor i (0=bottom, 4=top).
-const CZ      = [-10, -5, 0, 5, 10] as const   // 5 corridor center Z values
-const CORR_HW = 2.0                              // Round 7 Issue 4: wider corridors (was 1.5)
+const WALL_H = 1.7
+const SAC_KEY = 'colonySacs'
 
-// Dividing wall Z ranges  (between adjacent corridors)
-const DIV_WALLS = [
-  { lo: CZ[0] + CORR_HW, hi: CZ[1] - CORR_HW },   // between C0 and C1
-  { lo: CZ[1] + CORR_HW, hi: CZ[2] - CORR_HW },   // between C1 and C2
-  { lo: CZ[2] + CORR_HW, hi: CZ[3] - CORR_HW },   // between C2 and C3
-  { lo: CZ[3] + CORR_HW, hi: CZ[4] - CORR_HW },   // between C3 and C4
-] as const
+export type ColonyEvent =
+  | TrapEvent
+  | { kind: 'sac'; remaining: number }
+  | { kind: 'sealOpen' }
 
-// Passage x-positions per dividing wall (1.5wu half-width gaps)
-const GAP_HALF = 1.0
-const DIV_GAPS: ReadonlyArray<ReadonlyArray<number>> = [
-  [-14, 0, 14],          // C0–C1: far ends + center
-  [-14, -7, 7, 14],      // C1–C2: all 4
-  [-14, -7, 7, 14],      // C2–C3: all 4
-  [-14, 0, 14],          // C3–C4: far ends + center
-]
-
-const CULL_R = 14
-
-// Round 7 Issue 3: zone-based delay tables are gone — each entry in SPAWN_PLAN
-// now carries its own absolute delay (seconds since colony load).
-
-// ── Dead-end rooms ─────────────────────────────────────────────────────────────
-// Alcoves that branch off the outer corridors (C0 / C4) in the Z direction,
-// and off lateral corridors (C1 / C3) mid-X.
-type RoomType = 'spike' | 'ambush' | 'loot'
-
-const DEAD_END_DATA: Array<{
-  x:     number
-  cz:    number   // center Z of source corridor
-  dz:    number   // alcove extends in this Z direction (±1.5wu beyond corridor edge)
-  type:  RoomType
-}> = [
-  // Off C0 (bottom corridor, extends further south)
-  { x: -16, cz: -10, dz: -1, type: 'spike'  },
-  { x:  -8, cz: -10, dz: -1, type: 'loot'   },
-  { x:   2, cz: -10, dz: -1, type: 'ambush' },
-  { x:  11, cz: -10, dz: -1, type: 'spike'  },
-  // Off C4 (top corridor, extends further north)
-  { x: -15, cz:  10, dz:  1, type: 'loot'   },
-  { x:  -4, cz:  10, dz:  1, type: 'ambush' },
-  { x:   5, cz:  10, dz:  1, type: 'spike'  },
-  { x:  15, cz:  10, dz:  1, type: 'loot'   },
-  // Off C1 (lateral, Z±)
-  { x: -10, cz:  -5, dz: -1, type: 'ambush' },
-  { x:   4, cz:  -5, dz: -1, type: 'loot'   },
-  // Off C3 (lateral, Z±)
-  { x: -10, cz:   5, dz:  1, type: 'loot'   },
-  { x:   4, cz:   5, dz:  1, type: 'ambush' },
-  // Off connecting passage (dead-end pocket at x=0 junction)
-  { x:   0, cz:  -5, dz: -1, type: 'spike'  },
-  { x:   0, cz:   5, dz:  1, type: 'spike'  },
-]
-
-// ── Enemy spawns (Round 7 Issue 3) ────────────────────────────────────────────
-// 6 enemies total, delay-paced so the entry corridor stays safe long enough for
-// the player to orient.  Pacing rules:
-//   - NO spawn with x > 13 (entry portal at x=18.5 must stay safe)
-//   - Deep zone (x < -8): immediate
-//   - Mid zone (-8 to 8): 8-12s delay
-//   - Entry zone (8 to 13): 18-25s delay
-type SpawnKind = 'centipede' | 'beetle' | 'ant_worker' | 'jumping_spider'
-// Round 9 Issue 5: respawn at maze chokepoints — corridor gaps & antechambers.
-const SPAWN_PLAN: Array<{ kind: SpawnKind; x: number; z: number; delay: number }> = [
-  // Deep zone — guarding boss antechamber approach + back-left chest area
-  { kind: 'beetle',    x: -17, z:  9,   delay: 0  },   // northern-corridor west end (near crystals)
-  { kind: 'centipede', x: -14, z:  0,   delay: 0  },   // central chokepoint near danger marker
-  // Mid zone — guarding the central stub-wall pathing decisions
-  { kind: 'centipede', x:  -2, z:  6,   delay: 8  },   // northern gap at X=-2
-  { kind: 'beetle',    x:   2, z: -6,   delay: 12 },   // southern gap at X=+2
-  // Entry zone — player gets ~18s safe exploration first
-  { kind: 'centipede', x:  11, z:  0,   delay: 18 },   // entry-side chokepoint
-  { kind: 'beetle',    x:  16, z: -10,  delay: 25 },   // gold-beacon ambush (south reward route)
-]
-
-// ── 20 chests, 6 mimics ────────────────────────────────────────────────────────
-// A few sit off their corridor line so a wall south-east of them (between the
-// item and the iso camera) can't hide them anywhere in their jitter range.
-const CHEST_DATA: Array<{ x: number; cz: number; isMimic: boolean }> = [
-  // C0
-  { x: -17, cz: -10, isMimic: false }, { x:  -6, cz: -10, isMimic: true  },
-  { x:   5, cz: -11.25, isMimic: false }, { x:  14, cz: -10, isMimic: false },
-  // C1
-  { x: -14, cz:  -5, isMimic: false }, { x:  -3, cz:  -5, isMimic: true  },
-  { x:   8, cz:  -5, isMimic: false }, { x:  17, cz:  -5, isMimic: false },
-  // C2 (entry)
-  { x: -18, cz:   0, isMimic: false }, { x:  -9, cz:   0, isMimic: false },
-  { x:   3, cz:  -1, isMimic: true  }, { x:  11, cz:   0, isMimic: false },
-  // C3
-  { x: -14.5, cz: 4.75, isMimic: false }, { x:  -6, cz: 4.25, isMimic: false },
-  { x:   3.5, cz: 4.25, isMimic: true  }, { x: 16.5, cz: 4.25, isMimic: false },
-  // C4
-  { x: -16, cz:  10, isMimic: false }, { x:  -4, cz:  10, isMimic: true  },
-  { x:   6, cz:  10, isMimic: false }, { x:  15, cz:  10, isMimic: true  },
-]
+interface ChestRecord {
+  x: number; z: number; isMimic: boolean; opened: boolean
+  mesh: THREE.Group; parts: ChestParts; openT: number; wakeProgress: number; wakeActive: boolean
+}
+interface PickupRecord { x: number; z: number; collected: boolean; mesh: THREE.Object3D | null; mat?: string; qty?: number }
 
 const CHEST_LOOT = [
   { mat: 'SilkThread',  qty: 3 }, { mat: 'ChitinShard', qty: 2 },
   { mat: 'WebFluid',    qty: 2 }, { mat: 'BoneFragment', qty: 2 },
   { mat: 'BugPartsAnt', qty: 3 }, { mat: 'DriedFungus', qty: 1 },
 ]
+const CACHE_MATS = ['SilkThread', 'ChitinShard', 'BugPartsAnt', 'WebFluid', 'BoneFragment', 'DriedFungus']
 
-// ── HP modules (15) ────────────────────────────────────────────────────────────
-const HP_MODULE_DATA: Array<{ x: number; cz: number }> = [
-  { x: -19, cz: -10 }, { x: -10, cz: -10 }, { x:   6, cz: -10 },
-  { x: -16, cz:  -5 }, { x:   0, cz:  -5 }, { x:  12, cz:  -5 },
-  { x: -13, cz:   0 }, { x:   0, cz:   0 }, { x:  13, cz:   0 },
-  { x: -18.5, cz: 4.25 }, { x:  -4, cz:   5 }, { x:  10, cz:   5 },   // first one kept clear of the wall in front
-  { x: -12, cz:  10 }, { x:   4, cz:  10 }, { x:  17, cz:  10 },
-]
-
-// ── Material caches (25) ───────────────────────────────────────────────────────
-const CACHE_DATA: Array<{ x: number; cz: number; mat: string; qty: number }> = [
-  { x: -17, cz: -10, mat: 'SilkThread',   qty: 2 }, { x:  -8, cz: -10, mat: 'ChitinShard', qty: 2 },
-  { x:   2, cz: -10, mat: 'BugPartsAnt',  qty: 2 }, { x:  11, cz: -10, mat: 'WebFluid',     qty: 2 },
-  { x:  16, cz: -10, mat: 'DriedFungus',  qty: 1 },
-  { x: -15, cz:  -5, mat: 'BoneFragment', qty: 2 }, { x:  -6, cz:  -5, mat: 'SilkThread',   qty: 2 },
-  { x:   4, cz:  -5, mat: 'ChitinShard',  qty: 2 }, { x:  14, cz:  -5, mat: 'WebFluid',     qty: 2 },
-  { x:  18, cz:  -5, mat: 'BugPartsAnt',  qty: 1 },
-  { x: -16, cz:   0, mat: 'SilkThread',   qty: 2 }, { x:  -7, cz:   0, mat: 'BoneFragment', qty: 2 },
-  { x:   5, cz:   0, mat: 'ChitinShard',  qty: 2 }, { x:  15, cz:   0, mat: 'DriedFungus',  qty: 1 },
-  { x: -14, cz:   5, mat: 'WebFluid',     qty: 2 }, { x:  -3, cz:   5, mat: 'SilkThread',   qty: 2 },
-  { x:   6, cz:   5, mat: 'BugPartsAnt',  qty: 2 }, { x:  13, cz:   5, mat: 'BoneFragment', qty: 2 },
-  { x:  18, cz:   5, mat: 'ChitinShard',  qty: 1 },
-  { x: -18, cz:  10, mat: 'SilkThread',   qty: 2 }, { x:  -9, cz:  10, mat: 'WebFluid',     qty: 2 },
-  { x:   1, cz:  10, mat: 'ChitinShard',  qty: 2 }, { x:   9, cz:  10, mat: 'DriedFungus',  qty: 1 },
-  { x:  14, cz:  10, mat: 'BugPartsAnt',  qty: 2 }, { x:  19, cz:  10, mat: 'BoneFragment', qty: 1 },
-]
-
-// ── Thistle seeds (20) ─────────────────────────────────────────────────────────
-const THISTLE_DATA: Array<{ x: number; cz: number }> = [
-  { x: -18, cz: -10 }, { x:  -4, cz: -10 }, { x:   9, cz: -10 }, { x:  17, cz: -10 },
-  { x: -11, cz:  -5 }, { x:   6, cz:  -5 }, { x:  16, cz:  -5 }, { x:  19, cz:  -5 },
-  { x: -14, cz:   0 }, { x:  -2, cz:   0 }, { x:   8, cz:   0 }, { x:  18, cz:   0 },
-  { x: -13, cz:   5 }, { x:   0, cz:   5 }, { x:   9, cz:   5 }, { x:  17, cz:   5 },
-  { x: -16, cz:  10 }, { x:  -5, cz:  10 }, { x:   7, cz:  10 }, { x:  15, cz:  10 },
-]
-
-// ── 32 fungus lanterns spread across all corridors ─────────────────────────────
-const LANTERN_DATA: Array<{ x: number; cz: number }> = [
-  // C0
-  { x: -18, cz: -10 }, { x: -13, cz: -10 }, { x:  -7, cz: -10 },
-  { x:  -1, cz: -10 }, { x:   5, cz: -10 }, { x:  12, cz: -10 }, { x:  17, cz: -10 },
-  // C1
-  { x: -16, cz:  -5 }, { x: -10, cz:  -5 }, { x:  -3, cz:  -5 },
-  { x:   3, cz:  -5 }, { x:   9, cz:  -5 }, { x:  15, cz:  -5 },
-  // C2 (entry corridor)
-  { x: -15, cz:   0 }, { x:  -8, cz:   0 }, { x:  -1, cz:   0 },
-  { x:   6, cz:   0 }, { x:  13, cz:   0 },
-  // C3
-  { x: -17, cz:   5 }, { x: -11, cz:   5 }, { x:  -4, cz:   5 },
-  { x:   2, cz:   5 }, { x:   8, cz:   5 }, { x:  16, cz:   5 },
-  // C4
-  { x: -19, cz:  10 }, { x: -14, cz:  10 }, { x:  -8, cz:  10 },
-  { x:  -2, cz:  10 }, { x:   4, cz:  10 }, { x:  10, cz:  10 }, { x:  18, cz:  10 },
-  // Passage junction markers
-  { x: -14, cz:  -2 }, { x:  14, cz:   2 },
-]
-
-// ── Types ──────────────────────────────────────────────────────────────────────
-
-interface PendingSpawn {
-  kind:  SpawnKind
-  x:     number
-  z:     number
-  delay: number   // seconds since colony load
-}
-
-interface ChestRecord {
-  x:            number
-  z:            number
-  isMimic:      boolean
-  opened:       boolean
-  mesh:         THREE.Group
-  parts:        ChestParts
-  openT:        number   // −1 closed; 0→1 while the cap swings open
-  wakeProgress: number   // 0→1 for mimic pre-burst animation
-  wakeActive:   boolean
-}
-
-interface PickupRecord {
-  x:         number
-  z:         number
-  collected: boolean
-  mesh:      THREE.Object3D | null
-  mat?:      string
-  qty?:      number
-}
-
-interface DeadEndRecord {
-  x:          number
-  z:          number   // alcove center (outside corridor edge)
-  type:       RoomType
-  triggered:  boolean
-  mesh:       THREE.Group | null
-  spikeMeshes?: THREE.Mesh[]
-}
-
-export type DeadEndResult = { type: 'spike'; damage: number } | { type: 'ambush' } | { type: 'loot'; mat: string; qty: number } | null
-
-// ── Helper ─────────────────────────────────────────────────────────────────────
-
-function jitterZ(cz: number, range = 0.8): number {
-  return cz + (Math.random() - 0.5) * range
-}
-
-
-const _wallM = new THREE.Matrix4()
+// Webbs' noise, as the soldiers hear it
+const NOISE = { hit: { range: 8, alarm: 3 }, web: { range: 6, alarm: 1 } }
 
 export class AntColonyScene3D {
-  static readonly LEFT  = -W / 2          // -20
-  static readonly RIGHT =  W / 2          // +20
-  static readonly BACK  = -D / 2          // -13
-  static readonly FRONT =  D / 2          // +13
-
-  static readonly EXIT_RIGHT_X      =  19.0
-  static readonly EXIT_LEFT_X       = -19.0
-  static readonly SPAWN_FROM_HOME_X =  18.5
-  static readonly SPAWN_FROM_BOSS_X = -18.5
-  static readonly WORKBENCH_X       =  15.0
-  static readonly OBJ_Z             =  0.8   // inside entry corridor (C2, center z=0)
+  static readonly LEFT  = MIN_X
+  static readonly RIGHT = MAX_X
+  static readonly BACK  = MIN_Z
+  static readonly FRONT = MAX_Z
+  static readonly EXIT_RIGHT_X      = MAX_X - 0.25
+  static readonly EXIT_LEFT_X       = MIN_X + 0.25
+  static readonly SPAWN_FROM_HOME_X = MAX_X - 1.8
+  static readonly SPAWN_FROM_BOSS_X = MIN_X + 1.8
+  static readonly WORKBENCH_X       = MAX_X - 4.6
+  static readonly OBJ_Z             = -3.2
 
   enemies: Enemy3D[] = []
-  fog:     FogOfWarSystem3D
+  readonly maze: ColonyMaze
 
-  private threeScene:    THREE.Scene
-  private gradientMap:   THREE.Texture
-  private tracked:       THREE.Object3D[] = []
-  private wallBodies:    CollisionBody[]  = []
-  private dividerWalls:  Array<{ mesh: THREE.Mesh; mat: THREE.MeshToonMaterial; capMat: THREE.MeshToonMaterial; x0: number; x1: number; zLo: number; zHi: number }> = []
-  // Round 10 — adaptive ambience zone (entry / mid / deep) follows player X.
-  // Empty string = uninitialised; tickVisuals will start the correct one on
-  // the first frame rather than playing mid briefly then switching.
+  private threeScene:  THREE.Scene
+  private gradientMap: THREE.Texture
+  private tracked:     THREE.Object3D[] = []
+  private wallBodies:  CollisionBody[] = []
+  private vision:      ColonyVision
+  private traps:       ColonyTraps
+  private director:    ColonyDirector
+  private freeEnemies: Enemy3D[] = []
+  private soldiers:    AntSoldier3D[] = []
+  private chests:      ChestRecord[] = []
+  private hpModules:   PickupRecord[] = []
+  private caches:      PickupRecord[] = []
+  private thistles:    PickupRecord[] = []
+  private sacs:        Array<{ idx: number; enemy: PheromoneSac3D | null }> = []
+  private sealBody:    CollisionBody | null = null
+  private sealMesh:    THREE.Mesh | null = null
+  private sealOpenT    = -1
+  private events:      ColonyEvent[] = []
   private currentAmbZone: 'entry' | 'mid' | 'deep' | '' = ''
-  // Round 7 Issue 3: time-delayed spawn queue
-  private pendingSpawns:    PendingSpawn[] = []
-  private elapsedSinceLoad  = 0
-  private readonly _occRaycaster = new THREE.Raycaster()
-  private freeEnemies:  Enemy3D[]        = []
-  private chests:       ChestRecord[]    = []
-  private hpModules:    PickupRecord[]   = []
-  private caches:       PickupRecord[]   = []
-  private thistles:     PickupRecord[]   = []
-  private deadEnds:     DeadEndRecord[]  = []
-  private bossPortalZ:  number           = 0   // randomized on construction
-  private orbMeshes:    THREE.Mesh[]     = []  // for bob animation
+  private fungusMat = new THREE.MeshStandardMaterial({ color: 0x8affd8, emissive: 0x3affb0, emissiveIntensity: 1.8 })
+  private boneMat:   THREE.MeshToonMaterial
+  // Static decor is baked into one merged mesh per material (eggs, fungus,
+  // bones were ~150 separate draw calls)
+  private decor = new Map<THREE.Material, THREE.BufferGeometry[]>()
+  // Guards hold their post: they engage within `leash` (path distance) and go
+  // back home when you get well away (hysteresis ×1.6)
+  private posts = new Map<Enemy3D, { x: number; z: number; leash: number; engaged: boolean; field: Int32Array | null }>()
 
-  constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture) {
+  constructor(threeScene: THREE.Scene, gradientMap: THREE.Texture, ink: InkOutlinePass) {
     this.threeScene  = threeScene
     this.gradientMap = gradientMap
+    this.boneMat = new THREE.MeshToonMaterial({ color: 0xb8a882, gradientMap })
+    this.maze = new ColonyMaze()
 
-    // Randomize boss portal Z among corridor centers (persists for one colony visit)
-    const savedZ = registry.get<number | undefined>('bossPortalZ')
-    if (typeof savedZ === 'number') {
-      this.bossPortalZ = savedZ
-    } else {
-      this.bossPortalZ = CZ[Math.floor(Math.random() * CZ.length)]
-      registry.set('bossPortalZ', this.bossPortalZ)
-    }
+    physicsWorld.bounds = { minX: MIN_X - 1, maxX: MAX_X + 1, minZ: MIN_Z + 0.2, maxZ: MAX_Z - 0.2 }
 
-    physicsWorld.bounds = {
-      minX: AntColonyScene3D.LEFT  - 1,
-      maxX: AntColonyScene3D.RIGHT + 1,
-      minZ: AntColonyScene3D.BACK  + 0.3,
-      maxZ: AntColonyScene3D.FRONT - 0.3,
-    }
-
-    this.buildGround()
-    this.buildOuterWalls()
-    // Round 9 Issue 5: replaced 4-divider corridor grid with a proper maze.
-    this.buildMazeWalls()
-    this.flushWallBatch()   // all wall boxes → one mesh per material
-    this.buildLandmarks()
-    this.buildPortals()
-
-    // Round 10 — adaptive ambience starts on the first tickVisuals call so
-    // the correct zone (entry / mid / deep) is picked from the spawn position.
-    this.buildWorkbench()
-    this.buildChests()
-    this.buildHpModules()
-    this.buildCaches()
-    this.buildThistles()
-    this.buildDeadEnds()
-    this.buildDecoration()
-    this.buildLighting()
-    this.initSpawns()
-
-    this.fog = new FogOfWarSystem3D(
-      threeScene,
-      AntColonyScene3D.LEFT,  AntColonyScene3D.RIGHT,
-      AntColonyScene3D.BACK,  AntColonyScene3D.FRONT,
-      3.5,
-    )
-    // Round 6 Issue 7: rehydrate previously explored areas so leaving and returning
-    // to the colony preserves the player's exploration trail.
+    this.buildFloor()
+    this.buildWalls()
+    this.vision = new ColonyVision(this.maze, ink)
     const savedFog = registry.get<string>('fogReveal_antColony')
-    if (savedFog) this.fog.restore(savedFog)
+    if (savedFog) this.vision.restore(savedFog)
+    this.traps = new ColonyTraps(threeScene, this.maze, gradientMap)
+    this.director = new ColonyDirector(threeScene, this.maze, this.vision, {
+      spawnHunter: (x, z, tx, tz) => {
+        const s = this.addSoldier(x, z, [{ x, z }])
+        s.rouse(tx, tz)
+      },
+      spawnSwarm: (x, z, n) => { for (let k = 0; k < n; k++) this.freeEnemies.push(new AntWorker3D(threeScene, x + (k % 2) * 0.4, z + Math.floor(k / 2) * 0.4, gradientMap)) },
+      soldiers: () => this.soldiers,
+      dust: (x, z, color, count) => this.events.push({ kind: 'dust', x, z, color, count }),
+      shake: (amount, time) => this.events.push({ kind: 'shake', amount, time }),
+    })
 
-    for (const l of LANTERN_DATA) {
-      this.fog.addBeacon(l.x, l.cz)
-    }
+    // Enemies navigate the maze; soldiers report to the director
+    AntSoldier3D.ctx = { maze: this.maze, alert: (x, z, from) => this.director.spotted(x, z, from), safe: (x, z) => this.safeAt(x, z) }
+    Enemy3D.steer = (e, px, pz) => this.steer(e, px, pz)
+
+    this.buildRooms()
+    this.populateCorridors()
+    this.buildSeal()
+    this.buildLighting()
+    this.flushDecor()
+    this.updateObjective(false)
   }
 
-  getBossPortalZ(): number { return this.bossPortalZ }
+  // Facade the game loop already uses for the colony's explored map
+  get fog(): { update: (x: number, z: number) => void; serialize: () => string | null } {
+    return { update: () => {}, serialize: () => this.vision.serialize() }
+  }
+  getBossPortalZ(): number { return 0 }
 
-  // ── Ground (5 corridor bands + connecting passages) ───────────────────────────
-
-  private buildGround(): void {
-    const mat      = surface({ color: PALETTE.colonyFloor, tex: 'dirt', texScale: 0.45, gradientMap: this.gradientMap })
-    const patchMat = surface({ color: PALETTE.colonyPatch, tex: 'dirt', texScale: 0.9, gradientMap: this.gradientMap })
-
-    // Floor per corridor
-    for (const cz of CZ) {
-      const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, CORR_HW * 2).rotateX(-Math.PI / 2), mat)
-      floor.position.set(0, 0, cz)
-      floor.receiveShadow = true
-      this.add(floor)
+  // ── Layout ──────────────────────────────────────────────────────────────────
+  private buildFloor(): void {
+    const mat = surface({ color: PALETTE.colonyFloor, tex: 'dirt', texScale: 0.5, gradientMap: this.gradientMap })
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(TW * TILE + 4, TH * TILE).rotateX(-Math.PI / 2), mat)
+    floor.receiveShadow = true
+    this.add(floor)
+    // Damp dark patches
+    const patch = new THREE.MeshBasicMaterial({ color: 0x1a120a, transparent: true, opacity: 0.35, depthWrite: false })
+    const geos: THREE.BufferGeometry[] = []
+    for (let k = 0; k < 70; k++) {
+      const x = MIN_X + Math.random() * TW * TILE, z = MIN_Z + Math.random() * TH * TILE
+      if (this.maze.isSolidAt(x, z)) continue
+      geos.push(new THREE.CircleGeometry(0.3 + Math.random() * 0.7, 10).rotateX(-Math.PI / 2).translate(x, 0.004, z))
     }
-
-    // Passage floors (connecting adjacent corridors)
-    for (let wi = 0; wi < DIV_WALLS.length; wi++) {
-      const dw   = DIV_WALLS[wi]
-      const passH = dw.hi - dw.lo
-      for (const gx of DIV_GAPS[wi]) {
-        const pass = new THREE.Mesh(
-          new THREE.PlaneGeometry(GAP_HALF * 2, passH).rotateX(-Math.PI / 2),
-          mat,
-        )
-        pass.position.set(gx, 0, (dw.lo + dw.hi) / 2)
-        this.add(pass)
-      }
-    }
-
-    // Dirt patches
-    for (let ci = 0; ci < CZ.length; ci++) {
-      const cz = CZ[ci]
-      for (let i = 0; i < 5; i++) {
-        const px = (Math.random() - 0.5) * W * 0.9
-        const r  = 0.3 + Math.random() * 0.45
-        const p  = new THREE.Mesh(new THREE.CircleGeometry(r, 10).rotateX(-Math.PI / 2), patchMat)
-        p.position.set(px, 0.006, jitterZ(cz, 1.4))
-        this.add(p)
-      }
-    }
+    const m = mergeGeometries(geos); geos.forEach(g => g.dispose())
+    if (m) this.add(new THREE.Mesh(m, patch))
   }
 
-  // ── Outer walls (N + S perimeter) ─────────────────────────────────────────────
-
-  private buildOuterWalls(): void {
-    const wm = surface({ color: PALETTE.colonyWall, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap })
-    const cm = surface({ color: PALETTE.colonyCap,  tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap })
-
-    // Round 8 Issue 9: crooked back + front walls
-    this.addCrookedWallSegment(
-      AntColonyScene3D.LEFT, AntColonyScene3D.BACK,
-      AntColonyScene3D.RIGHT, AntColonyScene3D.BACK,
-      0.5, WALL_H, wm,
-    )
-    this.addBox(W + 0.6, 0.12, 0.6, 0, WALL_H + 0.06, AntColonyScene3D.BACK, cm)
-    this.addCrookedWallSegment(
-      AntColonyScene3D.LEFT, AntColonyScene3D.FRONT,
-      AntColonyScene3D.RIGHT, AntColonyScene3D.FRONT,
-      0.35, WALL_H * 0.4, wm,
-    )
-    // Side walls (E/W)
-    this.addBox(0.4, WALL_H, D + 0.6, AntColonyScene3D.RIGHT, WALL_H / 2, 0, wm)
-    this.addBox(0.4, WALL_H, D + 0.6, AntColonyScene3D.LEFT,  WALL_H / 2, 0, wm)
-    this.addBox(0.6, 0.12, D + 0.6, AntColonyScene3D.RIGHT, WALL_H + 0.06, 0, cm)
-    this.addBox(0.6, 0.12, D + 0.6, AntColonyScene3D.LEFT,  WALL_H + 0.06, 0, cm)
-
-    // Stalactites along south back wall
-    const stalMat = surface({ color: PALETTE.colonyStal, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
-    for (let sx = -18; sx <= 18; sx += 4) {
-      const h = 0.25 + Math.random() * 0.4
-      const s = new THREE.Mesh(new THREE.ConeGeometry(0.07, h, 6), stalMat)
-      s.position.set(sx, WALL_H - h / 2, AntColonyScene3D.BACK + 0.18)
-      s.castShadow = true; this.add(s)
-    }
-
-    // Stone bumps at wall base (both sides)
-    const stoneMat = surface({ color: PALETTE.colonyStone, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
-    for (const sx of [-17, -13, -8, -3, 2, 7, 12, 17]) {
-      const h = 0.18 + Math.random() * 0.28
-      const s = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.12), stoneMat)
-      s.position.set(sx, h / 2 + 0.04, AntColonyScene3D.BACK + 0.12)
-      s.castShadow = true; this.add(s)
-    }
-  }
-
-  // ── Legacy corridor dividers (replaced by buildMazeWalls in Round 9) ──────
-  // Kept for reference; no longer called.
-  // @ts-ignore — intentionally unused
-  private _legacyBuildCorridorDividers(): void {
-    for (let wi = 0; wi < DIV_WALLS.length; wi++) {
-      const dw  = DIV_WALLS[wi]
-      const hz  = (dw.lo + dw.hi) / 2
-      const ht  = dw.hi - dw.lo
-      const gxs = DIV_GAPS[wi]
-
-      const breakpoints = [AntColonyScene3D.LEFT, ...gxs.flatMap(gx => [gx - GAP_HALF, gx + GAP_HALF]), AntColonyScene3D.RIGHT]
-      for (let bi = 0; bi < breakpoints.length - 1; bi += 2) {
-        const x0 = breakpoints[bi], x1 = breakpoints[bi + 1]
-        const cx = (x0 + x1) / 2, segW = x1 - x0
-
-        // Each divider segment gets its own material instance so opacity is independent.
-        // depthWrite:false prevents Z-fighting when walls fade transparent.
-        const segMat = surface({
-          color: PALETTE.colonyWall, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap,
-          transparent: true, opacity: 1.0, depthWrite: false,
-        })
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(segW, WALL_H, ht), segMat)
-        mesh.position.set(cx, WALL_H / 2, hz)
-        mesh.castShadow = true; mesh.receiveShadow = true
-        this.tracked.push(mesh); this.threeScene.add(mesh)
-
-        // Round 6 Issue 6: pair each cap with its panel and a private material so
-        // the occlusion system can fade them together (caps were staying opaque).
-        const capMat = surface({
-          color: PALETTE.colonyCap, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap,
-          transparent: true, opacity: 1.0, depthWrite: false,
-        })
-        const cap = new THREE.Mesh(new THREE.BoxGeometry(segW + 0.08, 0.10, ht + 0.1), capMat)
-        cap.position.set(cx, WALL_H + 0.05, hz)
-        this.tracked.push(cap); this.threeScene.add(cap)
-
-        this.dividerWalls.push({ mesh, mat: segMat, capMat, x0, x1, zLo: dw.lo, zHi: dw.hi })
-
-        const body = physicsWorld.add({
-          x: x0, z: dw.lo, radius: 0,
-          velocity: { x: 0, z: 0 }, isStatic: true, enabled: true,
-          aabb: { x: x0, z: dw.lo, w: segW, h: ht },
-        })
-        this.wallBodies.push(body)
-      }
-    }
-  }
-
-  // ── Round 9 Issue 5: real maze design ───────────────────────────────────────
-  // Replaces the 4-row corridor-divider grid with a chambered maze.  The
-  // topology gives the player 3 viable routes from entry (right, Z=0) to boss
-  // (left, Z=bossPortalZ):
-  //   • Northern  — drop up through Z=+6 gap, traverse west along Z≈+9
-  //   • Middle    — straight shot through the open mid arena
-  //   • Southern  — drop down through Z=-6 gap, traverse west along Z≈-9
-  // Plus dead-end reward alcoves (existing dead-end system) and stub walls in
-  // the middle that block sight-lines without fully sealing routes.
-  private buildMazeWalls(): void {
-    const mat = surface({ color: PALETTE.colonyWall, tex: 'dirt', texScale: 0.6, gradientMap: this.gradientMap })
-
-    // ── Northern divider (Z=+6) — gaps at X=-12, X=-2, X=+10 ────────────────
-    this.addMazeWall(-20,  6,  -14,  6, 0.4, mat)
-    this.addMazeWall(-10,  6,   -4,  6, 0.4, mat)
-    this.addMazeWall(  0,  6,    8,  6, 0.4, mat)
-    this.addMazeWall( 12,  6,   20,  6, 0.4, mat)
-
-    // ── Southern divider (Z=-6) — gaps at X=-10, X=+2, X=+12 ────────────────
-    this.addMazeWall(-20, -6,  -12, -6, 0.4, mat)
-    this.addMazeWall( -8, -6,    0, -6, 0.4, mat)
-    this.addMazeWall(  4, -6,   10, -6, 0.4, mat)
-    this.addMazeWall( 14, -6,   20, -6, 0.4, mat)
-
-    // ── Middle arena stub walls — break sight-lines, force pathing decisions ──
-    this.addMazeWall(-13, -2,  -13,  2, 0.4, mat)   // vertical chokepoint near back-left
-    this.addMazeWall( -5, -3,   -3,  0, 0.4, mat)   // diagonal stub mid-left
-    this.addMazeWall(  3,  0,    5,  3, 0.4, mat)   // diagonal stub mid-right
-    this.addMazeWall( 11, -2,   11,  2, 0.4, mat)   // vertical chokepoint near entry
-
-    // ── Stub walls inside corridors for maze complexity ─────────────────────
-    this.addMazeWall(-16,  8,  -16, 11, 0.35, mat)  // partial blocker N corridor far west
-    this.addMazeWall(  6,  9,    8, 11, 0.35, mat)  // diagonal stub N corridor mid-east
-    this.addMazeWall(-15, -8,  -15, -11, 0.35, mat) // partial blocker S corridor far west
-    this.addMazeWall(  6, -9,    8, -11, 0.35, mat) // diagonal stub S corridor mid-east
-
-    // ── Decorative stalactites at junctions ─────────────────────────────────
-    const stoneMat = surface({ color: PALETTE.colonyStone, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
-    const stalacPositions: [number, number][] = [
-      [-18,  9], [-12,  6.3], [ -2,  6.3], [10,  6.3], [18,  9],
-      [-18, -9], [-10, -6.3], [  2, -6.3], [12, -6.3], [18, -9],
-      [-13,  0], [ -5,  3   ], [ 11,  0  ], [  0,  -1.5],
+  // Walls: merged rectangles, warped by a world-space noise field so they read
+  // as dug earth (coincident vertices warp identically, so no seams open).
+  // Sides get the dirt texture, tops a dark rooty crust.  Both cut away.
+  private buildWalls(): void {
+    const side = surface({ color: PALETTE.colonyWall, tex: 'dirt', texScale: 0.7, gradientMap: this.gradientMap })
+    const top  = surface({ color: 0x2e2218, tex: 'dirt', texScale: 0.9, gradientMap: this.gradientMap })
+    patchMaterial(side, { cutaway: true }); patchMaterial(top, { cutaway: true })
+    const warp = (x: number, z: number) => [
+      Math.sin(x * 2.3 + z * 1.1) * 0.07 + Math.sin(z * 3.7 - x * 0.7) * 0.05,
+      Math.cos(z * 2.1 - x * 1.3) * 0.07 + Math.sin(x * 3.1 + z * 0.9) * 0.05,
     ]
-    for (const [sx, sz] of stalacPositions) {
-      const h = 0.2 + Math.random() * 0.35
-      const stal = new THREE.Mesh(new THREE.ConeGeometry(0.10, h, 6), stoneMat)
-      stal.position.set(sx, WALL_H - h / 2, sz)
-      this.add(stal)
-    }
-  }
-
-  // Add a wall: crooked visual segments + a single physics AABB collider.
-  private addMazeWall(
-    x0: number, z0: number, x1: number, z1: number,
-    thickness: number, mat: THREE.Material,
-  ): void {
-    this.addCrookedWallSegment(x0, z0, x1, z1, thickness, WALL_H, mat)
-
-    // Physics: an oriented box along the segment.  The old AABB covered the whole
-    // swept rectangle, so diagonal stubs had large invisible collision blocks.
-    this.wallBodies.push(physicsWorld.addStaticSegment(x0, z0, x1, z1, thickness))
-
-  }
-
-  // ── Round 9 Issue 5: navigational landmarks ─────────────────────────────────
-  // Distinct glowing markers at key junctions so the player can orient through
-  // the fog of war.  Each gets a point light for visibility at range.
-  private buildLandmarks(): void {
-    // Cool blue crystal cluster at northern-corridor west end (safe route landmark)
-    const crystalMat = new THREE.MeshStandardMaterial({
-      color: 0x66ccff, emissive: 0x3388dd, emissiveIntensity: 1.2,
-    })
-    for (const [cx, cy, cz] of [
-      [-17, 0.30,  10],
-      [-17, 0.22,  10.5],
-      [-16.5, 0.28, 10.2],
-    ] as [number, number, number][]) {
-      const c = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), crystalMat)
-      c.position.set(cx, cy, cz)
-      this.add(c)
-    }
-    const blueL = new THREE.PointLight(0x66ccff, 1.2, 4.5)
-    blueL.position.set(-17, 0.5, 10)
-    this.add(blueL)
-
-    // Red danger marker at boss antechamber approach
-    const dangerMat = new THREE.MeshStandardMaterial({
-      color: 0xff3322, emissive: 0xaa0000, emissiveIntensity: 1.0,
-    })
-    const dangerMarker = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.45, 4), dangerMat)
-    dangerMarker.position.set(-15, 0.30, 0)
-    this.add(dangerMarker)
-    const redL = new THREE.PointLight(0xff3322, 1.0, 4.0)
-    redL.position.set(-15, 0.6, 0)
-    this.add(redL)
-
-    // Gold beacon at southern reward route entry
-    const goldMat = new THREE.MeshStandardMaterial({
-      color: 0xffcc33, emissive: 0xcc8800, emissiveIntensity: 1.0,
-    })
-    const goldMarker = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), goldMat)
-    goldMarker.position.set(16, 0.40, -10)
-    this.add(goldMarker)
-    const goldL = new THREE.PointLight(0xffcc33, 1.0, 4.0)
-    goldL.position.set(16, 0.6, -10)
-    this.add(goldL)
-  }
-
-  // Camera-to-player THREE.Raycaster: lerp occluding walls to 0.15 opacity.
-  // Casts 3 rays at different heights for reliable detection of lower 1.2wu walls.
-  updateWallOcclusion(camera: THREE.Camera, playerPos: THREE.Vector3): void {
-    const meshes = this.dividerWalls.map(dw => dw.mesh)
-    const occluding = new Set<THREE.Object3D>()
-    const RAY_HEIGHTS = [0.1, 0.45, 1.0]   // floor sweep, mid, near-top of 1.2wu wall
-
-    for (const yOff of RAY_HEIGHTS) {
-      const targetPos = playerPos.clone()
-      targetPos.y     = yOff
-      const dir  = new THREE.Vector3().subVectors(targetPos, camera.position).normalize()
-      const dist = camera.position.distanceTo(targetPos)
-      this._occRaycaster.set(camera.position, dir)
-      this._occRaycaster.far = dist
-      for (const hit of this._occRaycaster.intersectObjects(meshes, false)) {
-        occluding.add(hit.object)
+    const geos: THREE.BufferGeometry[] = []
+    for (const r of this.maze.wallRects()) {
+      const w = (r.i1 - r.i0 + 1) * TILE, d = (r.j1 - r.j0 + 1) * TILE
+      const cx = MIN_X + (r.i0 * TILE) + w / 2, cz = MIN_Z + (r.j0 * TILE) + d / 2
+      const g = new THREE.BoxGeometry(w, WALL_H, d, Math.max(1, Math.round(w / 0.4)), 4, Math.max(1, Math.round(d / 0.4)))
+      g.translate(cx, WALL_H / 2, cz)
+      const pos = g.attributes.position as THREE.BufferAttribute
+      for (let k = 0; k < pos.count; k++) {
+        const x = pos.getX(k), y = pos.getY(k), z = pos.getZ(k)
+        const [ox, oz] = warp(x, z)
+        const hk = y / WALL_H               // feet stay put-ish, tops wander more
+        pos.setXYZ(k, x + ox * (0.5 + hk), y > WALL_H - 0.01 ? WALL_H + Math.sin(x * 1.7) * Math.cos(z * 1.9) * 0.12 : y, z + oz * (0.5 + hk))
       }
+      g.computeVertexNormals()
+      geos.push(g)
+      this.wallBodies.push(physicsWorld.addStaticBox(cx, cz, w / 2, d / 2))
     }
-
-    for (const dw of this.dividerWalls) {
-      const target = occluding.has(dw.mesh) ? 0.15 : 1.0
-      dw.mat.opacity    = THREE.MathUtils.lerp(dw.mat.opacity,    target, 0.18)
-      dw.capMat.opacity = THREE.MathUtils.lerp(dw.capMat.opacity, target, 0.18)
-    }
-  }
-
-  // ── Portals ────────────────────────────────────────────────────────────────────
-
-  private buildPortals(): void {
-    // Entry from home: right side, z=0 (C2)
-    this.buildPortalArch(AntColonyScene3D.RIGHT - 0.25, 0, 0x44ddff, 0x006688)
-    // Boss portal: left side, boss portal Z (randomized)
-    this.buildPortalArch(AntColonyScene3D.LEFT + 0.25, this.bossPortalZ, 0xff4422, 0x881100)
-  }
-
-  private buildPortalArch(px: number, pz: number, color: number, emissive: number): void {
-    const mat = new THREE.MeshToonMaterial({
-      color, gradientMap: this.gradientMap,
-      emissive: new THREE.Color(emissive), emissiveIntensity: 0.8,
-    })
-    const bH = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.6, 0.12), mat)
-    bH.position.set(px, 0.8, pz - 0.95); this.add(bH)
-    const bH2 = bH.clone(); bH2.position.set(px, 0.8, pz + 0.95); this.add(bH2)
-    const bV = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 2.0), mat)
-    bV.position.set(px, 1.56, pz); this.add(bV)
-    const bV2 = bV.clone(); bV2.position.set(px, 0.06, pz); this.add(bV2)
-    const fill = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.08, 1.5),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, side: THREE.DoubleSide }),
-    )
-    fill.position.set(px, 0.8, pz); fill.rotation.y = Math.PI / 2; this.add(fill)
-    const light = new THREE.PointLight(color, 1.0, 3.5)
-    light.position.set(px + (px > 0 ? -0.3 : 0.3), 0.8, pz)
-    this.add(light)
-  }
-
-  // ── Workbench ──────────────────────────────────────────────────────────────────
-
-  private buildWorkbench(): void {
-    const bx = AntColonyScene3D.WORKBENCH_X
-    const bz = AntColonyScene3D.OBJ_Z
-    const { group } = buildWorkbenchProp(this.gradientMap, 1)
-    group.position.set(bx, 0, bz)
-    group.rotation.y = Math.PI / 4
-    this.add(group)
-    const wbl = new THREE.PointLight(0x66ffaa, 0.5, 2.5)
-    wbl.position.set(bx, 0.9, bz); this.add(wbl)
-  }
-
-  // ── Chests ─────────────────────────────────────────────────────────────────────
-
-  private buildChests(): void {
-    for (const d of CHEST_DATA) {
-      const z = jitterZ(d.cz, 1.2)
-      const parts = buildChest(this.gradientMap, d.isMimic)
-      parts.group.position.set(d.x, 0, z)
-      parts.group.rotation.y = Math.PI / 4 + (Math.random() - 0.5) * 0.5   // clasp roughly toward the camera
-      this.threeScene.add(parts.group)
-      this.tracked.push(parts.group)
-      this.chests.push({ x: d.x, z, isMimic: d.isMimic, opened: false, mesh: parts.group, parts, openT: -1, wakeProgress: 0, wakeActive: false })
-    }
-  }
-
-  // ── HP modules ─────────────────────────────────────────────────────────────────
-
-  private buildHpModules(): void {
-    for (const d of HP_MODULE_DATA) {
-      const z = jitterZ(d.cz, 1.0)
-      const g = buildHealthBerry(this.gradientMap, 1.15)
-      g.position.set(d.x, 0, z)
-      this.threeScene.add(g)
-      this.tracked.push(g)
-      this.hpModules.push({ x: d.x, z, collected: false, mesh: g })
-    }
-  }
-
-  // ── Material caches ────────────────────────────────────────────────────────────
-
-  private buildCaches(): void {
-    for (const d of CACHE_DATA) {
-      const z = jitterZ(d.cz, 1.0)
-      const g = buildMaterialPickup(d.mat, this.gradientMap, 0.95)
-      g.position.set(d.x, 0, z)
-      this.threeScene.add(g); this.tracked.push(g)
-      this.caches.push({ x: d.x, z, collected: false, mesh: g, mat: d.mat, qty: d.qty })
-    }
-  }
-
-  // ── Thistle seeds ──────────────────────────────────────────────────────────────
-
-  private buildThistles(): void {
-    for (const d of THISTLE_DATA) {
-      const z = jitterZ(d.cz, 1.2)
-      const g = buildMaterialPickup('Thistle', this.gradientMap, 0.85)
-      g.position.set(d.x, 0, z)
-      this.threeScene.add(g); this.tracked.push(g)
-      this.thistles.push({ x: d.x, z, collected: false, mesh: g })
-    }
-  }
-
-  // ── Dead-end rooms ─────────────────────────────────────────────────────────────
-
-  private buildDeadEnds(): void {
-    const floorMat = surface({ color: PALETTE.deadEndFloor, tex: 'dirt',  texScale: 0.45, gradientMap: this.gradientMap })
-    const wallMat  = surface({ color: PALETTE.deadEndWall,  tex: 'dirt',  texScale: 0.6,  gradientMap: this.gradientMap })
-    const spikeMat = surface({ color: PALETTE.spike,        tex: 'stone', texScale: 1.5,  gradientMap: this.gradientMap })
-    const lootMat  = new THREE.MeshBasicMaterial({ color: 0x44ffaa, transparent: true, opacity: 0.3 })
-
-    for (const d of DEAD_END_DATA) {
-      const roomDepth = 3.0
-      const roomW     = 3.0
-      // Alcove center: extend dz * roomDepth from corridor edge
-      const corrEdge  = d.cz + d.dz * CORR_HW
-      const roomCZ    = corrEdge + d.dz * (roomDepth / 2)
-
-      const g = new THREE.Group()
-      g.position.set(d.x, 0, roomCZ)
-
-      // Floor
-      const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomW, roomDepth).rotateX(-Math.PI / 2), floorMat)
-      g.add(floor)
-
-      // Back wall
-      const back = new THREE.Mesh(new THREE.BoxGeometry(roomW, WALL_H, 0.25), wallMat)
-      back.position.set(0, WALL_H / 2, d.dz * roomDepth / 2)
-      back.castShadow = true; g.add(back)
-
-      // Side walls
-      for (const side of [-1, 1]) {
-        const sw = new THREE.Mesh(new THREE.BoxGeometry(0.25, WALL_H, roomDepth), wallMat)
-        sw.position.set(side * roomW / 2, WALL_H / 2, 0)
-        sw.castShadow = true; g.add(sw)
+    // Split each box by face group (BoxGeometry: 0 +x, 1 −x, 2 top, 3 bottom,
+    // 4 +z, 5 −z) into a top mesh and a sides mesh
+    const tops: THREE.BufferGeometry[] = [], sides: THREE.BufferGeometry[] = []
+    for (const g of geos) {
+      const idx = g.index!.array
+      const pick = (want: (gi: number) => boolean) => {
+        const out: number[] = []
+        g.groups.forEach((gr, gi) => { if (want(gi)) for (let k = gr.start; k < gr.start + gr.count; k++) out.push(idx[k]) })
+        const c = g.clone(); c.setIndex(out); c.clearGroups(); return c
       }
-
-      // Type-specific decorations
-      const spikes: THREE.Mesh[] = []
-      if (d.type === 'spike') {
-        for (let i = -1; i <= 1; i++) {
-          const spike = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.35, 5), spikeMat)
-          spike.position.set(i * 0.7, 0.175, 0)
-          g.add(spike); spikes.push(spike)
-        }
-      } else if (d.type === 'loot') {
-        const glow = new THREE.Mesh(new THREE.SphereGeometry(0.15, 7, 5), lootMat)
-        glow.position.set(0, 0.25, 0); g.add(glow)
-        const light = new THREE.PointLight(0x44ffaa, 0.4, 1.5)
-        light.position.set(0, 0.4, 0); g.add(light)
-      }
-
-      this.threeScene.add(g); this.tracked.push(g)
-      this.deadEnds.push({
-        x: d.x, z: roomCZ, type: d.type, triggered: false, mesh: g,
-        spikeMeshes: spikes.length > 0 ? spikes : undefined,
-      })
+      tops.push(pick(gi => gi === 2)); sides.push(pick(gi => gi !== 2 && gi !== 3))
+      g.dispose()
     }
-  }
-
-  // ── Environmental decoration ────────────────────────────────────────────────────
-
-  private buildDecoration(): void {
-    const boneMat = new THREE.MeshToonMaterial({ color: 0xb8a882, gradientMap: this.gradientMap })
-
-    // Bone piles scattered through corridors
-    for (const [bx, cz, r] of [
-      [-16,-10,0.28],[-7,-10,0.22],[3,-10,0.30],[12,-10,0.25],
-      [-14,-5,0.26],[-3,-5,0.20],[8,-5,0.28],
-      [-11,0,0.22],[4,0,0.26],[14,0,0.24],
-      [-13,5,0.28],[-2,5,0.22],[9,5,0.26],
-      [-16,10,0.25],[1,10,0.30],[13,10,0.22],
-    ] as [number,number,number][]) {
-      const bone = new THREE.Mesh(new THREE.CapsuleGeometry(r*0.3, r*1.2, 4, 6), boneMat)
-      bone.position.set(bx, r*0.2, jitterZ(cz, 0.8)); bone.rotation.y = Math.random() * Math.PI; this.add(bone)
-    }
-
-    // Fungus lanterns (32 orbs — positions from LANTERN_DATA)
-    for (const l of LANTERN_DATA) {
-      const orb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.06, 6, 5),
-        new THREE.MeshBasicMaterial({ color: 0x66ffaa }),
-      )
-      const jz = jitterZ(l.cz, 0.5)
-      orb.position.set(l.x, 0.12, jz); this.add(orb)
-      this.orbMeshes.push(orb)
-      const gl = new THREE.PointLight(0x44ff88, 0.35, 2.0)
-      gl.position.set(l.x, 0.2, jz); this.add(gl)
-    }
-
-    // Ant trail dots across all corridors
-    // (merged into one mesh — was ~150 separate draw calls)
-    const trailMat = new THREE.MeshBasicMaterial({ color: 0x060402 })
-    const dots: THREE.BufferGeometry[] = []
-    for (const cz of CZ) {
-      for (let i = -18; i < 18; i += 1.2) {
-        dots.push(new THREE.CircleGeometry(0.04, 5).rotateX(-Math.PI / 2)
-          .translate(i + Math.sin(i * 1.5) * 0.35, 0.007, cz + Math.cos(i * 1.3) * 0.3))
-      }
-    }
-    const trail = mergeGeometries(dots)
-    dots.forEach(d => d.dispose())
-    if (trail) this.add(new THREE.Mesh(trail, trailMat))
-  }
-
-  // ── Lighting ────────────────────────────────────────────────────────────────────
-
-  private buildLighting(): void {
-    // Ambient/fill/key now come from env/ZoneLighting (antColony preset); a warm
-    // pool at the entry keeps the "light behind you" read from home.
-    const entry = new THREE.PointLight(0xddcc88, 1.2, 7, 2)
-    entry.position.set(18, 2.5, 0); this.add(entry)
-  }
-
-  // Merge the batched wall boxes: one draw call (and one shadow draw) per
-  // wall material instead of one per box.  Colliders are separate segments,
-  // so nothing needed the individual meshes.
-  private wallBatch = new Map<THREE.Material, THREE.BufferGeometry[]>()
-  private flushWallBatch(): void {
-    for (const [mat, geos] of this.wallBatch) {
-      const merged = mergeGeometries(geos)
-      geos.forEach(g => g.dispose())
+    for (const [list, mat] of [[sides, side], [tops, top]] as Array<[THREE.BufferGeometry[], THREE.Material]>) {
+      const merged = mergeGeometries(list)
+      list.forEach(g => g.dispose())
       if (!merged) continue
       const mesh = new THREE.Mesh(merged, mat)
       mesh.castShadow = mesh.receiveShadow = true
       this.add(mesh)
     }
-    this.wallBatch.clear()
-  }
-
-  // Round 8 Issue 9: build a single wall as a chain of jittered, slightly
-  // rotated short boxes so it reads as natural dirt rather than a flat block.
-  private addCrookedWallSegment(
-    startX: number, startZ: number, endX: number, endZ: number,
-    thickness: number, height: number, mat: THREE.Material,
-  ): void {
-    const dx = endX - startX
-    const dz = endZ - startZ
-    const length = Math.sqrt(dx * dx + dz * dz)
-    if (length < 0.01) return
-    const segments = Math.max(4, Math.floor(length * 1.5))
-    const stepDx = dx / segments
-    const stepDz = dz / segments
-    const baseAngle = Math.atan2(dz, dx)
-
-    for (let i = 0; i < segments; i++) {
-      const cx = startX + stepDx * (i + 0.5)
-      const cz = startZ + stepDz * (i + 0.5)
-      const perpX = -Math.sin(baseAngle)
-      const perpZ =  Math.cos(baseAngle)
-      const jitter      = (Math.random() - 0.5) * 0.3
-      const angleJitter = (Math.random() - 0.5) * 0.25
-      const segLength   = Math.hypot(stepDx, stepDz) * 1.1
-      const geo = new THREE.BoxGeometry(segLength, height + (Math.random() - 0.5) * 0.2, thickness)
-      // same transform the per-box mesh had (rotation.y, then position), baked in
-      _wallM.makeRotationY(baseAngle + angleJitter).setPosition(cx + perpX * jitter, height / 2, cz + perpZ * jitter)
-      geo.applyMatrix4(_wallM)
-      let list = this.wallBatch.get(mat)
-      if (!list) { list = []; this.wallBatch.set(mat, list) }
-      list.push(geo)
+    // Rubble and roots at the wall feet
+    const stone = surface({ color: PALETTE.colonyStone, tex: 'stone', texScale: 1.2, gradientMap: this.gradientMap })
+    const rocks: THREE.BufferGeometry[] = []
+    for (let k = 0; k < 160; k++) {
+      const i = Math.floor(Math.random() * TW), j = Math.floor(Math.random() * TH)
+      if (this.maze.isSolid(i, j)) continue
+      const nbr = [[1, 0], [-1, 0], [0, 1], [0, -1]].find(([a, b]) => this.maze.isSolid(i + a, j + b))
+      if (!nbr) continue
+      const x = this.maze.tileX(i) + nbr[0] * 0.3, z = this.maze.tileZ(j) + nbr[1] * 0.3
+      const s = 0.06 + Math.random() * 0.12
+      rocks.push(new THREE.DodecahedronGeometry(s, 0).translate(x, s * 0.5, z))
     }
+    const rm = mergeGeometries(rocks); rocks.forEach(g => g.dispose())
+    if (rm) { const m = new THREE.Mesh(rm, stone); m.castShadow = true; this.add(m) }
   }
 
-  // ── Enemy spawns (Round 7 Issue 3) ──────────────────────────────────────────
-
-  private initSpawns(): void {
-    this.pendingSpawns   = SPAWN_PLAN.map(s => ({ ...s }))   // clone
-    this.elapsedSinceLoad = 0
-  }
-
-  private processPendingSpawns(delta: number): void {
-    this.elapsedSinceLoad += delta
-    for (let i = this.pendingSpawns.length - 1; i >= 0; i--) {
-      const s = this.pendingSpawns[i]
-      if (this.elapsedSinceLoad >= s.delay) {
-        const e = this.spawnEnemy(s.kind, s.x, s.z)
-        this.freeEnemies.push(e)
-        this.pendingSpawns.splice(i, 1)
+  // ── Rooms ───────────────────────────────────────────────────────────────────
+  private buildRooms(): void {
+    const destroyed = registry.get<number[]>(SAC_KEY) ?? []
+    let sacIdx = 0
+    for (const room of this.maze.rooms) {
+      switch (room.role) {
+        case 'entry':   this.buildEntry(room); break
+        case 'boss':    this.buildBossRoom(room); break
+        case 'nest':    this.buildNest(room); break
+        case 'pit':     this.buildPit(room); break
+        case 'crystal': this.buildCrystal(room); break
+        case 'sac':     this.buildSacRoom(room, sacIdx, destroyed.includes(sacIdx)); sacIdx++; break
       }
     }
   }
 
-  private spawnEnemy(kind: SpawnKind, x: number, z: number): Enemy3D {
-    switch (kind) {
-      case 'centipede':      return new CentipedeAmbusher3D(this.threeScene, x, z, this.gradientMap)
-      case 'beetle':         return new BeetleTank3D(this.threeScene, x, z, this.gradientMap)
-      case 'ant_worker':     return new AntWorker3D(this.threeScene, x, z, this.gradientMap)
-      case 'jumping_spider': return new JumpingSpider3D(this.threeScene, x, z, this.gradientMap)
+  private buildEntry(room: Room): void {
+    const { group } = buildWorkbenchProp(this.gradientMap, 1)
+    group.position.set(AntColonyScene3D.WORKBENCH_X, 0, AntColonyScene3D.OBJ_Z)
+    group.rotation.y = Math.PI / 4
+    this.add(group)
+    const b = physicsWorld.addFootprint(group, 1.0)
+    if (b) this.wallBodies.push(b)
+    // The last of the den's silk markers, and a soft warm light behind you
+    const silk = new THREE.MeshBasicMaterial({ color: 0xece4d6, transparent: true, opacity: 0.5, depthWrite: false })
+    for (let k = 0; k < 5; k++) {
+      const strand = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 1.6, 3), silk)
+      strand.position.set(room.x + 1 + k * 0.5, 0.8, (k - 2) * 0.6); strand.rotation.z = 0.3 - k * 0.15
+      this.add(strand)
+    }
+    this.buildPortalArch(MAX_X - 0.2, 0, 0x88aaff)
+  }
+
+  private buildBossRoom(room: Room): void {
+    // Bones of the ones who tried, a beetle on guard, the red glow of the gate
+    this.scatterBones(room.x, room.z, room.w * 0.4, 10)
+    this.spawn(new BeetleTank3D(this.threeScene, room.x + 1, room.z + 1.5, this.gradientMap))
+    this.buildPortalArch(MIN_X + 0.2, 0, 0xff4422)
+  }
+
+  private buildNest(room: Room): void {
+    // Egg clusters and larvae; workers tend them; a red queen-scent glow
+    const egg = new THREE.MeshStandardMaterial({ color: 0xf2ead8, roughness: 0.3, emissive: 0x2a2010, emissiveIntensity: 0.4 })
+    for (let c = 0; c < 6; c++) {
+      const cx = room.x + (Math.random() - 0.5) * room.w * 0.75, cz = room.z + (Math.random() - 0.5) * room.d * 0.75
+      for (let k = 0; k < 7; k++) {
+        this.batch(new THREE.SphereGeometry(0.09, 8, 6), egg,
+          [cx + (Math.random() - 0.5) * 0.5, 0.07, cz + (Math.random() - 0.5) * 0.5], [0, Math.random() * 3, 0], [1, 0.75, 1.5])
+      }
+    }
+    for (let k = 0; k < 7; k++) {
+      this.spawn(new AntWorker3D(this.threeScene, room.x + (Math.random() - 0.5) * room.w * 0.6, room.z + (Math.random() - 0.5) * room.d * 0.6, this.gradientMap))
+    }
+    const red = new THREE.PointLight(0xff3a1a, 1.4, 7, 2)
+    red.position.set(room.x, 1.2, room.z); this.add(red)
+  }
+
+  private buildPit(room: Room): void {
+    this.traps.addPit(room.x, room.z, Math.min(room.w, room.d) * 0.46)
+    this.scatterBones(room.x, room.z, 1.2, 6)
+    // The lure: a chest on the far side of the sand
+    this.addChest(room.x - room.w * 0.36, room.z + room.d * 0.38, false)
+  }
+
+  private buildCrystal(room: Room): void {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x8fd8ff, emissive: 0x3a9adf, emissiveIntensity: 1.6, roughness: 0.15 })
+    for (let k = 0; k < 9; k++) {
+      const c = new THREE.Mesh(new THREE.OctahedronGeometry(0.14 + Math.random() * 0.2, 0), mat)
+      c.scale.y = 1.8 + Math.random()
+      c.position.set(room.x + (Math.random() - 0.5) * room.w * 0.7, 0.25, room.z - room.d * 0.3 + (Math.random() - 0.5) * 0.8)
+      c.rotation.set(Math.random() * 0.4, Math.random() * 3, Math.random() * 0.4)
+      this.add(c)
+    }
+    const blue = new THREE.PointLight(0x66ccff, 1.5, 6, 2)
+    blue.position.set(room.x, 0.9, room.z - room.d * 0.2); this.add(blue)
+    // A rare calm spot: a real chest and a berry
+    this.addChest(room.x + 0.8, room.z + 0.6, false)
+    this.addBerry(room.x - 0.8, room.z + 0.8)
+  }
+
+  private buildSacRoom(room: Room, idx: number, burst: boolean): void {
+    this.scatterBones(room.x, room.z, room.w * 0.35, 5)
+    if (burst) {
+      // A dried, split husk where it was
+      const husk = new THREE.Mesh(new THREE.SphereGeometry(0.5, 14, 10, 0, Math.PI * 2, 0.9, 2.2), new THREE.MeshToonMaterial({ color: 0x5a3a18, gradientMap: this.gradientMap, side: THREE.DoubleSide }))
+      husk.position.set(room.x, 0.2, room.z); husk.scale.y = 0.5; this.add(husk)
+      this.sacs.push({ idx, enemy: null })
+    } else {
+      const sac = new PheromoneSac3D(this.threeScene, room.x, room.z, this.gradientMap)
+      sac.onBurst = () => this.onSacBurst(idx, room)
+      this.spawn(sac)
+      this.sacs.push({ idx, enemy: sac })
+    }
+    // Each chamber is held differently
+    if (idx === 0) {
+      this.spawn(new BeetleTank3D(this.threeScene, room.x + 1.4, room.z + 1.2, this.gradientMap))
+      this.spawn(new CentipedeAmbusher3D(this.threeScene, room.x - 1.6, room.z + 1.4, this.gradientMap))
+      this.spawn(new CentipedeAmbusher3D(this.threeScene, room.x + 1.6, room.z - 1.4, this.gradientMap))
+    } else if (idx === 1) {
+      const c = this.maze.cellOf(room.x, room.z)
+      this.addSoldier(room.x + 1.2, room.z, [
+        { x: room.x + 1.5, z: room.z - 1.2 }, { x: room.x - 1.5, z: room.z - 1.2 },
+        { x: room.x - 1.5, z: room.z + 1.2 }, { x: this.maze.cellX(Math.max(0, c[0] - 2)), z: this.maze.cellZ(c[1]) },
+      ])
+      for (let k = 0; k < 3; k++) this.spawn(new AntWorker3D(this.threeScene, room.x - 1 + k * 0.6, room.z + 1.6, this.gradientMap))
+    } else {
+      this.spawn(new JumpingSpider3D(this.threeScene, room.x - 1.8, room.z - 1.2, this.gradientMap))
+      this.spawn(new JumpingSpider3D(this.threeScene, room.x + 1.8, room.z + 1.2, this.gradientMap))
+      for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * Math.PI * 2 + Math.PI / 4
+        this.traps.addSpike(room.x + Math.cos(a) * 1.55, room.z + Math.sin(a) * 1.55)
+      }
     }
   }
 
-  // ── Public API ──────────────────────────────────────────────────────────────────
-
-  checkExitRight(playerX: number): boolean { return playerX > AntColonyScene3D.EXIT_RIGHT_X }
-  checkExitLeft(playerX:  number): boolean { return playerX < AntColonyScene3D.EXIT_LEFT_X  }
-
-
-  nearWorkbench(playerX: number, playerZ: number): boolean {
-    const dx = playerX - AntColonyScene3D.WORKBENCH_X
-    const dz = playerZ - AntColonyScene3D.OBJ_Z
-    return dx * dx + dz * dz < 0.36
+  private onSacBurst(idx: number, room: Room): void {
+    const destroyed = registry.get<number[]>(SAC_KEY) ?? []
+    if (!destroyed.includes(idx)) destroyed.push(idx)
+    registry.set(SAC_KEY, destroyed)
+    const rec = this.sacs.find(s => s.idx === idx); if (rec) rec.enemy = null
+    // The whole colony hears it
+    this.director.noise(room.x, room.z, 40, 45)
+    const remaining = 3 - destroyed.length
+    this.events.push({ kind: 'sac', remaining })
+    if (remaining <= 0) this.openSeal()
+    this.updateObjective(true)
   }
 
+  private sealIsOpen(): boolean {
+    return (registry.get<number[]>(SAC_KEY) ?? []).length >= 3
+        || (registry.get<string[]>('bossesDefeated') ?? []).includes('roller')
+  }
+
+  // A membrane of amber resin across the Queen's tunnel
+  private buildSeal(): void {
+    if (this.sealIsOpen()) return
+    const mat = new THREE.MeshStandardMaterial({ color: 0xd9861a, emissive: 0x8a3a00, emissiveIntensity: 1.1, transparent: true, opacity: 0.82, roughness: 0.15, side: THREE.DoubleSide })
+    const g = new THREE.PlaneGeometry(2.6, WALL_H + 0.2, 10, 6)
+    const pos = g.attributes.position as THREE.BufferAttribute
+    for (let k = 0; k < pos.count; k++) pos.setZ(k, Math.sin(pos.getX(k) * 3) * Math.cos(pos.getY(k) * 2.5) * 0.08)
+    g.computeVertexNormals()
+    this.sealMesh = new THREE.Mesh(g, mat)
+    this.sealMesh.position.set(MIN_X + 0.9, WALL_H / 2, 0)
+    this.sealMesh.rotation.y = Math.PI / 2
+    this.add(this.sealMesh)
+    this.sealBody = physicsWorld.addStaticBox(MIN_X + 0.9, 0, 0.15, 1.4)
+  }
+
+  private openSeal(): void {
+    if (this.sealBody) { physicsWorld.remove(this.sealBody); this.sealBody = null }
+    this.sealOpenT = 0
+    this.events.push({ kind: 'sealOpen' })
+  }
+
+  private updateObjective(pop: boolean): void {
+    const n = (registry.get<number[]>(SAC_KEY) ?? []).length
+    if (this.sealIsOpen()) this.director.setObjective('The resin seal is open. Go west, into the Queen\'s tunnel.', pop)
+    else this.director.setObjective(`Burst the pheromone sacs sealing the Queen's tunnel  ${n}/3`, pop)
+  }
+
+  // ── Corridors: loot, traps, patrols ─────────────────────────────────────────
+  private populateCorridors(): void {
+    const rnd = this.maze.rand
+    const entry = this.maze.rooms.find(r => r.role === 'entry')!
+    const farFromEntry = (x: number, z: number) => Math.hypot(x - entry.x, z - entry.z) > 7
+
+    // Dead ends: something worth having, and usually a price
+    const deadEnds = this.maze.deadEnds()
+    let chests = 0, mimics = 0, berries = 0
+    deadEnds.forEach(([cx, cy], k) => {
+      const x = this.maze.cellX(cx), z = this.maze.cellZ(cy)
+      const open = this.maze.openSide(cx, cy) ?? [1, 0]
+      const mouthX = x + open[0] * 1.0, mouthZ = z + open[1] * 1.0
+      const backX = x - open[0] * 0.35, backZ = z - open[1] * 0.35
+      const roll = k % 4
+      if (roll === 0 && chests < 6) { this.addChest(backX, backZ, mimics < 2 && rnd() < 0.45); if (this.chests[this.chests.length - 1].isMimic) mimics++; chests++ }
+      else if (roll === 1 && berries < 4) { this.addBerry(backX, backZ); berries++ }
+      else if (roll === 2) this.addCache(backX, backZ)
+      else this.addThistles(backX, backZ, 3)
+      if (!farFromEntry(x, z)) return
+      // The price
+      const price = rnd()
+      if (price < 0.3) this.traps.addSpike(mouthX, mouthZ)
+      else if (price < 0.55) this.spawn(new CentipedeAmbusher3D(this.threeScene, x + open[0] * 0.2, z + open[1] * 0.2, this.gradientMap))
+      else if (price < 0.75) this.traps.addSpitter(x - open[0] * 1.15, z - open[1] * 1.15, open[0], open[1])
+    })
+
+    // Straight runs: plates, cave-ins, resin
+    const straights = this.maze.straights().filter(([cx, cy]) => farFromEntry(this.maze.cellX(cx), this.maze.cellZ(cy)))
+    for (let k = straights.length - 1; k > 0; k--) { const j = Math.floor(rnd() * (k + 1)); [straights[k], straights[j]] = [straights[j], straights[k]] }
+    straights.forEach(([cx, cy, axis], k) => {
+      const x = this.maze.cellX(cx), z = this.maze.cellZ(cy)
+      const off = (rnd() - 0.5) * 1.0
+      const px = axis === 'ew' ? x + off : x, pz = axis === 'ns' ? z + off : z
+      if (k < 9) this.traps.addSpike(px, pz)
+      else if (k < 14) this.traps.addCaveIn(px, pz)
+      else if (k < 19) this.traps.addResin(px, pz, 0.8 + rnd() * 0.35)
+      else if (k < 24) this.addCache(px, pz)
+    })
+
+    // Four soldiers, each walking a loop of junctions in its quarter of the maze
+    const junctions = this.maze.junctions()
+    const quads: Array<Array<[number, number]>> = [[], [], [], []]
+    for (const [cx, cy] of junctions) {
+      if (!farFromEntry(this.maze.cellX(cx), this.maze.cellZ(cy)) || Math.hypot(this.maze.cellX(cx) - entry.x, this.maze.cellZ(cy) - entry.z) < 9) continue   // patrols keep off the refuge
+      quads[(cx < 7 ? 0 : 1) + (cy < 4 ? 0 : 2)].push([cx, cy])
+    }
+    quads.forEach(q => {
+      if (q.length < 2) return
+      const pts = q.map(([cx, cy]) => ({ x: this.maze.cellX(cx), z: this.maze.cellZ(cy) }))
+      const mx = pts.reduce((a, p) => a + p.x, 0) / pts.length, mz = pts.reduce((a, p) => a + p.z, 0) / pts.length
+      pts.sort((a, b) => Math.atan2(a.z - mz, a.x - mx) - Math.atan2(b.z - mz, b.x - mx))
+      const route = pts.length > 5 ? pts.filter((_, i) => i % Math.ceil(pts.length / 5) === 0) : pts
+      const start = route[0]
+      if (!farFromEntry(start.x, start.z)) route.push(route.shift()!)
+      this.addSoldier(route[0].x, route[0].z, route)
+      this.drawTrail(route)
+    })
+    // A soldier walking through the nest
+    const nest = this.maze.rooms.find(r => r.role === 'nest')!
+    this.addSoldier(nest.x - 2, nest.z, [{ x: nest.x - 3, z: nest.z - 2.5 }, { x: nest.x + 3, z: nest.z - 2.5 }, { x: nest.x + 3, z: nest.z + 2.5 }, { x: nest.x - 3, z: nest.z + 2.5 }])
+
+    // Glow fungus: the only light in the deep tunnels
+    for (let k = 0; k < 14; k++) {
+      const [cx, cy] = [Math.floor(rnd() * 15), Math.floor(rnd() * 9)]
+      if (this.maze.inRoom(cx, cy)) continue
+      const x = this.maze.cellX(cx) + (rnd() - 0.5) * 1.6, z = this.maze.cellZ(cy) + (rnd() - 0.5) * 1.6
+      if (this.maze.isSolidAt(x, z)) continue
+      for (let m = 0; m < 3; m++) {
+        this.batch(new THREE.SphereGeometry(0.05 + m * 0.02, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2), this.fungusMat,
+          [x + m * 0.08, 0.04 + m * 0.03, z + (m % 2) * 0.07])
+      }
+    }
+    // Dead things in the tunnels
+    for (let k = 0; k < 24; k++) {
+      const [cx, cy] = [Math.floor(rnd() * 15), Math.floor(rnd() * 9)]
+      this.scatterBones(this.maze.cellX(cx), this.maze.cellZ(cy), 0.9, 1)
+    }
+  }
+
+  // Faint pheromone trails along patrol routes — learn them, avoid them
+  private drawTrail(route: Array<{ x: number; z: number }>): void {
+    const dots: THREE.BufferGeometry[] = []
+    for (let k = 0; k < route.length; k++) {
+      const a = route[k], b = route[(k + 1) % route.length]
+      const f = this.maze.fieldTo(b.x, b.z)
+      let x = a.x, z = a.z
+      for (let step = 0; step < 80; step++) {
+        const s = this.maze.seek(x, z, 0, f)
+        if (!s || s.dist < 0.3) break
+        const dx = s.x - x, dz = s.z - z, l = Math.hypot(dx, dz) || 1
+        const st = Math.min(0.45, l)
+        x += dx / l * st; z += dz / l * st
+        dots.push(new THREE.CircleGeometry(0.035, 5).rotateX(-Math.PI / 2).translate(x + (Math.random() - 0.5) * 0.25, 0.006, z + (Math.random() - 0.5) * 0.25))
+      }
+    }
+    if (!dots.length) return
+    const m = mergeGeometries(dots); dots.forEach(d => d.dispose())
+    if (m) this.add(new THREE.Mesh(m, new THREE.MeshBasicMaterial({ color: 0x0a0604 })))
+  }
+
+  private scatterBones(x: number, z: number, r: number, n: number): void {
+    for (let k = 0; k < n; k++) {
+      const bx = x + (Math.random() - 0.5) * 2 * r, bz = z + (Math.random() - 0.5) * 2 * r
+      if (this.maze.isSolidAt(bx, bz)) continue
+      this.batch(k % 3 === 0 ? new THREE.SphereGeometry(0.08, 6, 5, 0, Math.PI) : new THREE.CapsuleGeometry(0.025, 0.16, 3, 5), this.boneMat,
+        [bx, 0.03, bz], [Math.PI / 2, 0, Math.random() * 3])
+    }
+  }
+
+  private batch(geo: THREE.BufferGeometry, mat: THREE.Material, p: [number, number, number], r: [number, number, number] = [0, 0, 0], sc: [number, number, number] = [1, 1, 1]): void {
+    const m = new THREE.Matrix4().compose(new THREE.Vector3(...p), new THREE.Quaternion().setFromEuler(new THREE.Euler(...r)), new THREE.Vector3(...sc))
+    const g = (geo.index ? geo.toNonIndexed() : geo).applyMatrix4(m)
+    if (g !== geo) geo.dispose()
+    g.deleteAttribute('uv')
+    let list = this.decor.get(mat)
+    if (!list) { list = []; this.decor.set(mat, list) }
+    list.push(g)
+  }
+
+  private flushDecor(): void {
+    for (const [mat, geos] of this.decor) {
+      const merged = mergeGeometries(geos)
+      geos.forEach(g => g.dispose())
+      if (!merged) continue
+      const mesh = new THREE.Mesh(merged, mat)
+      mesh.castShadow = true
+      this.add(mesh)
+    }
+    this.decor.clear()
+  }
+
+  private buildPortalArch(px: number, pz: number, color: number): void {
+    const mat = new THREE.MeshToonMaterial({ color, gradientMap: this.gradientMap, emissive: new THREE.Color(color), emissiveIntensity: 0.5 })
+    for (const s of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.2, WALL_H + 0.3, 0.2), mat)
+      post.position.set(px, (WALL_H + 0.3) / 2, pz + s * 1.25); this.add(post)
+    }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 2.7), mat)
+    lintel.position.set(px, WALL_H + 0.3, pz); this.add(lintel)
+    const light = new THREE.PointLight(color, 1.2, 5, 2)
+    light.position.set(px + (px > 0 ? -0.8 : 0.8), 1.0, pz); this.add(light)
+  }
+
+  private buildLighting(): void {
+    // Everything else is Webbs' lantern (ZoneLighting) and what glows in the dark
+    const entry = new THREE.PointLight(0xddcc88, 1.0, 6, 2)
+    entry.position.set(MAX_X - 2.5, 2.2, 0); this.add(entry)
+  }
+
+  // ── Spawning ────────────────────────────────────────────────────────────────
+  private spawn(e: Enemy3D, leash = 7): Enemy3D {
+    this.freeEnemies.push(e)
+    if (e.usesNav) this.posts.set(e, { x: e.collisionBody.x, z: e.collisionBody.z, leash, engaged: false, field: null })
+    return e
+  }
+  private addSoldier(x: number, z: number, route: Array<{ x: number; z: number }>): AntSoldier3D {
+    const s = new AntSoldier3D(this.threeScene, x, z, this.gradientMap, route)
+    this.spawn(s); this.soldiers.push(s)
+    return s
+  }
+  private addChest(x: number, z: number, isMimic: boolean): void {
+    const parts = buildChest(this.gradientMap, isMimic)
+    parts.group.position.set(x, 0, z)
+    parts.group.rotation.y = Math.PI / 4 + (Math.random() - 0.5) * 0.5
+    this.add(parts.group)
+    this.chests.push({ x, z, isMimic, opened: false, mesh: parts.group, parts, openT: -1, wakeProgress: 0, wakeActive: false })
+  }
+  private addBerry(x: number, z: number): void {
+    const g = buildHealthBerry(this.gradientMap, 1.15)
+    g.position.set(x, 0, z); this.add(g)
+    this.hpModules.push({ x, z, collected: false, mesh: g })
+  }
+  private addCache(x: number, z: number): void {
+    const mat = CACHE_MATS[Math.floor(this.maze.rand() * CACHE_MATS.length)]
+    const g = buildMaterialPickup(mat, this.gradientMap, 0.95)
+    g.position.set(x, 0, z); this.add(g)
+    this.caches.push({ x, z, collected: false, mesh: g, mat, qty: mat === 'DriedFungus' ? 1 : 2 })
+  }
+  private addThistles(x: number, z: number, n: number): void {
+    for (let k = 0; k < n; k++) {
+      const tx = x + (k - 1) * 0.3, tz = z + (k % 2) * 0.25
+      const g = buildMaterialPickup('Thistle', this.gradientMap, 0.85)
+      g.position.set(tx, 0, tz); this.add(g)
+      this.thistles.push({ x: tx, z: tz, collected: false, mesh: g })
+    }
+  }
+
+  // The entry chamber (workbench, the way home) is a refuge
+  safeAt(x: number, z: number): boolean {
+    const r = this.maze.roomAt(x, z)
+    return !!r && r.role === 'entry'
+  }
+
+  // Maze steering for every non-soldier enemy (see Enemy3D.steer)
+  private steer(e: Enemy3D, px: number, pz: number): { x: number; z: number } | { idle: true; vx: number; vz: number } | null {
+    const ex = e.collisionBody.x, ez = e.collisionBody.z
+    const post = this.posts.get(e)
+    if (post) {
+      const pd = this.safeAt(px, pz) ? Infinity : this.maze.goalDistance(ex, ez)
+      if (pd < post.leash) post.engaged = true
+      else if (pd > post.leash * 1.6) post.engaged = false
+      if (!post.engaged) {
+        // Walk home (slowly), then wait
+        if (Math.hypot(post.x - ex, post.z - ez) < 0.5) return { idle: true, vx: 0, vz: 0 }
+        post.field ??= this.maze.fieldTo(post.x, post.z)
+        const s = this.maze.seek(ex, ez, e.config.bodyRadius * 0.8, post.field)
+        if (!s) return { idle: true, vx: 0, vz: 0 }
+        const dx = s.x - ex, dz = s.z - ez, l = Math.hypot(dx, dz) || 1
+        return { idle: true, vx: dx / l * 0.9, vz: dz / l * 0.9 }
+      }
+    }
+    const r = e.config.bodyRadius * 0.8
+    if (this.maze.los(ex, ez, px, pz, r)) return null
+    const s = this.maze.seek(ex, ez, r)
+    if (!s) return null
+    const dx = s.x - ex, dz = s.z - ez, l = Math.hypot(dx, dz) || 1
+    const dist = Math.max(s.dist, l)
+    return { x: ex + dx / l * dist, z: ez + dz / l * dist }
+  }
+
+  // ── Public API (game loop) ──────────────────────────────────────────────────
+  checkExitRight(px: number): boolean { return px > AntColonyScene3D.EXIT_RIGHT_X }
+  checkExitLeft(px: number): boolean  { return px < AntColonyScene3D.EXIT_LEFT_X && this.sealIsOpen() }
+
+  nearWorkbench(px: number, pz: number): boolean {
+    return (px - AntColonyScene3D.WORKBENCH_X) ** 2 + (pz - AntColonyScene3D.OBJ_Z) ** 2 < 1.1 * 1.1
+  }
   nearChest(px: number, pz: number): number {
     for (let i = 0; i < this.chests.length; i++) {
-      if (this.chests[i].opened) continue
-      const dx = px - this.chests[i].x, dz = pz - this.chests[i].z
-      if (dx * dx + dz * dz < 0.6 * 0.6) return i
+      const c = this.chests[i]
+      if (!c.opened && (px - c.x) ** 2 + (pz - c.z) ** 2 < 0.75 * 0.75) return i
     }
     return -1
   }
-
   openChest(idx: number): { kind: 'loot'; mat: string; qty: number } | { kind: 'mimic' } {
     const chest = this.chests[idx]
     if (!chest || chest.opened) return { kind: 'loot', mat: 'SilkThread', qty: 0 }
-    chest.opened = true
-    chest.wakeActive = false
-    chest.openT = 0   // update() swings the cap open on its hinge
-
+    chest.opened = true; chest.wakeActive = false; chest.openT = 0
     if (chest.isMimic) {
-      const e = new BeetleTank3D(this.threeScene, chest.x, chest.z + 0.5, this.gradientMap)
-      this.freeEnemies.push(e)
+      this.spawn(new BeetleTank3D(this.threeScene, chest.x, chest.z + 0.5, this.gradientMap))
+      this.director.noise(chest.x, chest.z, 10, 12)
       return { kind: 'mimic' }
     }
-    const loot = CHEST_LOOT[Math.floor(Math.random() * CHEST_LOOT.length)]
-    return { kind: 'loot', ...loot }
+    return { kind: 'loot', ...CHEST_LOOT[Math.floor(Math.random() * CHEST_LOOT.length)] }
   }
-
   nearHpModule(px: number, pz: number): number {
     for (let i = 0; i < this.hpModules.length; i++) {
-      if (this.hpModules[i].collected) continue
-      const dx = px - this.hpModules[i].x, dz = pz - this.hpModules[i].z
-      if (dx * dx + dz * dz < 0.45 * 0.45) return i
+      const m = this.hpModules[i]
+      if (!m.collected && (px - m.x) ** 2 + (pz - m.z) ** 2 < 0.6 * 0.6) return i
     }
     return -1
   }
-
   collectHpModule(idx: number): void {
     const m = this.hpModules[idx]
     if (!m || m.collected) return
     m.collected = true
     if (m.mesh) { this.threeScene.remove(m.mesh); m.mesh = null }
   }
-
   nearMaterialCache(px: number, pz: number): PickupRecord | null {
-    for (const c of this.caches) {
-      if (c.collected) continue
-      const dx = px - c.x, dz = pz - c.z
-      if (dx * dx + dz * dz < 0.42 * 0.42) return c
-    }
+    for (const c of this.caches) if (!c.collected && (px - c.x) ** 2 + (pz - c.z) ** 2 < 0.5 * 0.5) return c
     return null
   }
-
   collectCache(record: PickupRecord): void {
     record.collected = true
     if (record.mesh) { this.threeScene.remove(record.mesh); record.mesh = null }
   }
-
   nearThistle(px: number, pz: number): number {
     for (let i = 0; i < this.thistles.length; i++) {
-      if (this.thistles[i].collected) continue
-      const dx = px - this.thistles[i].x, dz = pz - this.thistles[i].z
-      if (dx * dx + dz * dz < 0.42 * 0.42) return i
+      const t = this.thistles[i]
+      if (!t.collected && (px - t.x) ** 2 + (pz - t.z) ** 2 < 0.45 * 0.45) return i
     }
     return -1
   }
-
   collectThistle(idx: number): void {
     const t = this.thistles[idx]
     if (!t || t.collected) return
@@ -960,93 +664,80 @@ export class AntColonyScene3D {
     if (t.mesh) { this.threeScene.remove(t.mesh); t.mesh = null }
   }
 
-  // Dead-end room trigger. Returns result info for main.ts to handle (HUD, damage).
-  checkDeadEndTriggers(px: number, pz: number): DeadEndResult {
-    for (const room of this.deadEnds) {
-      if (room.triggered) continue
-      const dx = px - room.x, dz = pz - room.z
-      if (dx * dx + dz * dz > 1.2 * 1.2) continue
-      room.triggered = true
-      switch (room.type) {
-        case 'spike':
-          return { type: 'spike', damage: 15 }
-        case 'ambush': {
-          for (let i = 0; i < 2; i++) {
-            const e = new CentipedeAmbusher3D(
-              this.threeScene,
-              room.x + (i * 0.6 - 0.3),
-              room.z + (Math.random() - 0.5) * 0.5,
-              this.gradientMap,
-            )
-            this.freeEnemies.push(e)
-          }
-          return { type: 'ambush' }
-        }
-        case 'loot': {
-          const loot = CHEST_LOOT[Math.floor(Math.random() * CHEST_LOOT.length)]
-          return { type: 'loot', ...loot }
-        }
-      }
-    }
-    return null
+  // Webbs made a sound the colony can hear
+  noise(kind: keyof typeof NOISE, x: number, z: number): void {
+    const n = NOISE[kind]
+    this.director.noise(x, z, n.range, n.alarm)
+  }
+  slowAt(x: number, z: number): number { return this.traps.slowAt(x, z) }
+  get alarm(): number { return this.director.alarm }
+
+  // Events since the last call (trap hits, sacs, the seal) for the game loop
+  takeEvents(): ColonyEvent[] {
+    const out = this.events
+    this.events = []
+    return out
   }
 
-  // Per-frame visual updates: mimic wake animation + orb bob + adaptive ambience
-  tickVisuals(delta: number, px: number, pz: number): void {
-    const t = Date.now() * 0.001
+  // Cut the walls open between the camera and Webbs
+  updateWallOcclusion(camera: THREE.Camera, playerPos: THREE.Vector3): void {
+    CUTAWAY.center.value.set(playerPos.x, 0.35, playerPos.z)
+    CUTAWAY.cam.value.copy(camera.position)
+  }
 
-    // Round 10 — adaptive ambience based on player depth.
-    const zone: 'entry' | 'mid' | 'deep' =
-      px > 8 ? 'entry' : px < -8 ? 'deep' : 'mid'
+  tickVisuals(delta: number, px: number, pz: number, pr = 0.28, pull?: (vx: number, vz: number) => void): void {
+    this.vision.update(delta, px, pz)
+    this.director.update(delta, px, pz)
+    const trapEvents: TrapEvent[] = []
+    this.traps.update(delta, px, pz, pr, this.enemies, trapEvents, pull ?? (() => {}))
+    for (const ev of trapEvents) {
+      if (ev.kind === 'noise') this.director.noise(ev.x, ev.z, ev.range, 6)
+      else this.events.push(ev)
+    }
+
+    const zone: 'entry' | 'mid' | 'deep' = px > 12 ? 'entry' : px < -10 ? 'deep' : 'mid'
     if (zone !== this.currentAmbZone) {
       if (this.currentAmbZone !== '') audio.stopLoop(`amb_colony_${this.currentAmbZone}` as SoundKey)
       audio.playLoop(`amb_colony_${zone}` as SoundKey)
       this.currentAmbZone = zone
     }
 
-    // Orb bob
-    for (let i = 0; i < this.orbMeshes.length; i++) {
-      this.orbMeshes[i].position.y = 0.10 + Math.sin(t * 1.8 + i * 0.7) * 0.04
+    const t = performance.now() / 1000
+    this.fungusMat.emissiveIntensity = 1.5 + Math.sin(t * 1.3) * 0.3
+
+    // The resin seal sags and melts away once all three sacs are gone
+    if (this.sealMesh && this.sealOpenT >= 0) {
+      this.sealOpenT += delta
+      const k = Math.min(1, this.sealOpenT / 2.5)
+      this.sealMesh.scale.y = 1 - k
+      this.sealMesh.position.y = (WALL_H / 2) * (1 - k)
+      ;(this.sealMesh.material as THREE.MeshStandardMaterial).opacity = 0.82 * (1 - k)
+      if (k >= 1) { this.threeScene.remove(this.sealMesh); this.sealMesh = null }
     }
 
-    // Opening caps: ease back on the hinge, light the inside
+    // Chest lids, mimic wake
     for (const chest of this.chests) {
-      if (chest.openT < 0 || chest.openT >= 1) continue
-      chest.openT = Math.min(1, chest.openT + delta / 0.45)
-      const e = 1 - (1 - chest.openT) ** 3
-      chest.parts.lid.rotation.x = -1.9 * e + Math.sin(chest.openT * Math.PI) * 0.15   // overshoot wobble
-      ;(chest.parts.inner.material as THREE.MeshBasicMaterial).opacity = 0.85 * e
-    }
-
-    // Mimic wake
-    for (const chest of this.chests) {
+      if (chest.openT >= 0 && chest.openT < 1) {
+        chest.openT = Math.min(1, chest.openT + delta / 0.45)
+        const e = 1 - (1 - chest.openT) ** 3
+        chest.parts.lid.rotation.x = -1.9 * e + Math.sin(chest.openT * Math.PI) * 0.15
+        ;(chest.parts.inner.material as THREE.MeshBasicMaterial).opacity = 0.85 * e
+      }
       if (chest.opened || !chest.isMimic) continue
-      const dx = px - chest.x, dz = pz - chest.z
-      const near = dx * dx + dz * dz < 1.2 * 1.2
-
-      if (near && !chest.wakeActive) {
-        chest.wakeActive = true
-      }
-      if (!near && chest.wakeActive) {
-        chest.wakeActive   = false
-        chest.wakeProgress = 0
-        this.setMimicWakeVisual(chest, 0)
-      }
-
+      const near = (px - chest.x) ** 2 + (pz - chest.z) ** 2 < 1.4 * 1.4
+      if (near && !chest.wakeActive) chest.wakeActive = true
+      if (!near && chest.wakeActive) { chest.wakeActive = false; chest.wakeProgress = 0; this.setMimicWakeVisual(chest, 0) }
       if (chest.wakeActive) {
         chest.wakeProgress = Math.min(1, chest.wakeProgress + delta / 1.5)
         this.setMimicWakeVisual(chest, chest.wakeProgress)
-        // Chest jitter
-        const jitter = chest.wakeProgress * 0.015
-        chest.mesh.position.x = chest.x + (Math.random() - 0.5) * jitter
-        chest.mesh.position.z = chest.z + (Math.random() - 0.5) * jitter
+        const j = chest.wakeProgress * 0.015
+        chest.mesh.position.x = chest.x + (Math.random() - 0.5) * j
+        chest.mesh.position.z = chest.z + (Math.random() - 0.5) * j
       }
     }
   }
 
   private setMimicWakeVisual(chest: ChestRecord, t: number): void {
-    // Ground ring pulses orange→red; eyes open and teeth show under the cap rim;
-    // the cap lifts a crack, breathing
     const mat = chest.parts.glow.material as THREE.MeshBasicMaterial
     mat.color.setRGB(1, 0.27 * (1 - t), 0.13 * (1 - t) * 0.5)
     mat.opacity = 0.25 + t * 0.4
@@ -1054,69 +745,42 @@ export class AntColonyScene3D {
     chest.parts.lid.rotation.x = -t * (0.25 + Math.sin(performance.now() / 90) * 0.08)
   }
 
-  // ── Enemy update ────────────────────────────────────────────────────────────────
-
   updateEnemies(delta: number, px: number, pz: number): void {
-    // Round 7 Issue 3: drain the pending queue first so newly-spawned enemies
-    // tick immediately on the same frame they appear.
-    this.processPendingSpawns(delta)
-
+    this.maze.setGoal(px, pz)   // the shared chase field — rebuilt only when Webbs changes tile
     for (const e of this.freeEnemies) {
-      const offscreen = Math.abs(e.collisionBody.x - px) > CULL_R &&
-                        Math.abs(e.collisionBody.z - pz) > CULL_R * 0.3
-      e.group.visible = !offscreen
-      if (!offscreen) { e.update(delta, px, pz); e.syncPosition() }
-      else {
-        // Not thinking off-screen — but the body is still live, so its last AI
-        // velocity used to carry it on (a charging beetle slid into a wall, the
-        // mesh then jumped when it came back into view).  Stand it still.
-        e.collisionBody.velocity.x = 0
-        e.collisionBody.velocity.z = 0
-        e.syncPosition()
-      }
+      const far = Math.hypot(e.collisionBody.x - px, e.collisionBody.z - pz) > 13   // beyond the view and the dark anyway
+      e.group.visible = !far
+      e.update(delta, px, pz)
+      e.syncPosition()
     }
     for (let i = this.freeEnemies.length - 1; i >= 0; i--) {
-      if (this.freeEnemies[i].isExpired()) {
-        this.freeEnemies[i].cleanup()
-        this.freeEnemies.splice(i, 1)
-      }
+      const e = this.freeEnemies[i]
+      if (!e.isExpired()) continue
+      e.cleanup()
+      this.freeEnemies.splice(i, 1)
+      const si = this.soldiers.indexOf(e as AntSoldier3D)
+      if (si >= 0) this.soldiers.splice(si, 1)
     }
-
     this.enemies.length = 0
-    for (const e of this.freeEnemies) {
-      if (!e.isDead()) this.enemies.push(e)
-    }
+    for (const e of this.freeEnemies) if (!e.isDead()) this.enemies.push(e)
   }
 
-  // ── Destroy ─────────────────────────────────────────────────────────────────────
-
   destroy(): void {
-    // Round 10 — stop every active colony ambient loop
-    audio.stopLoop('amb_colony_entry')
-    audio.stopLoop('amb_colony_mid')
-    audio.stopLoop('amb_colony_deep')
-    // Round 6 Issue 7: snapshot the reveal canvas before destroying so the next
-    // visit can restore it.
-    const fogSnapshot = this.fog.serialize()
-    if (fogSnapshot) registry.set('fogReveal_antColony', fogSnapshot)
-    this.fog.destroy(this.threeScene)
+    audio.stopLoop('amb_colony_entry'); audio.stopLoop('amb_colony_mid'); audio.stopLoop('amb_colony_deep')
+    registry.set('fogReveal_antColony', this.vision.serialize())
+    this.vision.dispose()
+    this.traps.dispose()
+    this.director.dispose()
+    CUTAWAY.center.value.set(0, -1000, 0)
+    Enemy3D.steer = null
+    AntSoldier3D.ctx = null
     for (const e of this.freeEnemies) e.cleanup()
     for (const b of this.wallBodies) physicsWorld.remove(b)
-    this.enemies        = []
-    this.pendingSpawns  = []
-    this.freeEnemies    = []
-    this.wallBodies     = []
+    if (this.sealBody) physicsWorld.remove(this.sealBody)
+    this.enemies = []; this.freeEnemies = []; this.soldiers = []; this.wallBodies = []
     for (const obj of this.tracked) disposeTree(obj)
     this.tracked = []
     physicsWorld.bounds = null
-  }
-
-  // ── Helpers ──────────────────────────────────────────────────────────────────────
-
-  private addBox(w: number, h: number, d: number, x: number, y: number, z: number, mat: THREE.Material): void {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
-    mesh.position.set(x, y, z); mesh.castShadow = true; mesh.receiveShadow = true
-    this.add(mesh)
   }
 
   private add(obj: THREE.Object3D): void {

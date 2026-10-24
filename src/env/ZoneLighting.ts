@@ -11,6 +11,7 @@ import * as THREE from 'three'
 export type ZoneId = 'homeBase' | 'antColony' | 'bossRoller'
 
 interface LightPreset {
+  shadows?:   boolean   // key-light shadow pass (default on)
   key:        { color: number; intensity: number; azimuthDeg: number; elevationDeg: number }
   hemi:       { sky: number; ground: number; intensity: number }
   lantern:    { color: number; intensity: number; range: number; height: number }  // range/height × scale
@@ -33,11 +34,15 @@ export const ZONE_LIGHTS: Record<ZoneId, LightPreset> = {
   },
   // Cold, damp tunnels: a weak grey-green key, the lantern does the work
   antColony: {
-    key:        { color: 0xb8c8b0, intensity: 0.7, azimuthDeg: -20, elevationDeg: 70 },
-    hemi:       { sky: 0x4a5a48, ground: 0x18140c, intensity: 1.25 },
-    lantern:    { color: 0xffe2b8, intensity: 9, range: 7, height: 1.2 },
-    fog:        { color: 0x070b07, depth: 26 },
-    background: 0x040604,
+    // Dark: Webbs' lantern is the light; line-of-sight darkness does the rest.
+    // No key shadows: under the darkness they barely read, and the pass doubled
+    // the maze's draw calls.
+    shadows:    false,
+    key:        { color: 0x9aa8a0, intensity: 0.32, azimuthDeg: -20, elevationDeg: 70 },
+    hemi:       { sky: 0x3a4438, ground: 0x120e08, intensity: 0.85 },
+    lantern:    { color: 0xffd9a8, intensity: 12, range: 7.5, height: 1.3 },
+    fog:        { color: 0x020302, depth: 26 },
+    background: 0x010101,
     exposure:   1.2,
     warmth:     0.0,
   },
@@ -67,6 +72,7 @@ export const ACCENT_GAIN: Record<ZoneId, number> = {
 // near the player switched on.  The visible COUNT stays constant, so swapping
 // which lights are on never forces a shader recompile.
 const MAX_ACCENT_POINTS = 8
+const _lp = new THREE.Vector3()
 const BUDGET_INTERVAL   = 0.25   // s between re-evaluations
 
 // scratch for shadow texel snapping
@@ -100,6 +106,7 @@ export class ZoneLighting {
 
   apply(zone: ZoneId, scale: number, warmthOverride?: number): ZoneLighting {
     const p = this.preset = ZONE_LIGHTS[zone]
+    this.key.castShadow = p.shadows !== false
     this.key.color.setHex(p.key.color)
     this.key.intensity = p.key.intensity
     const az = THREE.MathUtils.degToRad(p.key.azimuthDeg)
@@ -148,7 +155,8 @@ export class ZoneLighting {
     this.accents = list
     if (list.length <= MAX_ACCENT_POINTS) { for (const l of list) l.visible = true; return }
     const score = (l: THREE.PointLight) => {
-      const d2 = (l.position.x - x) ** 2 + (l.position.z - z) ** 2
+      l.getWorldPosition(_lp)   // lights parented inside props/creatures sit in local space
+      const d2 = (_lp.x - x) ** 2 + (_lp.z - z) ** 2
       const reach = l.distance > 0 ? l.distance : Infinity
       return d2 > reach * reach ? 0 : (l.userData.baseIntensity ?? l.intensity) / Math.max(1, d2)
     }

@@ -25,6 +25,7 @@ export interface SaveData {
   brewsUsed:                      number
   guideStep:                      number     // den objectives progress (systems/DenGuide)
   cluesFoundIds:                  number[]
+  colonySacs:                     number[]
 }
 
 const SAVE_KEY = 'noLegs_save_v1'   // storage slot (kept); the schema version lives inside
@@ -66,6 +67,7 @@ const SAVE_FIELDS: (keyof SaveData)[] = [
   'brewsUsed',
   'guideStep',
   'cluesFoundIds',
+  'colonySacs',
 ]
 
 export class SaveSystem {
