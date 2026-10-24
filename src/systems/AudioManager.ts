@@ -205,11 +205,12 @@ const AMB_BUS      = 0.8      // ambience bus level under the world
 const LOAD_CONCURRENCY = 6
 
 // Per-zone cave reverb: decay time and how wet the world sounds
-export type AudioRoom = 'homeBase' | 'antColony' | 'bossRoller'
+export type AudioRoom = 'homeBase' | 'crossroads' | 'antColony' | 'bossRoller'
 // `rumble`: level of the synthetic sub-bass bed under the zone's ambience
 // (the sampled beds have almost nothing below 250 Hz).
 const ROOMS: Record<AudioRoom, { decay: number; wet: number; damp: number; rumble: number; rumbleHz: number }> = {
   homeBase:   { decay: 0.9, wet: 0.14, damp: 0.55, rumble: 0.18, rumbleHz: 95 },   // small, soft dirt den
+  crossroads: { decay: 2.2, wet: 0.26, damp: 0.4,  rumble: 0.14, rumbleHz: 100 },  // open cave junction
   antColony:  { decay: 1.7, wet: 0.24, damp: 0.45, rumble: 0.12, rumbleHz: 120 },  // packed-earth tunnels
   bossRoller: { decay: 2.8, wet: 0.30, damp: 0.35, rumble: 0.22, rumbleHz: 80 },   // big hollow
 }

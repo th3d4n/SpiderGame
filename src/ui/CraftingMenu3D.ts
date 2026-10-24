@@ -1,4 +1,4 @@
-import { RECIPES, type Recipe, type MaterialType } from '../systems/CraftingSystem'
+import { RECIPES, recipeLearned, type Recipe, type MaterialType } from '../systems/CraftingSystem'
 import { registry } from '../core/Registry'
 import type { InputManager } from '../core/InputManager'
 import type { WeaponType } from '../systems/WeaponSystem'
@@ -205,7 +205,7 @@ export class CraftingMenu3D {
   private status(e: Entry): Status {
     if (e.r.findOnly) return 'find'
     if (e.kind === 'weapon') {
-      if (e.r.requiredTier > this.legTier) return 'locked'
+      if (!recipeLearned(e.r) || e.r.requiredTier > this.legTier) return 'locked'
       // Re-crafting an owned weapon used to eat the materials for a duplicate
       if (this.owned.has(e.r.produces)) return 'owned'
     }
@@ -250,7 +250,7 @@ export class CraftingMenu3D {
       row.appendChild(ico)
       row.appendChild(h('div', 'nm', e.r.displayName))
       const label = st === 'ready' ? 'Ready' : st === 'need' ? 'Missing' : st === 'owned' ? 'Owned'
-                  : st === 'locked' ? `Tier ${(e.r as Recipe).requiredTier}` : 'Find it'
+                  : st === 'locked' ? (recipeLearned(e.r as Recipe) ? `Tier ${(e.r as Recipe).requiredTier}` : 'Unknown') : 'Find it'
       row.appendChild(h('span', `status ${st}`, label))
       row.addEventListener('click', () => { if (!this.weaving) this.select(i) })
       this.listEl.appendChild(row)
@@ -298,7 +298,7 @@ export class CraftingMenu3D {
 
     const craft = h('div', 'craft')
     const btnText = st === 'find' ? 'Found in the world' : st === 'owned' ? 'Already in your armory'
-                  : st === 'locked' ? `Needs leg tier ${(e.r as Recipe).requiredTier}`
+                  : st === 'locked' ? this.lockedText(e.r as Recipe)
                   : e.kind === 'brew' ? 'Brew it' : 'Weave it'
     const btn = h('div', `btn${st === 'ready' ? '' : ' off'}`, btnText)
     btn.addEventListener('click', () => this.tryCraft())
@@ -320,6 +320,10 @@ export class CraftingMenu3D {
     this.justSpent.clear()
   }
 
+  private lockedText(r: Recipe): string {
+    return recipeLearned(r) ? `Needs leg tier ${r.requiredTier}` : r.lockedHint ?? 'Not learned yet'
+  }
+
   private say(text: string, kind: 'good' | 'bad'): void {
     if (!this.msgEl) return
     this.msgEl.className = `msg ${kind}`
@@ -335,7 +339,7 @@ export class CraftingMenu3D {
       btn?.classList.remove('shake'); void btn?.offsetWidth; btn?.classList.add('shake')
       this.say(st === 'find' ? 'This one has to be found, not made.'
              : st === 'owned' ? 'You already carry this one.'
-             : st === 'locked' ? `Your legs need tier ${(e.r as Recipe).requiredTier} for this.`
+             : st === 'locked' ? (recipeLearned(e.r as Recipe) ? `Your legs need tier ${(e.r as Recipe).requiredTier} for this.` : "You don't know how to make this yet.")
              : 'Not enough materials yet.', 'bad')
       return
     }

@@ -16,12 +16,13 @@ import { WEAPON_DESCRIPTIONS, weaponColor, weaponName, weaponStatBars, weaponTyp
 //  900  prompt appears — the card can't be dismissed before this
 //  out  card lifts and fades (240 ms) before the next step runs
 
-export type DiscoveryVariant = 'found' | 'crafted' | 'gift'
+export type DiscoveryVariant = 'found' | 'crafted' | 'gift' | 'recipe'
 
 const EYEBROW: Record<DiscoveryVariant, string> = {
   found:   'New discovery',
   crafted: 'Forged at the workbench',
   gift:    'A gift, unwrapped',
+  recipe:  'New recipe learned',
 }
 
 const MIN_VISIBLE_MS = 900

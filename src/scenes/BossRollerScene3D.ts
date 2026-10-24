@@ -611,8 +611,9 @@ export class BossRollerScene3D {
     this.anteater.bend.pitch = Math.max(-0.2, this.anteater.bend.pitch - delta)
     this.anteater.update(delta)
     if (t > 2.2 && this.result === 'ongoing') {
-      this.pendingLoot = { CrystalDust: 3, BoneFragment: 2, VenomGland: 2, ChitinShard: 3 }
-      hud.flashBossMessage('ANT TUNNELS CLEARED!')
+      // Exactly an axe's worth of chitin and bone, plus extras
+      this.pendingLoot = { ChitinShard: 4, BoneFragment: 2, CrystalDust: 2, VenomGland: 2 }
+      hud.flashBossMessage('THE ANTEATER IS BEATEN!')
       this.result = 'victory'
     }
     this.updateRings(delta)
@@ -636,6 +637,65 @@ export class BossRollerScene3D {
       ;(r.mesh.material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - k)
       if (k >= 1) { disposeTree(r.mesh); this.rings.splice(i, 1) }
     }
+  }
+
+  // ── The drop ──────────────────────────────────────────────────────────────
+  // After the fight the Anteater leaves its armor behind: chitin plates and
+  // splintered bone, tumbling out of the hole.  Walk over it to take it (the
+  // materials and the Chitin Axe recipe — main.ts hands those out).
+  private drop: { group: THREE.Group; beam: THREE.Mesh; t: number; x: number; z: number; landed: boolean } | null = null
+
+  spawnDrop(): void {
+    const g = new THREE.Group()
+    const plate = new THREE.MeshToonMaterial({ color: 0x5a4636, gradientMap: this.gradientMap, emissive: new THREE.Color(0xffd08a), emissiveIntensity: 0.15 })
+    const bone  = new THREE.MeshToonMaterial({ color: 0xd8ccb0, gradientMap: this.gradientMap })
+    for (let k = 0; k < 5; k++) {
+      const p = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2.4), plate)
+      p.scale.set(1.3, 0.45, 1)
+      p.position.set((Math.random() - 0.5) * 0.5, 0.05 + k * 0.03, (Math.random() - 0.5) * 0.4)
+      p.rotation.set((Math.random() - 0.5) * 0.6, Math.random() * 3, (Math.random() - 0.5) * 0.6)
+      g.add(p)
+    }
+    for (let k = 0; k < 4; k++) {
+      const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.32, 3, 6), bone)
+      b.position.set((Math.random() - 0.5) * 0.6, 0.06, (Math.random() - 0.5) * 0.5)
+      b.rotation.set(Math.PI / 2, 0, Math.random() * 3)
+      g.add(b)
+    }
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.45, 4, 16, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0xffd08a, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }))
+    beam.position.y = 2
+    g.add(beam)
+    const light = new THREE.PointLight(0xffc070, 0, 4, 2)
+    light.position.y = 0.8
+    g.add(light)
+    g.position.set(0, HOLE_Y, BACK_Z + 0.3)
+    this.add(g)
+    this.drop = { group: g, beam, t: 0, x: 0, z: BACK_Z + 2.4, landed: false }
+    audio.play('boss_hit', 0, BACK_Z, { rate: 1.4, volume: 0.6 })
+  }
+
+  // Per frame after victory; true the moment Webbs walks over the drop
+  tickDrop(delta: number, px: number, pz: number, pr: number): boolean {
+    const d = this.drop
+    if (!d) return false
+    d.t += delta
+    const k = Math.min(1, d.t / 0.7)   // tumbles out of the hole in an arc
+    const g = d.group
+    g.position.set(0, k < 1 ? HOLE_Y * (1 - k) + Math.sin(k * Math.PI) * 0.8 : 0, BACK_Z + 0.3 + (d.z - BACK_Z - 0.3) * k)
+    if (k >= 1 && !d.landed) { d.landed = true; this.ring(d.x, d.z, 0xffd08a, 0.4, 3); audio.play('sword_hit_ground', d.x, d.z, { rate: 0.7 }) }
+    this.updateRings(delta)
+    const glow = Math.min(1, Math.max(0, d.t - 0.7) * 2)
+    ;(d.beam.material as THREE.MeshBasicMaterial).opacity = glow * (0.1 + Math.sin(d.t * 3) * 0.03)
+    const light = g.children.find(c => c instanceof THREE.PointLight) as THREE.PointLight
+    light.intensity = glow * 1.2 * 15
+    if (k < 1) return false
+    if ((px - d.x) ** 2 + (pz - d.z) ** 2 > (pr + 0.55) ** 2) return false
+    this.threeScene.remove(g)
+    this.tracked.splice(this.tracked.indexOf(g), 1)
+    disposeTree(g)
+    this.drop = null
+    return true
   }
 
   isPhase1(): boolean { return this.phase === 1 }

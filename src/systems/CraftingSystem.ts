@@ -1,4 +1,5 @@
 import { WeaponType } from './WeaponSystem'
+import { registry } from '../core/Registry'
 
 export const MaterialType = {
   SilkThread:   'SilkThread',
@@ -36,6 +37,14 @@ export interface Recipe {
   // When true, this recipe is shown in the workbench but cannot be crafted —
   // the weapon must be discovered in the world instead.
   findOnly?:    boolean
+  // Story-locked: hidden behind a registry flag (e.g. learned from a boss),
+  // with the hint shown until then
+  unlockFlag?:  string
+  lockedHint?:  string
+}
+
+export function recipeLearned(r: Recipe): boolean {
+  return !r.unlockFlag || !!registry.get<boolean>(r.unlockFlag)
 }
 
 export const RECIPES: Recipe[] = [
@@ -59,6 +68,8 @@ export const RECIPES: Recipe[] = [
     materials:   { [MaterialType.ChitinShard]: 4, [MaterialType.BoneFragment]: 2 },
     requiredTier: 1,
     produces:    WeaponType.Axe,
+    unlockFlag:  'axeRecipeUnlocked',   // the Anteater's armor teaches it
+    lockedHint:  'Beat the Anteater to learn it',
   },
   {
     id:          RecipeType.BoxingGloves,
@@ -97,6 +108,7 @@ export class CraftingSystem {
 
   canCraft(recipe: Recipe, legTier: number): boolean {
     if (recipe.findOnly) return false
+    if (!recipeLearned(recipe)) return false
     if (legTier < recipe.requiredTier) return false
     for (const mat of Object.keys(recipe.materials) as MaterialType[]) {
       const needed = recipe.materials[mat] ?? 0

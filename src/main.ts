@@ -29,7 +29,7 @@ import { registry } from './core/Registry'
 import { HudSystem } from './ui/HudSystem'
 import { EquipScreen3D } from './ui/EquipScreen3D'
 import { CraftingMenu3D } from './ui/CraftingMenu3D'
-import { TextDisplay3D, type TextDisplayData } from './ui/TextDisplay3D'
+import { TextDisplay3D } from './ui/TextDisplay3D'
 import { PickupCelebration3D } from './ui/PickupCelebration3D'
 import { warmWeaponThumbs } from './ui/WeaponPreview'
 import { PickupNotification3D } from './ui/PickupNotification3D'
@@ -37,7 +37,14 @@ import { ConsumableSystem, ConsumableType, CONSUMABLE_NAMES, CONSUMABLE_INFO } f
 import { QuickItems } from './ui/QuickItems'
 import { EndingCard } from './ui/EndingCard'
 import { TouchControls, type TouchMenuMode } from './ui/TouchControls'
-import { DenGuide } from './systems/DenGuide'
+import { Guide, DEN_STEPS, CROSSROADS_STEPS, weaponsMade, axeMade, type GuidePoints, type CrossroadsPoints } from './systems/DenGuide'
+import { CrossroadsScene3D } from './scenes/CrossroadsScene3D'
+import { Thoughts } from './ui/Thoughts'
+import {
+  StoryVoice, THOUGHT, CLUES, CLUE_TOTAL, CLUE_STAGE_THOUGHTS, TUNNEL_THOUGHTS, ANT_LOCK_REFUSALS, READY_MISSING,
+  OPENING_INTRO, BIRTHDAY_CARD_TEXT, TUTORIAL_TOOTHPICK, TUTORIAL_WEB_LAUNCHER, TUTORIAL_AXE_RECIPE,
+  TAKEN_TEXT, CROSSROADS_INTRO, COLONY_INTRO, ENDING_TEXT, CHAPTER_TWO_TEXT,
+} from './systems/Story'
 import { tickProps } from './env/Props'
 import { saveSystem } from './systems/SaveSystem'
 import { SurvivorsProgression } from './systems/SurvivorsProgression'
@@ -206,7 +213,7 @@ saveSystem.load()
 // was enlarged 5× (DEN_SCALE) while the colony and boss arena keep the original
 // units their corridors, enemies and attack ranges were tuned for.  A single global
 // Webbs scale made him 5–7× wider than colony enemies and wider than the corridors.
-const ZONE_SCALE = { homeBase: 2.4, antColony: 1.0, bossRoller: 1.0 } as const
+const ZONE_SCALE = { homeBase: 2.4, crossroads: 1.0, antColony: 1.0, bossRoller: 1.0 } as const
 
 function applyZoneScale(zone: keyof typeof ZONE_SCALE): void {
   const s = ZONE_SCALE[zone]
@@ -277,6 +284,14 @@ if (!saveSystem.hasSave()) {
     registry.set('bossesBeaten', 1)
     registry.set('legTier', Math.max(1, registry.get<number>('legTier') ?? 0))
   }
+
+  // Saves from before the Crossroads: reaching the colony = the padlock was
+  // picked; beating the Anteater = the axe recipe was learned
+  if (registry.get<boolean>('antColonyFirstVisit')) {
+    registry.set('antLockOpen', true)
+    registry.set('crossroadsVisited', true)
+  }
+  if ((registry.get<string[]>('bossesDefeated') ?? []).length > 0) registry.set('axeRecipeUnlocked', true)
 
   const tier = registry.get<number>('legTier') ?? 0
   webbs.weaponSystem.setLegTier(tier)
@@ -389,7 +404,7 @@ function showEndingCard(): void {
     xp:         xpSystem.total,
     weapons:    unique.size,
     clues:      (registry.get<number[]>('cluesFoundIds') ?? []).length,
-    cluesTotal: 3,
+    cluesTotal: CLUE_TOTAL,
     brews:      registry.get<number>('brewsUsed') ?? 0,
     falls:      registry.get<number>('deaths') ?? 0,
   })
@@ -412,6 +427,46 @@ function awardBossLeg(bossId: string): void {
   hud.toast(`A new leg grows — leg tier ${tier}. Two more weapon slots, and new recipes at the workbench.`, 'good', 5200)
 }
 
+// The Anteater's loot lands in the crafting bag
+function grantLoot(loot: Record<string, number> | null): void {
+  if (!loot) return
+  const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
+  for (const [mat, qty] of Object.entries(loot)) {
+    inv[mat] = (inv[mat] ?? 0) + qty
+    pickupNotify.notify(mat, `×${qty}`, '#c9d0d8')
+  }
+  registry.set('craftingInventory', inv)
+}
+let bossDropLoot: Record<string, number> | null = null   // held until Webbs takes the drop
+
+// After the boss: home for the ending the first time, else back to the colony.
+// (transitionTo() sets `transitioning` itself — setting it here made the call a no-op.)
+function leaveArena(ms: number): void {
+  setTimeout(() => {
+    victoryPending = false
+    if (!registry.get<boolean>('endingSeen')) {
+      pendingEnding = true
+      void transitionTo('homeBase', { title: 'The Anteater Falls  —  Home', onSwitch: startEnding })
+    } else {
+      void transitionTo('antColony')
+    }
+  }, ms)
+}
+
+// After a NEW clue's card: Webbs puts it together a little more.  The last
+// one tips it into the realization card.
+function afterClue(count: number): void {
+  if (count < CLUE_TOTAL) { voice.say(CLUE_STAGE_THOUGHTS[count] ?? []); return }
+  textDisplay.show(TAKEN_TEXT)
+  afterTextClose = () => {
+    const missing: string[] = []
+    if (!registry.get<boolean>('webThrowerFound'))    missing.push(READY_MISSING.gift)
+    if (!registry.get<boolean>('toothpickCollected')) missing.push(READY_MISSING.toothpick)
+    if (!weaponsMade())                                missing.push(READY_MISSING.weapon)
+    voice.say(missing.length ? [...THOUGHT.takenUnready, ...missing] : THOUGHT.takenReady)
+  }
+}
+
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
 const menuOverlay    = document.getElementById('menu-overlay')!
@@ -421,6 +476,10 @@ const equipScreen    = new EquipScreen3D(menuOverlay)
 const craftingMenu   = new CraftingMenu3D(menuOverlay)
 craftingMenu.consumables = consumables
 const quickItems     = new QuickItems()
+const thoughts       = new Thoughts()
+const voice          = new StoryVoice(thoughts)
+// Runs once when the current text card closes (story beats chain off it)
+let afterTextClose: (() => void) | null = null
 
 // Secret code: type "pppsssttt" to stop taking damage, "off" to undo it
 let cheatKeys = ''
@@ -441,7 +500,7 @@ endingCard.onKeepExploring = () => {
   registry.set('endingSeen', true)
   persist()
   gamePaused = anyOverlayOpen()
-  hud.toast('The den is warmer now. The tunnels are yours to explore.', 'good', 4200)
+  hud.toast('The den is warmer now. Weave the Chitin Axe — the Hive tunnel\'s chain is waiting at the Crossroads.', 'good', 5200)
 }
 endingCard.onTitle = () => {
   registry.set('endingSeen', true)
@@ -509,6 +568,9 @@ textDisplay.onClose  = () => {
   }
   if (endingPhase === 'story') { showEndingCard(); return }
   persist()   // story beats (card read, clue found) count as progress
+  const after = afterTextClose
+  afterTextClose = null
+  after?.()   // may open the next card
   gamePaused = anyOverlayOpen()
   if (pendingTransitionResume) {
     transitioning = false   // Round 6 Issue 2: clear stuck transition flag
@@ -531,10 +593,13 @@ presentation.onShowDiscoveryCard = (wt, variant) => {
   audio.play('celeb_burst')   // Round 10
   pickupCelebration.show(wt, variant)
 }
-presentation.onShowTutorialCard = (wt) => {
+let presented: { wt: WeaponType; variant: string } | null = null
+presentation.onShowTutorialCard = (wt, variant) => {
   audio.play('celeb_tutorial')   // Round 10
+  presented = { wt, variant }
   // Phase 3 — show the tutorial pages for this weapon if any.
-  const tutorial = wt === WeaponType.BoxingGloves ? TUTORIAL_TOOTHPICK
+  const tutorial = variant === 'recipe'           ? TUTORIAL_AXE_RECIPE
+                 : wt === WeaponType.BoxingGloves ? TUTORIAL_TOOTHPICK
                  : wt === WeaponType.WebLauncher  ? TUTORIAL_WEB_LAUNCHER
                  : null
   if (tutorial) textDisplay.show(tutorial)
@@ -544,6 +609,15 @@ presentation.onComplete = () => {
   persist()   // a found/crafted/gifted item is saved the moment its reveal ends
   gamePaused = false
   celebZoom  = false
+  // Webbs reacts to what he just got
+  const p = presented
+  presented = null
+  if (!p) return
+  if (p.variant === 'recipe')               { leaveArena(600); return }
+  if (p.wt === WeaponType.WebLauncher)      voice.once('giftOpened', THOUGHT.giftOpened)
+  else if (p.wt === WeaponType.BoxingGloves) voice.once('toothpick', THOUGHT.toothpick)
+  else if (p.wt === WeaponType.Axe)         voice.once('axeMade', THOUGHT.axeMade)
+  else if (p.variant === 'crafted')         voice.once('crafted', THOUGHT.crafted)
 }
 
 // Round 8 Issue 7: first-time crafting closes the menu and routes through the
@@ -555,76 +629,6 @@ craftingMenu.onFirstDiscover = (wt) => {
   audio.play('crafting_complete')
   presentation.start(wt, webbs, particles, 'crafted')
   xpSystem.award('craft')
-}
-
-// ─── Narrative text ───────────────────────────────────────────────────────────
-
-const OPENING_INTRO: TextDisplayData = {
-  pages: [
-    'Webbs was born wrong.',
-    'The colony called him broken.\n\nEight legs.\nNone of them his.',
-    'His mother built him legs.\n\nChitin and thread.\nSilk wrapped tight around hollow bone.',
-    'He made them better.\n\nEvery moult, he rebuilt.\nEvery season, they moved faster.',
-    'Today is Molt Day.\n\nHe is seventeen moults old.\nHis mother left something for him at the Den.',
-    'They never got the chance to see.',
-  ],
-  title:       '— NO LEG LEFT TO STAND ON —',
-  accentColor: '#c8a8ff',
-  style:       'story',
-}
-
-// Chapter-one ending — plays once, back in the den after the Roller falls.
-const ENDING_TEXT: TextDisplayData = {
-  pages: [
-    'The tunnels are quiet now.\n\nWhatever fed on them\nhas crawled back into the dark.',
-    'Webbs follows the silk markers home.\n\nSomeone has walked them since.\nThey are brighter than he left them.',
-    'Three of them are waiting in the Den.\n\nThey look at his legs for a long time.\nNone of them say "broken".',
-    'Someone has righted the stool.\nSomeone has mended the hammock.\n\nThe hearth is lit.',
-    'His mother is not among them.',
-    'The smallest one presses a thread into his leg —\nher silk, spun to rest, not to bind.\n\nIt runs on, deeper. Toward the Hive.',
-    'Eight legs.\nAll of them his.\n\nHe goes on.',
-  ],
-  title:       '— HOME, FOR NOW —',
-  accentColor: '#ffb35c',
-  style:       'story',
-}
-
-const COLONY_INTRO: TextDisplayData = {
-  pages: [
-    'The silk markers end here.\n\nPast this point the ants have dug a maze\nin the dark, and they hunt what wanders in.',
-    'The way west — the Queen\'s tunnel — is sealed\nwith resin. Three pheromone sacs hold it shut,\ndeep in the colony.\n\nBurst them. The colony will know when you do.',
-    'Stay out of sight. Listen.\nIf they see you, run — and don\'t run\ninto a dead end.',
-  ],
-  title:       '— ZONE 1: ANT COLONY —',
-  accentColor: '#66aa44',
-}
-
-const BIRTHDAY_CARD_TEXT: TextDisplayData = {
-  pages: [
-    '"Happy moult day.\n\nFrom someone who still counts them."',
-    'The card is old. The ink is smeared.\nBut the handwriting is steady.\n\nYou didn\'t know anyone still tracked it.',
-    'Most spiders stop counting moults after the third.\n\nYou stopped at twelve.\nThe note says seventeen.',
-    'There\'s a pressed flower inside — dried flat,\nstill faintly purple.\n\nYou don\'t recognise the species.',
-    'You hold it a moment longer than you mean to.\n\nThen you fold it back up\nand keep moving.',
-  ],
-  title:       '— BIRTHDAY CARD —',
-  accentColor: '#cc8844',
-}
-
-const TUTORIAL_TOOTHPICK: TextDisplayData = {
-  pages: [
-    'You found a Toothpick Stabber.\n\nA thin spike, light as a pin.\nFast and cheap on stamina, but short range.\n\nPress [I] to open your equipment screen\nand assign it to a weapon slot.',
-  ],
-  title:       '— ITEM FOUND: TOOTHPICK —',
-  accentColor: '#ddccaa',
-}
-
-const TUTORIAL_WEB_LAUNCHER: TextDisplayData = {
-  pages: [
-    'You found a Web Launcher.\n\nFires a sticky silk strand.\nPress [Q] to fire it — it anchors to walls,\npulls light enemies toward you, and\nyou toward heavy ones.\n\nQ again to release.',
-  ],
-  title:       '— GIFT OPENED —',
-  accentColor: '#ddeeff',
 }
 
 // ─── Mouse-to-world cursor ────────────────────────────────────────────────────
@@ -643,30 +647,19 @@ const touch          = new TouchControls(document.getElementById('game-container
 quickItems.onUse = (k) => { const code = `Key${k}`; input.press(code); requestAnimationFrame(() => input.release(code)) }
 hud.onSlotTap = (i) => { if (webbs.weaponSystem.isSlotUnlocked(i)) { lastActiveSlot = i; audio.play('ui_hover') } }
 
-// ─── Colony lock ──────────────────────────────────────────────────────────────
-// Webbs won't leave the den until he has read all three clues (the last one
-// lies right at the tunnel mouth).  A soft wall just short of the exit trigger
-// stops him walking further west and says why.  Saves that already reached the
-// colony stay unlocked.
-const COLONY_LOCK_MARGIN = 2.0   // wu east of the exit trigger — still inside clue 2's E radius
-const COLONY_LOCK_MSG    = "You don't know enough about what's out there to leave yet. Go look for more clues."
-let   colonyLockToastT   = 0
-
-function colonyUnlocked(): boolean {
-  return (registry.get<number[]>('cluesFoundIds') ?? []).length >= 3
-      || !!registry.get<boolean>('antColonyFirstVisit')
-      || (registry.get<string[]>('bossesDefeated') ?? []).length > 0
+// ─── The ants' padlock ────────────────────────────────────────────────────────
+// The way out of the den is open, but the ant tunnel at the Crossroads is
+// padlocked.  The toothpick picks it — once the den is done: every clue
+// read, Mum's present opened, the toothpick found and a real weapon woven.
+// Saves that already reached the colony count it as picked.
+function antLockRefusal(): string | null {
+  if ((registry.get<number[]>('cluesFoundIds') ?? []).length < CLUE_TOTAL) return ANT_LOCK_REFUSALS.clues
+  if (!registry.get<boolean>('toothpickCollected')) return ANT_LOCK_REFUSALS.toothpick
+  if (!registry.get<boolean>('webThrowerFound'))    return ANT_LOCK_REFUSALS.gift
+  if (!weaponsMade())                                return ANT_LOCK_REFUSALS.weapon
+  return null
 }
-
-function holdAtColonyMouth(dt: number): void {
-  if (colonyLockToastT > 0) colonyLockToastT -= dt
-  if (currentZone !== 'homeBase' || transitioning || colonyUnlocked()) return
-  const wallX = (activeScene as HomeBaseScene3D).exitTriggerX + COLONY_LOCK_MARGIN
-  const b = webbs.collisionBody
-  if (b.x > wallX + 0.4 || b.velocity.x >= 0) return
-  b.velocity.x = 0
-  if (colonyLockToastT <= 0) { hud.toast(COLONY_LOCK_MSG, 'info', 4600); colonyLockToastT = 6 }
-}
+let refusalToastT = 0
 
 // ─── Zoom ─────────────────────────────────────────────────────────────────────
 // Play happens close in (PLAY_ZOOM) so the details read.  The wheel / a pinch
@@ -709,8 +702,8 @@ function driftZoom(dt: number): void {
 
 // ─── Zone management ──────────────────────────────────────────────────────────
 
-type ZoneId = 'homeBase' | 'antColony' | 'bossRoller'
-type ActiveScene = HomeBaseScene3D | AntColonyScene3D | BossRollerScene3D
+type ZoneId = 'homeBase' | 'crossroads' | 'antColony' | 'bossRoller'
+type ActiveScene = HomeBaseScene3D | CrossroadsScene3D | AntColonyScene3D | BossRollerScene3D
 
 let activeScene: ActiveScene = new HomeBaseScene3D(scene, gradientMap)
 lighting.calibrateAccents('homeBase')
@@ -727,12 +720,13 @@ for (const m of (activeScene as HomeBaseScene3D).getOccluderMeshes()) cameraOccl
 // Den progression — tracks survivors returning after boss defeats.
 // Recreated each time HomeBaseScene3D is created; disposed on zone exit.
 // First-visit objectives in the den (see systems/DenGuide); den-only
-let denGuide: DenGuide | null = null
+let denGuide: Guide<GuidePoints> | null = null
 function startDenGuide(): void {
   denGuide?.dispose()
-  denGuide = new DenGuide(scene)
+  denGuide = new Guide(scene, DEN_STEPS, 'denGuideStep')
   denGuide.onHint = (text) => hud.toast(text, 'info', 5600)
 }
+let crossGuide: Guide<CrossroadsPoints> | null = null
 let denProgression: SurvivorsProgression | null = new SurvivorsProgression(
   (activeScene as HomeBaseScene3D).denHandles,
   scene,
@@ -760,12 +754,15 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
 
   const ZONE_TITLES: Record<ZoneId, string> = {
     homeBase:   'HOME BASE',
+    crossroads: 'THE CROSSROADS',
     antColony:  'ZONE 1  —  ANT COLONY',
     bossRoller: 'ZONE 2  —  THE ANTEATER',
   }
   await ZoneTransitionSystem3D.transition(() => {
     // Dispose zone-specific systems before tearing down the scene
     if (currentZone === 'homeBase') { denProgression?.dispose(); denProgression = null; denGuide?.dispose(); denGuide = null }
+    if (currentZone === 'crossroads') { crossGuide?.dispose(); crossGuide = null }
+    const from = currentZone
     activeScene.destroy()
 
     switch (zone) {
@@ -775,8 +772,10 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
         weaponUseSystem.setEnemies(s.enemies)
         webLauncher.setEnemies(s.enemies)
         applyZoneScale('homeBase')
-        webbs.placeAt(HomeBaseScene3D.SPAWN_X, 0)
-        rig.snapTo(HomeBaseScene3D.SPAWN_X, 0)
+        // Walking back in from the Crossroads: arrive at the west door
+        const spawnX = from === 'crossroads' && dyingT < 0 ? HomeBaseScene3D.DOOR_SPAWN_X : HomeBaseScene3D.SPAWN_X
+        webbs.placeAt(spawnX, 0)
+        rig.snapTo(spawnX, 0)
         hud.setZoneLabel('HOME BASE')
         hud.hideBossHp()
         webbs.floorType = 'dirt'
@@ -786,6 +785,22 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
         denProgression = new SurvivorsProgression(s.denHandles, scene, s.warmPools)
         startDenGuide()
         denProgression.applyState(Math.max(0, (registry.get<number>('bossesBeaten') ?? 0) - (pendingEnding ? 1 : 0)))
+        break
+      }
+      case 'crossroads': {
+        const s = new CrossroadsScene3D(scene, gradientMap)
+        activeScene = s
+        weaponUseSystem.setEnemies(s.enemies)
+        webLauncher.setEnemies(s.enemies)
+        applyZoneScale('crossroads')
+        const at = from === 'antColony' ? s.spawnFromTunnel('ants') : s.spawnFromDen()
+        webbs.placeAt(at.x, at.y)
+        rig.snapTo(at.x, at.y)
+        hud.setZoneLabel('THE CROSSROADS')
+        hud.hideBossHp()
+        webbs.floorType = 'stone'
+        crossGuide = new Guide(scene, CROSSROADS_STEPS, 'crossGuideStep')
+        crossGuide.onHint = (text) => hud.toast(text, 'info', 5600)
         break
       }
       case 'antColony': {
@@ -833,9 +848,18 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
   }, opts.title ?? ZONE_TITLES[zone])
 
 
-  if (zone === 'antColony' && !registry.get<boolean>('antColonyFirstVisit')) {
-    registry.set('antColonyFirstVisit', true)
-    textDisplay.show(COLONY_INTRO)
+  if (zone === 'bossRoller' && !(registry.get<string[]>('bossesDefeated') ?? []).length) voice.once('bossArena', THOUGHT.bossArena)
+
+  // First steps into a new place: its story card, then Webbs' reaction
+  const firstCard = zone === 'crossroads' && !registry.get<boolean>('crossroadsVisited')
+    ? { flag: 'crossroadsVisited', card: CROSSROADS_INTRO, after: () => { if (!registry.get<boolean>('antLockOpen')) voice.once('crossroads', THOUGHT.crossroads) } }
+    : zone === 'antColony' && !registry.get<boolean>('antColonyFirstVisit')
+    ? { flag: 'antColonyFirstVisit', card: COLONY_INTRO, after: () => voice.once('colonyEnter', THOUGHT.colonyEnter) }
+    : null
+  if (firstCard) {
+    registry.set(firstCard.flag, true)
+    afterTextClose = firstCard.after
+    textDisplay.show(firstCard.card)
     gamePaused = true
     await new Promise<void>(resolve => { pendingTransitionResume = resolve })
     return
@@ -1060,6 +1084,12 @@ function gameLoop() {
       else if (hbs.nearGift(px, pz))         hintText = '[E] open Gift'
       else if (hbs.nearClue(px, pz) >= 0)    hintText = '[E] investigate'
       else if (canCraft)                     hintText = '[E] use Workbench'
+    } else if (currentZone === 'crossroads') {
+      const crs = activeScene as CrossroadsScene3D
+      const tid = crs.nearTunnel(px, pz)
+      if (tid === 'ants')      hintText = '[E] pick the padlock'
+      else if (tid === 'hive') hintText = axeMade() ? '[E] chop the chain' : '[E] examine — The Hive Tunnel'
+      else if (tid)            hintText = `[E] examine — ${crs.tunnelName(tid)}`
     } else if (currentZone === 'antColony') {
       const acs = activeScene as AntColonyScene3D
       if      (canCraft)                      hintText = '[E] use Workbench'
@@ -1092,6 +1122,7 @@ function gameLoop() {
           hbs.collectCard()
           registry.set('birthdayCardRead', true)
           textDisplay.show(BIRTHDAY_CARD_TEXT)
+          afterTextClose = () => voice.once('cardRead', THOUGHT.cardRead)
           gamePaused = true
         } else if (hbs.nearGift(px, pz) && hbs.giftAvailable) {
           hbs.collectGift()
@@ -1109,17 +1140,35 @@ function gameLoop() {
         } else if (hbs.nearClue(px, pz) >= 0) {
           const clueIdx = hbs.nearClue(px, pz)
           const found = registry.get<number[]>('cluesFoundIds') ?? []
-          if (!found.includes(clueIdx)) {
+          const isNew = !found.includes(clueIdx)
+          if (isNew) {
             found.push(clueIdx)
             registry.set('cluesFoundIds', found)
             saveSystem.save()
             xpSystem.award('pickup')
           }
-          textDisplay.show({ pages: [hbs.clueText(clueIdx)], title: '— A CLUE —', accentColor: '#ffd9a0' })
+          const clue = CLUES[clueIdx]
+          textDisplay.show({ pages: [clue.text], title: clue.title, accentColor: '#ffd9a0' })
+          // The realization builds with each NEW clue, whatever order they're found in
+          if (isNew) afterTextClose = () => afterClue(found.length)
           gamePaused = true
         } else if (canCraft) {
           craftingMenu.show()
           gamePaused = true
+        }
+      } else if (currentZone === 'crossroads') {
+        const crs = activeScene as CrossroadsScene3D
+        const tid = crs.nearTunnel(px, pz)
+        if (tid === 'ants') {
+          const why = antLockRefusal()
+          if (why) { if (refusalToastT <= 0) { hud.toast(why, 'info', 4600); refusalToastT = 1.2 } }
+          else { registry.set('antLockOpen', true); crs.openLock('ants'); persist() }
+        } else if (tid === 'hive') {
+          if (!registry.get<boolean>('axeRecipeUnlocked')) voice.say(TUNNEL_THOUGHTS.hiveSealed, { now: true })
+          else if (!axeMade()) { voice.say(THOUGHT.hiveLocked, { now: true }); hud.toast('Weave the Chitin Axe at a workbench.', 'info', 4200) }
+          else { registry.set('hiveLockOpen', true); crs.openLock('hive'); persist() }
+        } else if (tid) {
+          voice.say(TUNNEL_THOUGHTS[tid], { now: true })
         }
       } else if (currentZone === 'antColony') {
         const acs = activeScene as AntColonyScene3D
@@ -1201,6 +1250,13 @@ function gameLoop() {
     denGuide.update(gamePaused ? 0 : rawDelta, { x: webbs.collisionBody.x, z: webbs.collisionBody.z },
       (activeScene as HomeBaseScene3D).guidePoints(), camera, webbs.scale)
   }
+  if (crossGuide && currentZone === 'crossroads') {
+    crossGuide.setVisible(touchMode() === 'play')
+    crossGuide.update(gamePaused ? 0 : rawDelta, { x: webbs.collisionBody.x, z: webbs.collisionBody.z },
+      (activeScene as CrossroadsScene3D).guidePoints(), camera, webbs.scale)
+  }
+  thoughts.setVisible(touchMode() === 'play')
+  thoughts.update(rawDelta)
   touch.update({ mode: touchMode(), weapon: webbs.weaponSystem.getSlot(lastActiveSlot), interact: hud.currentInteract, web: webbs.hasWebLauncher })
 
   // ── Pause gate ───────────────────────────────────────────────────────────
@@ -1218,15 +1274,23 @@ function gameLoop() {
 
     if (currentZone === 'homeBase') {
       const hbs = activeScene as HomeBaseScene3D
-      if (hbs.checkExitLeft(px)) {
-        webbs.collisionBody.velocity.x = Math.max(0, webbs.collisionBody.velocity.x)
-        // Something (a dodge, a web pull) carried him past the soft wall: put him back
-        if (!colonyUnlocked()) webbs.placeAt(hbs.exitTriggerX + COLONY_LOCK_MARGIN, webbs.collisionBody.z)
-        else transitionTo('antColony')
+      if (hbs.checkExitLeft(px)) transitionTo('crossroads')
+    } else if (currentZone === 'crossroads') {
+      const crs = activeScene as CrossroadsScene3D
+      const pz = webbs.collisionBody.z
+      const tid = crs.enteredTunnel(px, pz)
+      if (crs.atDenDoor(px, pz)) transitionTo('homeBase')
+      else if (tid === 'ants') transitionTo('antColony')
+      else if (tid === 'hive') {
+        // Chapter Two isn't built yet: the story card, then back out
+        const back = crs.tunnelMouth('hive')
+        webbs.placeAt(back.x, back.y)
+        textDisplay.show(CHAPTER_TWO_TEXT)
+        gamePaused = true
       }
     } else if (currentZone === 'antColony') {
       const ac = activeScene as AntColonyScene3D
-      if (ac.checkExitRight(px)) transitionTo('homeBase')
+      if (ac.checkExitRight(px)) transitionTo('crossroads')
       if (ac.checkExitLeft(px))  transitionTo('bossRoller')
     }
   }
@@ -1234,7 +1298,7 @@ function gameLoop() {
   // ── Player update ────────────────────────────────────────────────────────
 
   webbs.update(delta, input)
-  holdAtColonyMouth(delta)
+  if (refusalToastT > 0) refusalToastT -= delta
   physicsWorld.update(delta)
   webbs.syncPosition()
 
@@ -1279,6 +1343,7 @@ function gameLoop() {
         inv[pick.mat] = (inv[pick.mat] ?? 0) + pick.qty
         registry.set('craftingInventory', inv)
         ;(activeScene as HomeBaseScene3D).collectMaterialPickup(pick.id)
+        voice.once('firstPickup', THOUGHT.firstPickup)
         pickupNotify.notify(pick.mat, `×${pick.qty}`, '#aabbcc')
         audio.play('pickup_notify')
         xpSystem.award('pickup')
@@ -1417,27 +1482,26 @@ function gameLoop() {
     if (result === 'victory' && !transitioning && !victoryPending) {
       xpSystem.award('boss_kill')
       awardBossLeg('roller')
-      if (bs.pendingLoot) {
-        const inv = registry.get<Record<string, number>>('craftingInventory') ?? {}
-        for (const [mat, qty] of Object.entries(bs.pendingLoot)) {
-          inv[mat] = (inv[mat] ?? 0) + qty
-        }
-        registry.set('craftingInventory', inv)
-        bs.pendingLoot = null
-      }
-      persist()   // after the loot lands
-      // Let the victory beat play, then leave.  (transitionTo() sets
-      // `transitioning` itself — setting it here made the call a no-op.)
       victoryPending = true
-      setTimeout(() => {
-        victoryPending = false
-        if (!registry.get<boolean>('endingSeen')) {
-          pendingEnding = true
-          void transitionTo('homeBase', { title: 'Ant Tunnels Cleared  —  Home', onSwitch: startEnding })
-        } else {
-          void transitionTo('antColony')
-        }
-      }, 2000)
+      if (!registry.get<boolean>('axeRecipeUnlocked')) {
+        // The Anteater's armor tumbles out: walk over it for the loot + recipe
+        bossDropLoot = bs.pendingLoot
+        bs.pendingLoot = null
+        bs.spawnDrop()
+        hud.toast('The Anteater left its armor behind. Take it.', 'good', 4200)
+      } else {
+        grantLoot(bs.pendingLoot)
+        bs.pendingLoot = null
+        leaveArena(2000)
+      }
+      persist()
+    } else if (bossDropLoot && bs.tickDrop(delta, webbs.collisionBody.x, webbs.collisionBody.z, webbs.collisionBody.radius)) {
+      grantLoot(bossDropLoot)
+      bossDropLoot = null
+      registry.set('axeRecipeUnlocked', true)
+      persist()
+      gamePaused = true; celebZoom = true
+      presentation.start(WeaponType.Axe, webbs, particles, 'recipe')   // → TUTORIAL_AXE_RECIPE → leaveArena
     } else if (result === 'defeat' && !transitioning && !victoryPending && dyingT < 0) {
       startDeath()
     }
@@ -1450,6 +1514,41 @@ function gameLoop() {
   if (webbs.hp <= 0 && !transitioning && dyingT < 0) startDeath()
 
   webbs.updateLegs(delta)
+
+  // ── Den story beats / Crossroads locks ──────────────────────────────────
+
+  if (currentZone === 'homeBase' && endingPhase === 'none' && dyingT < 0) {
+    voice.updateDen(webbs.collisionBody.x, webbs.collisionBody.z, (registry.get<number[]>('cluesFoundIds') ?? []).length)
+  }
+  if (currentZone === 'crossroads') {
+    const crs = activeScene as CrossroadsScene3D
+    crs.update(delta, webbs.collisionBody.x, webbs.collisionBody.z)
+    for (const ev of crs.takeEvents()) {
+      if (ev.kind === 'opened') {
+        persist()
+        if (ev.id === 'ants') voice.say(THOUGHT.lockPicked, { now: true })
+        else if (ev.id === 'hive') voice.once('chainCut', THOUGHT.chainCut, { now: true })
+        audio.play('celeb_swell')
+        continue
+      }
+      const at = new THREE.Vector3(ev.x, 1, ev.z)
+      if (ev.kind === 'click') audio.play('ui_click', ev.x, ev.z, { rate: 1.7, volume: 0.8 })
+      else if (ev.kind === 'unlock') {
+        audio.play('sword_hit_ground', ev.x, ev.z, { rate: 1.9 })
+        particles.burst(at, 0xffd28a, 14, 1.6, 0.04)
+      } else if (ev.kind === 'chop') {
+        audio.impact('heavy', ev.x, ev.z)
+        audio.play('axe_hit_enemy', ev.x, ev.z)
+        particles.burst(at, 0x9a9aa0, 22, 3.2, 0.05)
+        hitStop(0.09)
+        cameraShakeRemaining = 0.25; cameraShakeIntensity = 0.02
+      } else if (ev.kind === 'crumble') {
+        audio.play('beetle_charge_crash', ev.x, ev.z, { rate: 1.3, volume: 0.7 })
+        particles.burst(at, 0xd9a43a, 30, 2.4, 0.06)
+        cameraShakeRemaining = 0.4; cameraShakeIntensity = 0.012
+      }
+    }
+  }
 
   // ── Fog of war ───────────────────────────────────────────────────────────
 
@@ -1602,7 +1701,9 @@ function initNewGame(): void {
 
   dismissTitleMenu()
   registry.set('openingCutsceneSeen', true)
+  thoughts.clear()
   textDisplay.show(OPENING_INTRO)
+  afterTextClose = () => voice.once('wake', THOUGHT.wake)
 }
 
 function initContinue(): void {
@@ -1615,6 +1716,7 @@ function initContinue(): void {
   if (!registry.get<boolean>('openingCutsceneSeen')) {
     registry.set('openingCutsceneSeen', true)
     textDisplay.show(OPENING_INTRO)
+    afterTextClose = () => voice.once('wake', THOUGHT.wake)
   } else {
     gamePaused = false
   }

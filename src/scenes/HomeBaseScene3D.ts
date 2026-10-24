@@ -101,14 +101,13 @@ export class HomeBaseScene3D {
   cardAvailable      = true
   giftAvailable      = true
 
-  // Three-clue struggle trail (center → path → threshold). Found-state persists via registry.
-  private clues: Array<{ x: number; z: number; text: string }> = [
-    { x: -4.16, z:  6.24,
-      text: "The little one's cradle. Still warm. Whatever came, it went for the smallest first." },
-    { x:  8.32, z: -4.16,
-      text: "Silk, but not ours — spun to bind, not to rest. They wrapped the colony like prey and dragged them off." },
-    { x: -48.96, z: 0,
-      text: "A bristle — coarse, barbed, the length of my leg. No spider sheds this. Whatever took them went this way. So do I." },
+  // The four story clues (text: systems/Story CLUES, same order).  Found-state
+  // persists via registry `cluesFoundIds`.
+  private clues: Array<{ x: number; z: number }> = [
+    { x:  -4.16, z:  6.24 },   // the little ones' cradle, by the hearth
+    { x:   9.2,  z: -2.0  },   // ant wrapping + tracks (clear of the gift's [E] range)
+    { x: -40.0,  z:  2.0  },   // claw furrows + bristle at the west door (clear of the exit trigger)
+    { x: -15.0,  z: -9.0  },   // Mum's slashed hammock — fallen silk below it
   ]
 
   private threeScene:     THREE.Scene
@@ -453,17 +452,59 @@ export class HomeBaseScene3D {
       this.add(g)
       this.addGlint(c.x, c.z, sacMat)
     }
-    // Clue 2 — Snagged Bristle (the threshold, at the ant entrance mouth)
+    // Clue 2 — Claw furrows + a snagged bristle at the west door.  The
+    // furrows are huge on purpose: whatever made them dwarfs the ants.
     {
       const c = this.clues[2]
       const g = new THREE.Group(); g.position.set(c.x, 0, c.z)
+      // The floor rises toward the rim here — bake each piece into the group,
+      // then drape its vertices over the real floor height
+      const drape = (geo: THREE.BufferGeometry, lift: number): THREE.BufferGeometry => {
+        const p = geo.attributes.position as THREE.BufferAttribute
+        for (let k = 0; k < p.count; k++) p.setY(k, p.getY(k) + denFloorY(c.x + p.getX(k), c.z + p.getZ(k)) + lift)
+        geo.computeVertexNormals()
+        return geo
+      }
+      const furrowMat = new THREE.MeshToonMaterial({ color: 0x150c05, gradientMap: this.gradientMap, transparent: true, opacity: 0.85 })
+      for (let i = 0; i < 4; i++) {
+        const fx = -1.5 + i * 0.25, fz = -4.2 + i * 2.1, rot = 1.25 + i * 0.05   // raked toward the door
+        g.add(new THREE.Mesh(drape(new THREE.PlaneGeometry(0.9, 9.5, 1, 14).rotateX(-Math.PI / 2).rotateY(rot).translate(fx, 0, fz), 0.05 + i * 0.003), furrowMat))
+        // Torn-up dirt along each furrow's lip
+        const lip = new THREE.CapsuleGeometry(0.22, 7.5, 3, 6).rotateX(Math.PI / 2).scale(1, 0.5, 1)
+        lip.rotateY(rot).translate(fx - Math.sin(rot) * 0.55, 0, fz - Math.cos(rot) * 0.55)
+        g.add(new THREE.Mesh(drape(lip, 0.06), mat.earth))
+      }
       const brMat = new THREE.MeshStandardMaterial({ color: 0xb8a890, roughness: 0.5, metalness: 0.1 })
-      const bristle = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.05, 1.6, 6), brMat)
-      bristle.position.set(0, 1.0, 0); bristle.rotation.set(0.5, 0, 0.7)   // snagged at an angle
+      const bristle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.11, 3.4, 6), brMat)
+      bristle.position.set(0, denFloorY(c.x, c.z) + 1.4, 0); bristle.rotation.set(0.5, 0, 0.7)   // snagged at an angle
       bristle.castShadow = true
       g.add(bristle)
       this.add(g)
       this.addGlint(c.x, c.z, brMat)
+    }
+    // Clue 3 — Mum's hammock (the torn one overhead); her fighting silk
+    // sprayed in a tangle on the floor below it
+    {
+      const c = this.clues[3]
+      const g = new THREE.Group(); g.position.set(c.x, denFloorY(c.x, c.z), c.z)
+      const silkMat = new THREE.MeshStandardMaterial({ color: 0xf2eee6, roughness: 0.85, transparent: true, opacity: 0.92 })
+      for (let i = 0; i < 7; i++) {
+        const blob = new THREE.Mesh(new THREE.SphereGeometry(0.35 + Math.random() * 0.25, 9, 7), silkMat)
+        const a = (i / 7) * Math.PI * 2, r = i === 0 ? 0 : 0.6 + Math.random() * 0.7
+        blob.position.set(Math.cos(a) * r, 0.18, Math.sin(a) * r)
+        blob.scale.set(1.3, 0.45, 1)
+        g.add(blob)
+      }
+      // Strands snapped mid-spin, flung outward
+      for (let i = 0; i < 9; i++) {
+        const a = Math.random() * Math.PI * 2, l = 1.6 + Math.random() * 2.2
+        const s = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, l, 4).rotateZ(Math.PI / 2), silkMat)
+        s.position.set(Math.cos(a) * l * 0.5, 0.08, Math.sin(a) * l * 0.5)
+        s.rotation.y = -a
+        g.add(s)
+      }
+      this.add(g)
+      this.addGlint(c.x, c.z, silkMat)
     }
   }
 
@@ -476,8 +517,6 @@ export class HomeBaseScene3D {
     }
     return -1
   }
-
-  clueText(i: number): string { return this.clues[i]?.text ?? '' }
 
   // Where the den guide (systems/DenGuide) can point the player
   guidePoints(): {
@@ -611,6 +650,9 @@ export class HomeBaseScene3D {
   checkExitLeft(playerX: number): boolean {
     return playerX < this.exitTriggerX
   }
+
+  // Coming back from the Crossroads: just inside the west door, facing in
+  static readonly DOOR_SPAWN_X = -45.5
 
   nearWorkbench(playerX: number, playerZ: number): boolean {
     const dx = playerX - HomeBaseScene3D.WORKBENCH_X

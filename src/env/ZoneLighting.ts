@@ -8,7 +8,7 @@ import * as THREE from 'three'
 // Intensities are physical (three.js r155+): point lights fall off with 1/d², so
 // accent lights need values in the tens-to-hundreds at these room sizes.
 
-export type ZoneId = 'homeBase' | 'antColony' | 'bossRoller'
+export type ZoneId = 'homeBase' | 'crossroads' | 'antColony' | 'bossRoller'
 
 interface LightPreset {
   shadows?:   boolean   // key-light shadow pass (default on)
@@ -31,6 +31,17 @@ export const ZONE_LIGHTS: Record<ZoneId, LightPreset> = {
     background: 0x0d0907,
     exposure:   1.0,
     warmth:     0.12,
+  },
+  // The cave junction past the den door: cool daylight leaking from above,
+  // each tunnel mouth tinted by what's behind it
+  crossroads: {
+    key:        { color: 0xc8d8f0, intensity: 0.9, azimuthDeg: 20, elevationDeg: 72 },
+    hemi:       { sky: 0x5a6a7a, ground: 0x1a140e, intensity: 1.1 },
+    lantern:    { color: 0xffd9a8, intensity: 8, range: 6.5, height: 1.2 },
+    fog:        { color: 0x05070a, depth: 26 },
+    background: 0x020304,
+    exposure:   1.25,
+    warmth:     0.02,
   },
   // Cold, damp tunnels: a weak grey-green key, the lantern does the work
   antColony: {
@@ -63,6 +74,7 @@ export const ZONE_LIGHTS: Record<ZoneId, LightPreset> = {
 // typical light-to-surface distance (den ≈ 6–8 wu, colony ≈ 2–3, boss ≈ 4).
 export const ACCENT_GAIN: Record<ZoneId, number> = {
   homeBase:   8,
+  crossroads: 9,
   antColony:  6,
   bossRoller: 15,
 }

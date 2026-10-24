@@ -26,6 +26,14 @@ export interface SaveData {
   guideStep:                      number     // den objectives progress (systems/DenGuide)
   cluesFoundIds:                  number[]
   colonySacs:                     number[]
+  // Story rewrite: the Crossroads hub, its locks, the axe recipe, Webbs' thoughts
+  crossroadsVisited:              boolean
+  antLockOpen:                    boolean    // toothpick picked the ants' padlock
+  hiveLockOpen:                   boolean    // the Chitin Axe chopped the Hive chain
+  axeRecipeUnlocked:              boolean    // learned from the Anteater's drop
+  storySeen:                      string[]   // one-time thoughts already said (systems/Story)
+  denGuideStep:                   number
+  crossGuideStep:                 number
 }
 
 const SAVE_KEY = 'noLegs_save_v1'   // storage slot (kept); the schema version lives inside
@@ -68,6 +76,13 @@ const SAVE_FIELDS: (keyof SaveData)[] = [
   'guideStep',
   'cluesFoundIds',
   'colonySacs',
+  'crossroadsVisited',
+  'antLockOpen',
+  'hiveLockOpen',
+  'axeRecipeUnlocked',
+  'storySeen',
+  'denGuideStep',
+  'crossGuideStep',
 ]
 
 export class SaveSystem {

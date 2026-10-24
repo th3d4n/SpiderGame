@@ -1,32 +1,38 @@
 import * as THREE from 'three'
 import { registry } from '../core/Registry'
 import { h, richText } from '../ui/theme'
+import { CLUE_TOTAL } from './Story'
 
-// ─── Den guide ────────────────────────────────────────────────────────────────
+// ─── Objective guide ─────────────────────────────────────────────────────────
 // The opening needs a nudge: the den is big and the player arrives with no
-// idea what's worth finding.  A short chain of soft objectives —
-//   search for glints → the card → the gift → something sharp → the workbench
-//   → the clues → out into the tunnels
-// — shown as one objective line.  It never forces anything: a step that's
-// already done (in any order) is skipped, and help escalates only if the
-// player seems stuck — a hint line after a while, then a bouncing marker over
-// the target (with an edge arrow when it's off screen).  Progress is saved
-// (`guideStep`).  Lives only while Webbs is in the den.
+// idea what's worth finding.  A chain of soft objectives, written as the
+// story (see systems/Story):
+//   den:        where is everyone? → Mum's present → what happened here (clues)
+//               → something sharp → a real weapon → out the west door
+//   crossroads: pick the ants' padlock → follow the tracks → (after the
+//               Anteater) weave the Chitin Axe → chop the Hive chain
+// shown as one objective line.  It never forces anything: a step that's
+// already done (in any order) is skipped, a step whose `when` isn't true yet
+// hides the line, and help escalates only if the player seems stuck — a hint
+// line after a while, then a bouncing marker over the target (with an edge
+// arrow when it's off screen).  Progress is saved per guide.
 
 type Pt = { x: number; z: number }
 export interface GuidePoints {
   pickups: Pt[]; card: Pt; gift: Pt; toothpick: Pt; workbench: Pt
   clues: Array<Pt & { id: number }>; exit: Pt
 }
+export interface CrossroadsPoints { antLock: Pt; hiveLock: Pt; antTunnel: Pt; door: Pt }
 
-interface Step {
+export interface Step<P> {
   id:        string
   objective: string
   hint:      string
   hintAfter: number   // s on this step before the hint line
   markAfter: number   // s before the marker appears
   done:      () => boolean
-  target:    (p: GuidePoints, from: Pt) => Pt | null
+  when?:     () => boolean   // not yet relevant → no objective shown
+  target:    (p: P, from: Pt) => Pt | null
 }
 
 const has = (k: string) => !!registry.get<boolean>(k)
@@ -35,42 +41,59 @@ const nearest = (pts: Pt[], from: Pt): Pt | null => {
   for (const p of pts) { const d = Math.hypot(p.x - from.x, p.z - from.z); if (d < bd) { bd = d; best = p } }
   return best
 }
-const weaponsMade = () => (registry.get<string[]>('weaponInventory') ?? []).some(w => w === 'Sword' || w === 'Bow' || w === 'Axe')
+export const weaponsMade = () => (registry.get<string[]>('weaponInventory') ?? []).some(w => w === 'Sword' || w === 'Bow' || w === 'Axe')
+export const axeMade = () => (registry.get<string[]>('weaponInventory') ?? []).includes('Axe')
 
-const STEPS: Step[] = [
-  { id: 'search', objective: 'Search the den — look for things that glint.',
-    hint: 'Glinting things are worth taking. Walk over them to pick them up.',
-    hintAfter: 14, markAfter: 30,
-    done: () => (registry.get<number[]>('pickupsCollected_HomeBaseScene') ?? []).length > 0,
-    target: (p, f) => nearest(p.pickups, f) },
-  { id: 'card', objective: 'Someone left you a card. Find it.',
-    hint: 'Look by the party decorations — there\'s a card. [E] to read it.',
-    hintAfter: 16, markAfter: 26,
+export const DEN_STEPS: Step<GuidePoints>[] = [
+  { id: 'card', objective: 'Where is everyone? Look around the den.',
+    hint: 'There\'s a card by the party things. [E] to read it.',
+    hintAfter: 18, markAfter: 30,
     done: () => has('birthdayCardRead'), target: (p) => p.card },
-  { id: 'gift', objective: 'Open the gift that was left for you.',
+  { id: 'gift', objective: 'Open Mum\'s present.',
     hint: 'A wrapped present waits near the party decorations. [E] to open it.',
     hintAfter: 14, markAfter: 22,
     done: () => has('webThrowerFound'), target: (p) => p.gift },
-  { id: 'toothpick', objective: 'Find something sharp. You\'ll need it.',
-    hint: 'Something pointed is stuck in the floor somewhere here. It glints — keep looking.',
-    hintAfter: 16, markAfter: 26,
-    done: () => has('toothpickCollected'), target: (p) => p.toothpick },
-  { id: 'craft', objective: 'Weave a weapon at your workbench.',
-    hint: 'Your workbench is by the half-built inventions. [E] to open it.',
-    hintAfter: 16, markAfter: 24,
-    done: weaponsMade, target: (p) => p.workbench },
-  { id: 'clues', objective: 'Something took the colony. Look for clues.',
-    hint: 'Look closer at what\'s out of place — a cradle, strange silk, the way out.',
-    hintAfter: 18, markAfter: 30,
-    done: () => (registry.get<number[]>('cluesFoundIds') ?? []).length >= 3,
+  { id: 'clues', objective: 'Something\'s wrong. Find out what happened here.',
+    hint: 'Look closer at what\'s out of place — the cradle, the hammocks, the floor, the door. [E] to look.',
+    hintAfter: 20, markAfter: 34,
+    done: () => (registry.get<number[]>('cluesFoundIds') ?? []).length >= CLUE_TOTAL,
     target: (p, f) => {
       const found = registry.get<number[]>('cluesFoundIds') ?? []
       return nearest(p.clues.filter(c => !found.includes(c.id)), f)
     } },
-  { id: 'exit', objective: 'Follow the trail out of the den — into the tunnels.',
-    hint: 'The tunnel mouth is the dark opening at the far edge of the den.',
+  { id: 'toothpick', objective: 'Whatever did this could come back. Find something sharp.',
+    hint: 'Something pointed is stuck in the floor somewhere here. It glints — keep looking.',
+    hintAfter: 16, markAfter: 26,
+    done: () => has('toothpickCollected'), target: (p) => p.toothpick },
+  { id: 'craft', objective: 'Weave a real weapon at Mum\'s workbench.',
+    hint: 'Walk over glinting silk and chitin to gather it. The workbench is by the half-built leg — [E] to open it.',
+    hintAfter: 16, markAfter: 24,
+    done: weaponsMade, target: (p) => p.workbench },
+  { id: 'exit', objective: 'Go after them — through the west door.',
+    hint: 'The west door is the lit opening at the far edge of the den.',
     hintAfter: 14, markAfter: 20,
-    done: () => has('antColonyFirstVisit'), target: (p) => p.exit },
+    done: () => has('crossroadsVisited'), target: (p) => p.exit },
+]
+
+export const CROSSROADS_STEPS: Step<CrossroadsPoints>[] = [
+  { id: 'antlock', objective: 'Pick the padlock on the ant tunnel.',
+    hint: 'The toothpick is thin enough to work a lock. [E] at the padlock.',
+    hintAfter: 12, markAfter: 18,
+    done: () => has('antLockOpen'), target: (p) => p.antLock },
+  { id: 'warrens', objective: 'Follow the ant tracks into the colony.',
+    hint: 'The gate is open. Walk into the ant tunnel.',
+    hintAfter: 12, markAfter: 18,
+    done: () => has('antColonyFirstVisit'), target: (p) => p.antTunnel },
+  { id: 'axe', objective: 'Weave the Chitin Axe at a workbench.',
+    hint: 'The Anteater\'s armor is enough for an axe. Workbenches: the den, and the colony entrance.',
+    hintAfter: 20, markAfter: 9999,
+    when: () => has('axeRecipeUnlocked'),
+    done: axeMade, target: () => null },
+  { id: 'hive', objective: 'Chop the chain off the Hive tunnel.',
+    hint: 'The Hive tunnel is the one sealed with wax. [E] at the chain.',
+    hintAfter: 12, markAfter: 18,
+    when: () => has('axeRecipeUnlocked'),
+    done: () => has('hiveLockOpen'), target: (p) => p.hiveLock },
 ]
 
 const STYLE = /* css */`
@@ -86,7 +109,7 @@ const STYLE = /* css */`
 #nl-guide-arrow svg { width:100%; height:100%; animation: nl-pulse 1.2s ease-in-out infinite; }
 `
 
-export class DenGuide {
+export class Guide<P> {
   private stepIdx: number
   private stepT = 0
   private hinted = false
@@ -100,9 +123,14 @@ export class DenGuide {
   private _v = new THREE.Vector3()
   onHint?: (text: string) => void
 
-  constructor(scene: THREE.Scene) {
+  private steps: Step<P>[]
+  private saveKey: string
+
+  constructor(scene: THREE.Scene, steps: Step<P>[], saveKey: string) {
     this.scene = scene
-    this.stepIdx = Math.min(registry.get<number>('guideStep') ?? 0, STEPS.length)
+    this.steps = steps
+    this.saveKey = saveKey
+    this.stepIdx = Math.min(registry.get<number>(saveKey) ?? 0, steps.length)
     if (!document.getElementById('nl-guide-style')) {
       const st = h('style'); st.id = 'nl-guide-style'; st.textContent = STYLE
       document.head.appendChild(st)
@@ -130,19 +158,20 @@ export class DenGuide {
     scene.add(this.marker)
   }
 
-  get complete(): boolean { return this.stepIdx >= STEPS.length }
+  get complete(): boolean { return this.stepIdx >= this.steps.length }
 
   // Hide everything while menus/story/transitions own the screen
   setVisible(on: boolean): void { this.visible = on }
 
-  update(dt: number, from: Pt, points: GuidePoints, camera: THREE.Camera, unit: number): void {
+  update(dt: number, from: Pt, points: P, camera: THREE.Camera, unit: number): void {
     // Skip anything already done, in whatever order the player did it
-    while (this.stepIdx < STEPS.length && STEPS[this.stepIdx].done()) {
+    while (this.stepIdx < this.steps.length && this.steps[this.stepIdx].done()) {
       this.stepIdx++; this.stepT = 0; this.hinted = false
-      registry.set('guideStep', this.stepIdx)
+      registry.set(this.saveKey, this.stepIdx)
     }
     if (this.complete || !this.visible) { this.hideAll(); return }
-    const step = STEPS[this.stepIdx]
+    const step = this.steps[this.stepIdx]
+    if (step.when && !step.when()) { this.hideAll(); return }
     this.stepT += dt
 
     if (this.shownStep !== this.stepIdx) {

@@ -32,7 +32,7 @@ export class PresentationPhase {
   private lastMs = 0
 
   onShowDiscoveryCard: ((wt: WeaponType, variant: DiscoveryVariant) => void) | null = null
-  onShowTutorialCard:  ((wt: WeaponType) => void) | null = null
+  onShowTutorialCard:  ((wt: WeaponType, variant: DiscoveryVariant) => void) | null = null
   onComplete:          (() => void) | null = null
   // Hook for hiding the HTML menu overlay so the player sees pure 3D during Phase 1
   hideOverlay:         (() => void) | null = null
@@ -100,7 +100,7 @@ export class PresentationPhase {
   onDiscoveryCardClosed(): void {
     if (this.phase !== 'discoveryCard') return
     this.phase = 'tutorialCard'
-    this.onShowTutorialCard?.(this.pendingWeapon!)
+    this.onShowTutorialCard?.(this.pendingWeapon!, this.pendingVariant)
   }
 
   onTutorialCardClosed(): void {

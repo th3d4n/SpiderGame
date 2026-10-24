@@ -444,3 +444,53 @@ This replaces the pink-ball "nose" and the pill-bug Roller. The save and zone id
 **All §5 review items are now addressed.** Open next: playtesting on real devices
 (touch feel, auto-aim, mix levels), Chapter Two (the Hive boss → leg tier 2, Web Glider
 and Flame Breather), and anything the playtest turns up.
+
+## 9. Story rewrite + the Crossroads ✅
+
+The user's brief: a young spider wakes on his birthday (Molt Day) to an empty,
+trashed den and slowly realizes his family was kidnapped by something big; the
+clues lead him there and prepare him before he goes outside.
+
+- **All story text** lives in `src/systems/Story.ts`: the cards (opening, Mum's card,
+  the gift and toothpick notes, the four clues, the TAKEN realization, crossroads and
+  colony intros, the axe recipe, the ending, the Chapter Two stub) and Webbs' lines.
+- **Inner voice** (`src/ui/Thoughts.ts`): non-blocking lines typed along the bottom.
+  They are used for:
+  - walk-up beats in the den (cake, stools, toy, drag marks, pantry, bench, door);
+  - reactions to the card, the gift, pickups and crafting;
+  - per-clue realization lines;
+  - refusals at blocked tunnels.
+
+  `StoryVoice.once(id)` remembers what was said (`storySeen`).
+- **Clues: 4** (cradle, ant wrapping + tracks, claw furrows + bristle at the door, Mum's
+  slashed hammock). Each card describes only what's there. The meaning comes from how
+  many have been found (CLUE_STAGE_THOUGHTS 1–3), so the realization builds in order
+  whatever order the clues are found. The 4th opens TAKEN_TEXT, then a "get ready"
+  thought listing only what's still missing.
+- **Den guide** is now a generic `Guide<P>` (systems/DenGuide.ts):
+  - DEN_STEPS (card → gift → clues → toothpick → craft → west door), saved in `denGuideStep`.
+  - CROSSROADS_STEPS (pick the padlock → enter → weave the axe → chop the chain), saved in `crossGuideStep`.
+  - A `when` hides a step until it's relevant.
+- **The Crossroads** (`src/scenes/CrossroadsScene3D.ts`, zone id `crossroads`, scale 1.0).
+  The den's west door leads here; the den lock is gone. It's an elliptical cave with
+  six tunnels, all blocked:
+  - **drowned:** water (later).
+  - **roots:** fire later.
+  - **ants:** a twig gate + padlock. The toothpick picks it once the den is done: all
+    clues, the gift, the toothpick and a crafted weapon (`antLockRefusal()` in main.ts).
+  - **hive:** wax + chain + lock. The Chitin Axe chops it, then CHAPTER_TWO_TEXT plays
+    and Webbs is set back at the mouth.
+  - **glow:** fungus (later).
+  - **fall:** rockfall (later).
+
+  Flags: `antLockOpen` and `hiveLockOpen`. The colony's east exit now returns here.
+  Mum's silk thread appears at the Hive seal once the Anteater is beaten.
+- **The Anteater drops its armor:** a chitin + bone pile that tumbles out of the hole on
+  victory. Walking over it:
+  - grants the loot: exactly an axe's worth, ChitinShard 4 + BoneFragment 2, plus extras;
+  - sets `axeRecipeUnlocked` and plays a 'recipe' discovery + TUTORIAL_AXE_RECIPE;
+  - then leaves the arena.
+
+  The Axe recipe has `unlockFlag` / `lockedHint` (CraftingSystem `recipeLearned`).
+- **Old saves:** a save that reached the colony gets `antLockOpen` and `crossroadsVisited`
+  set; a save with a beaten boss gets `axeRecipeUnlocked`.
