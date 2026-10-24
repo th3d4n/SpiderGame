@@ -6,6 +6,7 @@ import type { Enemy3D } from '../entities/Enemy3D'
 import { audio } from '../systems/AudioManager'
 import { DEN_SCALE, PROP_SCALE } from '../env/denScale'
 import { buildAntColonyEntrance } from '../env/AntColonyEntrance'
+import { buildMaterialPickup, buildBirthdayCard, buildGift, buildToothpickFind, buildWorkbench as buildWorkbenchProp } from '../env/Props'
 import {
   buildDenMaterials,
   type DenMaterials,
@@ -270,91 +271,42 @@ export class HomeBaseScene3D {
   // ── Workbench ────────────────────────────────────────────────────────────────
 
   private buildWorkbench(): void {
-    const woodMat = new THREE.MeshToonMaterial({ color: 0x5c3d1e, gradientMap: this.gradientMap })
-    const darkMat = new THREE.MeshToonMaterial({ color: 0x3b2510, gradientMap: this.gradientMap })
     const bx = HomeBaseScene3D.WORKBENCH_X
     const bz = HomeBaseScene3D.WORKBENCH_Z
-
     const P = PROP_SCALE
-    const top = new THREE.Mesh(new THREE.BoxGeometry(1.4*P, 0.12*P, 0.9*P), woodMat)
-    top.position.set(bx, 0.52*P, bz); top.castShadow = true; this.add(top)
-
-    const legGeo = new THREE.BoxGeometry(0.1*P, 0.5*P, 0.1*P)
-    for (const [ox, oz] of [[-0.6*P, -0.35*P], [0.6*P, -0.35*P], [-0.6*P, 0.35*P], [0.6*P, 0.35*P]]) {
-      const leg = new THREE.Mesh(legGeo, darkMat)
-      leg.position.set(bx + ox, 0.25*P, bz + oz)
-      this.add(leg)
-    }
-
-    const toolMat = new THREE.MeshToonMaterial({ color: 0x888866, gradientMap: this.gradientMap })
-    const tool1 = new THREE.Mesh(new THREE.BoxGeometry(0.25*P, 0.08*P, 0.12*P), toolMat)
-    tool1.position.set(bx - 0.3*P, 0.62*P, bz - 0.1*P); this.add(tool1)
-    const tool2 = new THREE.Mesh(new THREE.CylinderGeometry(0.03*P, 0.04*P, 0.3*P, 6), toolMat)
-    tool2.position.set(bx + 0.2*P, 0.73*P, bz + 0.1*P); tool2.rotation.z = 0.3; this.add(tool2)
-
-    const glow = new THREE.Mesh(
-      new THREE.RingGeometry(0.6*P, 0.75*P, 24).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0x88ffcc, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
-    )
-    glow.position.set(bx, 0.01, bz); this.add(glow)
+    const { group, glintMat } = buildWorkbenchProp(this.gradientMap, P)
+    group.position.set(bx, 0, bz)
+    group.rotation.y = Math.PI / 4   // loom at the back, tools toward the camera
+    this.add(group)
 
     const wbLight = new THREE.PointLight(0x88ffcc, 0.6, 12.4)  // 2.5 × DEN_SCALE
     wbLight.position.set(bx, 0.9*P, bz)
     this.add(wbLight)
 
-    this.addGlint(bx, bz, woodMat)
+    this.addGlint(bx, bz, glintMat)
   }
 
   // ── Birthday area ────────────────────────────────────────────────────────────
 
   private buildBirthdayArea(): void {
-    // ── Birthday card (east-north wall) ────────────────────────────────────
-    const cardGroup = new THREE.Group()
-    const cardMat = new THREE.MeshToonMaterial({ color: 0xeeddbb, gradientMap: this.gradientMap })
-    const cardLine = new THREE.MeshToonMaterial({ color: 0xcc4444, gradientMap: this.gradientMap })
-    const cx = HomeBaseScene3D.CARD_X, ccz = HomeBaseScene3D.CARD_Z
     const P = PROP_SCALE
-    const card = new THREE.Mesh(new THREE.BoxGeometry(0.35*P, 0.5*P, 0.04*P), cardMat)
-    card.position.set(cx, 0.28*P, ccz)
-    card.rotation.y = 0.15; card.castShadow = true
-    cardGroup.add(card)
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.35*P, 0.06*P, 0.05*P), cardLine)
-    stripe.position.set(cx, 0.38*P, ccz + 0.01*P)
-    stripe.rotation.y = 0.15; cardGroup.add(stripe)
-    const cardGlow = new THREE.Mesh(
-      new THREE.RingGeometry(0.3*P, 0.4*P, 20).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xcc8844, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
-    )
-    cardGlow.position.set(cx, 0.01, ccz); cardGroup.add(cardGlow)
-    this.cardGroup = cardGroup
-    this.threeScene.add(cardGroup); this.tracked.push(cardGroup)
-    this.addGlint(cx, ccz, cardMat, () => this.cardAvailable)
+    // ── Birthday card — front cover turned to face the camera ──────────────
+    const cx = HomeBaseScene3D.CARD_X, ccz = HomeBaseScene3D.CARD_Z
+    const card = buildBirthdayCard(this.gradientMap, P)
+    card.group.position.set(cx, 0, ccz)
+    card.group.rotation.y = Math.PI / 4
+    this.cardGroup = card.group
+    this.threeScene.add(card.group); this.tracked.push(card.group)
+    this.addGlint(cx, ccz, card.glintMat, () => this.cardAvailable)
 
-    // ── Gift box (east-south wall) ──────────────────────────────────────────
-    const giftGroup = new THREE.Group()
-    const giftMat   = new THREE.MeshToonMaterial({ color: 0xdd4488, gradientMap: this.gradientMap })
-    const ribbonMat = new THREE.MeshToonMaterial({ color: 0xffee44, gradientMap: this.gradientMap })
+    // ── Gift ───────────────────────────────────────────────────────────────
     const gx = HomeBaseScene3D.GIFT_X, gz = HomeBaseScene3D.GIFT_Z
-
-    const gift = new THREE.Mesh(new THREE.BoxGeometry(0.55*P, 0.55*P, 0.55*P), giftMat)
-    gift.position.set(gx, 0.28*P, gz); gift.castShadow = true; giftGroup.add(gift)
-    const ribH = new THREE.Mesh(new THREE.BoxGeometry(0.57*P, 0.09*P, 0.09*P), ribbonMat)
-    ribH.position.set(gx, 0.28*P, gz); giftGroup.add(ribH)
-    const ribV = new THREE.Mesh(new THREE.BoxGeometry(0.09*P, 0.57*P, 0.09*P), ribbonMat)
-    ribV.position.set(gx, 0.28*P, gz); giftGroup.add(ribV)
-    for (const angle of [0, Math.PI / 2]) {
-      const bow = new THREE.Mesh(new THREE.TorusGeometry(0.1*P, 0.035*P, 6, 12), ribbonMat)
-      bow.position.set(gx, 0.62*P, gz)
-      bow.rotation.x = Math.PI / 2; bow.rotation.z = angle; giftGroup.add(bow)
-    }
-    const giftGlow = new THREE.Mesh(
-      new THREE.RingGeometry(0.35*P, 0.48*P, 20).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xeeeeff, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
-    )
-    giftGlow.position.set(gx, 0.01, gz); giftGlow.userData.noCollide = true; giftGroup.add(giftGlow)
-    this.giftGroup = giftGroup
-    this.threeScene.add(giftGroup); this.tracked.push(giftGroup)
-    this.addGlint(gx, gz, giftMat, () => this.giftAvailable)
+    const gift = buildGift(this.gradientMap, P)
+    gift.group.position.set(gx, 0, gz)
+    gift.group.rotation.y = Math.PI / 4 - 0.25
+    this.giftGroup = gift.group
+    this.threeScene.add(gift.group); this.tracked.push(gift.group)
+    this.addGlint(gx, gz, gift.glintMat, () => this.giftAvailable)
 
     const bdLight = new THREE.PointLight(0xff88cc, 0.5, 22.3)   // 4.5 × DEN_SCALE
     bdLight.position.set(gx - 1.5*P, 1.2*P, (ccz + gz) / 2)
@@ -366,33 +318,18 @@ export class HomeBaseScene3D {
   private buildToothpickPickup(): void {
     const bx = HomeBaseScene3D.TOOTHPICK_X
     const bz = HomeBaseScene3D.TOOTHPICK_Z
-
-    const group = new THREE.Group()
-    group.position.set(bx, 0, bz)
-
-    const stickMat = new THREE.MeshToonMaterial({ color: 0xccaa66, gradientMap: this.gradientMap })
     // Weapon pickup — geometry stays Webbs-sized; only position is clustered.
-    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.5, 6), stickMat)
-    stick.position.set(0, 0.38, 0); stick.rotation.z = 0.25; stick.castShadow = true
-    group.add(stick)
-
-    const tipMat = new THREE.MeshToonMaterial({ color: 0x886644, gradientMap: this.gradientMap })
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.09, 5), tipMat)
-    tip.position.set(0.06, 0.64, 0); tip.rotation.z = 0.25; group.add(tip)
-
-    const glowMesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.18, 0.26, 20).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xddcc88, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
-    )
-    glowMesh.position.set(0, 0.01, 0); group.add(glowMesh)
-
-    const light = new THREE.PointLight(0xddcc88, 0.5, 4.5)
-    light.position.set(0, 0.6, 0); group.add(light)
+    const { group, glintMat } = buildToothpickFind(this.gradientMap)
+    group.position.set(bx, 0, bz)
+    group.scale.setScalar(1.6)
+    // high and soft: right beside the thin stick it blew it out into a light bar
+    const light = new THREE.PointLight(0xddcc88, 0.22, 4.5)
+    light.position.set(0.5, 1.6, 0.5); group.add(light)
 
     this.threeScene.add(group)
     this.tracked.push(group)
     this.toothpickGroup = group
-    this.addGlint(bx, bz, stickMat, () => this.toothpickAvailable)
+    this.addGlint(bx, bz, glintMat, () => this.toothpickAvailable)
   }
 
   // ── Environmental decoration ─────────────────────────────────────────────────
@@ -448,30 +385,10 @@ export class HomeBaseScene3D {
     const collected = registry.get<number[]>('pickupsCollected_HomeBaseScene') ?? []
     for (const p of MATERIAL_PICKUPS) {
       if (collected.includes(p.id)) continue
-
-      const g = new THREE.Group()
+      // A small model of the material itself (spool, shards, droplet…), sized to
+      // read at den scale, with a faint light column so it's findable across the room.
+      const g = buildMaterialPickup(p.mat, this.gradientMap, 2.2, { beam: true })
       g.position.set(p.x, 0, p.z)
-
-      // Pickup geometry stays Webbs-sized (NOT scaled) — only the position clusters.
-      const orb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 8, 6),
-        new THREE.MeshStandardMaterial({ color: p.color, emissive: p.color, emissiveIntensity: 1.2 }),
-      )
-      orb.position.y = 0.30; g.add(orb)
-
-      const glow = new THREE.Mesh(
-        new THREE.RingGeometry(0.22, 0.36, 16).rotateX(-Math.PI / 2),
-        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
-      )
-      glow.position.y = 0.01; g.add(glow)
-
-      // Light beam rising from orb — draws the eye from across the room
-      const beam = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05, 0.05, 1.5, 6, 1, true),
-        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.25, side: THREE.DoubleSide }),
-      )
-      beam.position.y = 0.85; g.add(beam)
-
       this.threeScene.add(g)
       this.tracked.push(g)
       this.pickupMeshes[p.id] = g
@@ -592,6 +509,24 @@ export class HomeBaseScene3D {
   }
 
   clueText(i: number): string { return this.clues[i]?.text ?? '' }
+
+  // Where the den guide (systems/DenGuide) can point the player
+  guidePoints(): {
+    pickups: Array<{ x: number; z: number }>
+    card: { x: number; z: number }; gift: { x: number; z: number }; toothpick: { x: number; z: number }
+    workbench: { x: number; z: number }; clues: Array<{ x: number; z: number; id: number }>; exit: { x: number; z: number }
+  } {
+    const collected = registry.get<number[]>('pickupsCollected_HomeBaseScene') ?? []
+    return {
+      pickups:   MATERIAL_PICKUPS.filter(p => !collected.includes(p.id)).map(p => ({ x: p.x, z: p.z })),
+      card:      { x: HomeBaseScene3D.CARD_X,      z: HomeBaseScene3D.CARD_Z },
+      gift:      { x: HomeBaseScene3D.GIFT_X,      z: HomeBaseScene3D.GIFT_Z },
+      toothpick: { x: HomeBaseScene3D.TOOTHPICK_X, z: HomeBaseScene3D.TOOTHPICK_Z },
+      workbench: { x: HomeBaseScene3D.WORKBENCH_X, z: HomeBaseScene3D.WORKBENCH_Z },
+      clues:     this.clues.map((c, id) => ({ x: c.x, z: c.z, id })),
+      exit:      { x: this.exitTriggerX + 4, z: 0 },
+    }
+  }
 
   // ── Prop colliders (A fix) ────────────────────────────────────────────────────
   // Static circle colliders for every solid prop so Webbs walks around them

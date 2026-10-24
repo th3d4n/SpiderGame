@@ -334,6 +334,27 @@ animates (stool, hammock, hearth, 3 survivors) → `ENDING_TEXT` story → `Endi
    windows use [last t, t] overlap (first frame from t = 0), so 10 fps still lands every
    weapon; 60 fps timing unchanged. (Beetle underbelly was fixed in the combat pass.)
 
+## 6. Onboarding + prop/Webbs art pass ✅
+
+- **Den guide** (`src/systems/DenGuide.ts`): one objective line under the zone label,
+  steps search → card → gift → toothpick → workbench weapon → 3 clues → exit; done
+  steps (any order) are skipped; a hint toast after 13–18 s on a step, then a bouncing
+  marker over the target (+ edge arrow when off screen). Saved as `guideStep`.
+  Targets come from `HomeBaseScene3D.guidePoints()`.
+- **Props** (`src/env/Props.ts`, idle motion via `tickProps()`): per-material pickup
+  models (silk spool, chitin shards, fluid drop, bone, ant leg, fungus, crystals,
+  venom gland, thistle) with glow + ground ring (den: faint fading light shaft);
+  health berry (colony HP modules); birthday card (doodled front, "17", pressed
+  flower, stone base); polka-dot gift with lid, bow, "for W." tag; toothpick stuck in
+  a mossy mound; workbench (bark slab on thread-spool legs, loom, needle, thimble,
+  silk ball); acorn chests with a hinged cap that eases open and lights the inside —
+  mimics show eyes and teeth as they wake. Footprints unchanged (colliders, glint).
+- **Webbs** (`src/entities/WebbsBody.ts`): painted abdomen (heart stripe, chevrons,
+  spots), grooved carapace, open silk harness with stitches, glossy eyes with cyan
+  iris rings, dark chelicerae + fangs, pedipalps, spinnerets, instanced fur. Same
+  socket geometry for the legs. `addRim` now honours `material.userData.noRim`.
+- Dev: `__nolegs.zoom(z|null)` and `__nolegs.photo([camX,camY,camZ,lookX,lookY,lookZ]|null)`.
+
 **All §5 review items are now addressed.** Open next: playtesting on real devices
 (touch feel, auto-aim, mix levels), Chapter Two (the Hive boss → leg tier 2, Web Glider
 and Flame Breather), and anything the playtest turns up.

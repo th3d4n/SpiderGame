@@ -36,6 +36,8 @@ import { ConsumableSystem, ConsumableType, CONSUMABLE_NAMES, CONSUMABLE_INFO } f
 import { QuickItems } from './ui/QuickItems'
 import { EndingCard } from './ui/EndingCard'
 import { TouchControls, type TouchMenuMode } from './ui/TouchControls'
+import { DenGuide } from './systems/DenGuide'
+import { tickProps } from './env/Props'
 import { saveSystem } from './systems/SaveSystem'
 import { SurvivorsProgression } from './systems/SurvivorsProgression'
 import { installTheme } from './ui/theme'
@@ -244,7 +246,7 @@ webbs.group.renderOrder = 10   // renders above transparent corridor walls
 const weaponUseSystem = new WeaponUseSystem3D(scene)
 const webLauncher     = new WebLauncherSystem3D(scene)
 if (import.meta.env.DEV) {
-  Object.assign((window as unknown as Record<string, object>).__nolegs, { webLauncher, weaponUseSystem, enemies: () => activeScene.enemies, goto: (z: ZoneId) => transitionTo(z), scene3d: () => activeScene })
+  Object.assign((window as unknown as Record<string, object>).__nolegs, { webLauncher, weaponUseSystem, enemies: () => activeScene.enemies, goto: (z: ZoneId) => transitionTo(z), scene3d: () => activeScene, zoom: (z: number | null) => { devZoom = z }, photo: (v: number[] | null) => { devPhoto = v } })
 }
 const particles       = new ParticleBurstSystem3D(scene)
 const consumables     = new ConsumableSystem()
@@ -662,12 +664,20 @@ for (const m of (activeScene as HomeBaseScene3D).getOccluderMeshes()) cameraOccl
 
 // Den progression — tracks survivors returning after boss defeats.
 // Recreated each time HomeBaseScene3D is created; disposed on zone exit.
+// First-visit objectives in the den (see systems/DenGuide); den-only
+let denGuide: DenGuide | null = null
+function startDenGuide(): void {
+  denGuide?.dispose()
+  denGuide = new DenGuide(scene)
+  denGuide.onHint = (text) => hud.toast(text, 'info', 5600)
+}
 let denProgression: SurvivorsProgression | null = new SurvivorsProgression(
   (activeScene as HomeBaseScene3D).denHandles,
   scene,
   (activeScene as HomeBaseScene3D).warmPools,
 )
 denProgression.applyState(registry.get<number>('bossesBeaten') ?? 0)
+startDenGuide()
 
 weaponUseSystem.setEnemies((activeScene as HomeBaseScene3D).enemies)
 webLauncher.setEnemies((activeScene as HomeBaseScene3D).enemies)
@@ -691,7 +701,7 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
   }
   await ZoneTransitionSystem3D.transition(() => {
     // Dispose zone-specific systems before tearing down the scene
-    if (currentZone === 'homeBase') { denProgression?.dispose(); denProgression = null }
+    if (currentZone === 'homeBase') { denProgression?.dispose(); denProgression = null; denGuide?.dispose(); denGuide = null }
     activeScene.destroy()
 
     switch (zone) {
@@ -710,6 +720,7 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
         cameraOccluder = new CameraOccluder(camera)
         for (const m of s.getOccluderMeshes()) cameraOccluder.register(m)
         denProgression = new SurvivorsProgression(s.denHandles, scene, s.warmPools)
+        startDenGuide()
         denProgression.applyState(Math.max(0, (registry.get<number>('bossesBeaten') ?? 0) - (pendingEnding ? 1 : 0)))
         break
       }
@@ -778,7 +789,7 @@ function isMeleeWeapon(wt: WeaponType): boolean {
 // Round 6 Issue 8 / Round 8 Issue 6: smooth zoom lerp toward celebration override.
 // Celebration zoom bumped 2.8 → 4.2 so the presented item is clearly readable.
 function tickZoom(delta: number): void {
-  rig.zoomTarget = celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom
+  rig.zoomTarget = devZoom ?? (celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom)
   rig.tickZoom(delta)
 }
 
@@ -864,6 +875,8 @@ const DEATH_BEAT  = 1.3    // s (real time) before the fade starts
 const DEATH_SLOW  = 0.3    // world time scale during the beat
 const DEATH_CARD  = 'Webbs limps home  —  Home Base'
 let   dyingT      = -1
+let   devZoom: number | null = null   // dev console close-ups (__nolegs.zoom)
+let   devPhoto: number[] | null = null   // [camX, camY, camZ, lookX, lookY, lookZ]
 // Chapter-one ending: 'warming' (den comes back to life around Webbs) →
 // 'story' (ENDING_TEXT) → 'card' (EndingCard).  Plays once (`endingSeen`).
 let endingPhase: 'none' | 'warming' | 'story' | 'card' = 'none'
@@ -1116,6 +1129,12 @@ function gameLoop() {
 
   hud.update(webbs)
   quickItems.update(consumables)
+  tickProps(performance.now() / 1000)   // pickup bob/spin, glows
+  if (denGuide && currentZone === 'homeBase') {
+    denGuide.setVisible(touchMode() === 'play')   // 'play' = nothing else owns the screen (any device)
+    denGuide.update(gamePaused ? 0 : rawDelta, { x: webbs.collisionBody.x, z: webbs.collisionBody.z },
+      (activeScene as HomeBaseScene3D).guidePoints(), camera, webbs.scale)
+  }
   touch.update({ mode: touchMode(), weapon: webbs.weaponSystem.getSlot(lastActiveSlot), interact: hud.currentInteract, web: webbs.hasWebLauncher })
 
   // ── Pause gate ───────────────────────────────────────────────────────────
@@ -1395,12 +1414,16 @@ function gameLoop() {
 
   // Follow with a lean toward the cursor; zoom target follows the celebration
   // override or the wheel (rig.update eases both, plus any shake).
-  rig.zoomTarget = celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom
+  rig.zoomTarget = devZoom ?? (celebZoom ? 4.2 : dyingT >= 0 ? userZoom * 1.3 : userZoom)
   if (cameraShakeRemaining > 0) {
     rig.shake(cameraShakeIntensity, cameraShakeRemaining)
     cameraShakeRemaining = 0
   }
   rig.update(rawDelta, webbs.group.position, aimPos)
+  if (devPhoto) {   // dev console close-up camera (__nolegs.photo)
+    camera.position.set(devPhoto[0], devPhoto[1], devPhoto[2])
+    camera.lookAt(devPhoto[3], devPhoto[4], devPhoto[5])
+  }
   damageNumbers.update(camera, CANVAS_W, CANVAS_H)
   inkPass.setFocusDistance(rig.viewDistance)
   lighting.update(webbs.group.position.x, webbs.group.position.y, webbs.group.position.z, webbs.scale, rig.viewDistance, delta)
@@ -1459,6 +1482,7 @@ function initNewGame(): void {
   webLauncher.clearWraps()
   weaponUseSystem.stopFlame()
   denProgression?.dispose(); denProgression = null
+  denGuide?.dispose(); denGuide = null
   activeScene.destroy()
   const freshHbs = new HomeBaseScene3D(scene, gradientMap)
   lighting.apply('homeBase', ZONE_SCALE.homeBase, scene.userData.homeBaseWarmth as number)
@@ -1473,6 +1497,7 @@ function initNewGame(): void {
   cameraOccluder = new CameraOccluder(camera)
   for (const m of freshHbs.getOccluderMeshes()) cameraOccluder.register(m)
   denProgression = new SurvivorsProgression(freshHbs.denHandles, scene, freshHbs.warmPools)
+  startDenGuide()
   denProgression.applyState(0)
 
   dismissTitleMenu()

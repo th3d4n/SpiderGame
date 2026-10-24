@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { disposeTree } from '../core/dispose'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { surface, PALETTE, clonePatched } from '../env/Materials'
+import { surface, PALETTE } from '../env/Materials'
+import { buildMaterialPickup, buildHealthBerry, buildChest, buildWorkbench as buildWorkbenchProp, type ChestParts } from '../env/Props'
 import { physicsWorld, type CollisionBody } from '../core/PhysicsWorld'
 import type { Enemy3D } from '../entities/Enemy3D'
 import { CentipedeAmbusher3D } from '../entities/CentipedeAmbusher3D'
@@ -195,6 +196,8 @@ interface ChestRecord {
   isMimic:      boolean
   opened:       boolean
   mesh:         THREE.Group
+  parts:        ChestParts
+  openT:        number   // −1 closed; 0→1 while the cap swings open
   wakeProgress: number   // 0→1 for mimic pre-burst animation
   wakeActive:   boolean
 }
@@ -203,7 +206,7 @@ interface PickupRecord {
   x:         number
   z:         number
   collected: boolean
-  mesh:      THREE.Mesh | null
+  mesh:      THREE.Object3D | null
   mat?:      string
   qty?:      number
 }
@@ -623,22 +626,12 @@ export class AntColonyScene3D {
   // ── Workbench ──────────────────────────────────────────────────────────────────
 
   private buildWorkbench(): void {
-    const woodMat = new THREE.MeshToonMaterial({ color: 0x5c3d1e, gradientMap: this.gradientMap })
-    const darkMat = new THREE.MeshToonMaterial({ color: 0x3b2510, gradientMap: this.gradientMap })
     const bx = AntColonyScene3D.WORKBENCH_X
     const bz = AntColonyScene3D.OBJ_Z
-    const top = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.12, 0.9), woodMat)
-    top.position.set(bx, 0.52, bz); top.castShadow = true; this.add(top)
-    const legGeo = new THREE.BoxGeometry(0.1, 0.5, 0.1)
-    for (const [ox, oz] of [[-0.6,-0.35],[0.6,-0.35],[-0.6,0.35],[0.6,0.35]] as [number,number][]) {
-      const leg = new THREE.Mesh(legGeo, darkMat)
-      leg.position.set(bx + ox, 0.25, bz + oz); this.add(leg)
-    }
-    const glow = new THREE.Mesh(
-      new THREE.RingGeometry(0.6, 0.75, 24).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0x66ffaa, transparent: true, opacity: 0.2, side: THREE.DoubleSide }),
-    )
-    glow.position.set(bx, 0.01, bz); this.add(glow)
+    const { group } = buildWorkbenchProp(this.gradientMap, 1)
+    group.position.set(bx, 0, bz)
+    group.rotation.y = Math.PI / 4
+    this.add(group)
     const wbl = new THREE.PointLight(0x66ffaa, 0.5, 2.5)
     wbl.position.set(bx, 0.9, bz); this.add(wbl)
   }
@@ -646,32 +639,14 @@ export class AntColonyScene3D {
   // ── Chests ─────────────────────────────────────────────────────────────────────
 
   private buildChests(): void {
-    const bodyMat = new THREE.MeshToonMaterial({ color: 0x5c3d1e, gradientMap: this.gradientMap })
-    const lidMat  = new THREE.MeshToonMaterial({ color: 0x7a5025, gradientMap: this.gradientMap })
-    const bandMat = new THREE.MeshToonMaterial({ color: 0x888844, gradientMap: this.gradientMap })
-
     for (const d of CHEST_DATA) {
       const z = jitterZ(d.cz, 1.2)
-      const g = new THREE.Group()
-      g.position.set(d.x, 0, z)
-
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.30, 0.36), clonePatched(bodyMat))
-      body.position.y = 0.15; body.castShadow = true; g.add(body)
-      const lid = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.14, 0.36), clonePatched(lidMat))
-      lid.position.y = 0.37; lid.castShadow = true; g.add(lid)
-      const band = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.06, 0.06), clonePatched(bandMat))
-      band.position.set(0, 0.18, 0.19); g.add(band)
-
-      const glowColor = d.isMimic ? 0xff4422 : 0xffcc44
-      const glow = new THREE.Mesh(
-        new THREE.RingGeometry(0.22, 0.30, 16).rotateX(-Math.PI / 2),
-        new THREE.MeshBasicMaterial({ color: glowColor, transparent: true, opacity: 0.25, side: THREE.DoubleSide }),
-      )
-      glow.position.y = 0.01; g.add(glow)
-
-      this.threeScene.add(g)
-      this.tracked.push(g)
-      this.chests.push({ x: d.x, z, isMimic: d.isMimic, opened: false, mesh: g, wakeProgress: 0, wakeActive: false })
+      const parts = buildChest(this.gradientMap, d.isMimic)
+      parts.group.position.set(d.x, 0, z)
+      parts.group.rotation.y = Math.PI / 4 + (Math.random() - 0.5) * 0.5   // clasp roughly toward the camera
+      this.threeScene.add(parts.group)
+      this.tracked.push(parts.group)
+      this.chests.push({ x: d.x, z, isMimic: d.isMimic, opened: false, mesh: parts.group, parts, openT: -1, wakeProgress: 0, wakeActive: false })
     }
   }
 
@@ -679,50 +654,36 @@ export class AntColonyScene3D {
 
   private buildHpModules(): void {
     for (const d of HP_MODULE_DATA) {
-      const z   = jitterZ(d.cz, 1.0)
-      const mat = new THREE.MeshStandardMaterial({ color: 0xff3344, emissive: 0xcc1122, emissiveIntensity: 0.7 })
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), mat)
-      mesh.position.set(d.x, 0.22, z)
-      const glow = new THREE.Mesh(
-        new THREE.RingGeometry(0.16, 0.22, 16).rotateX(-Math.PI / 2),
-        new THREE.MeshBasicMaterial({ color: 0xff4455, transparent: true, opacity: 0.40, side: THREE.DoubleSide }),
-      )
-      glow.position.set(d.x, 0.01, z)
-      this.threeScene.add(mesh, glow)
-      this.tracked.push(mesh, glow)
-      this.hpModules.push({ x: d.x, z, collected: false, mesh })
+      const z = jitterZ(d.cz, 1.0)
+      const g = buildHealthBerry(this.gradientMap, 1.15)
+      g.position.set(d.x, 0, z)
+      this.threeScene.add(g)
+      this.tracked.push(g)
+      this.hpModules.push({ x: d.x, z, collected: false, mesh: g })
     }
   }
 
   // ── Material caches ────────────────────────────────────────────────────────────
 
   private buildCaches(): void {
-    const colors: Record<string, number> = {
-      SilkThread: 0xddeeff, ChitinShard: 0x88aa44, WebFluid: 0x44aaff,
-      BoneFragment: 0xccbbaa, BugPartsAnt: 0xaa8855, DriedFungus: 0x88cc44,
-    }
     for (const d of CACHE_DATA) {
-      const z     = jitterZ(d.cz, 1.0)
-      const color = colors[d.mat] ?? 0xaaaaaa
-      const mat   = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4 })
-      const mesh  = new THREE.Mesh(new THREE.SphereGeometry(0.10, 7, 5), mat)
-      mesh.position.set(d.x, 0.18, z)
-      this.threeScene.add(mesh); this.tracked.push(mesh)
-      this.caches.push({ x: d.x, z, collected: false, mesh, mat: d.mat, qty: d.qty })
+      const z = jitterZ(d.cz, 1.0)
+      const g = buildMaterialPickup(d.mat, this.gradientMap, 0.95)
+      g.position.set(d.x, 0, z)
+      this.threeScene.add(g); this.tracked.push(g)
+      this.caches.push({ x: d.x, z, collected: false, mesh: g, mat: d.mat, qty: d.qty })
     }
   }
 
   // ── Thistle seeds ──────────────────────────────────────────────────────────────
 
   private buildThistles(): void {
-    const mat = new THREE.MeshToonMaterial({ color: 0xcc99ff, gradientMap: this.gradientMap })
     for (const d of THISTLE_DATA) {
-      const z    = jitterZ(d.cz, 1.2)
-      const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 5), clonePatched(mat))
-      mesh.position.set(d.x, 0.09, z)
-      mesh.rotation.z = 0.3
-      this.threeScene.add(mesh); this.tracked.push(mesh)
-      this.thistles.push({ x: d.x, z, collected: false, mesh })
+      const z = jitterZ(d.cz, 1.2)
+      const g = buildMaterialPickup('Thistle', this.gradientMap, 0.85)
+      g.position.set(d.x, 0, z)
+      this.threeScene.add(g); this.tracked.push(g)
+      this.thistles.push({ x: d.x, z, collected: false, mesh: g })
     }
   }
 
@@ -940,8 +901,7 @@ export class AntColonyScene3D {
     if (!chest || chest.opened) return { kind: 'loot', mat: 'SilkThread', qty: 0 }
     chest.opened = true
     chest.wakeActive = false
-    const lid = chest.mesh.children[1] as THREE.Mesh
-    if (lid) lid.rotation.x = -Math.PI / 2.2
+    chest.openT = 0   // update() swings the cap open on its hinge
 
     if (chest.isMimic) {
       const e = new BeetleTank3D(this.threeScene, chest.x, chest.z + 0.5, this.gradientMap)
@@ -1047,6 +1007,15 @@ export class AntColonyScene3D {
       this.orbMeshes[i].position.y = 0.10 + Math.sin(t * 1.8 + i * 0.7) * 0.04
     }
 
+    // Opening caps: ease back on the hinge, light the inside
+    for (const chest of this.chests) {
+      if (chest.openT < 0 || chest.openT >= 1) continue
+      chest.openT = Math.min(1, chest.openT + delta / 0.45)
+      const e = 1 - (1 - chest.openT) ** 3
+      chest.parts.lid.rotation.x = -1.9 * e + Math.sin(chest.openT * Math.PI) * 0.15   // overshoot wobble
+      ;(chest.parts.inner.material as THREE.MeshBasicMaterial).opacity = 0.85 * e
+    }
+
     // Mimic wake
     for (const chest of this.chests) {
       if (chest.opened || !chest.isMimic) continue
@@ -1074,13 +1043,13 @@ export class AntColonyScene3D {
   }
 
   private setMimicWakeVisual(chest: ChestRecord, t: number): void {
-    // Glow ring (child[3]) pulses from orange to red
-    const glow = chest.mesh.children[3] as THREE.Mesh | undefined
-    if (glow) {
-      const mat = glow.material as THREE.MeshBasicMaterial
-      mat.color.setRGB(1, 0.27 * (1 - t), 0.13 * (1 - t) * 0.5)  // orange→red
-      mat.opacity = 0.25 + t * 0.4
-    }
+    // Ground ring pulses orange→red; eyes open and teeth show under the cap rim;
+    // the cap lifts a crack, breathing
+    const mat = chest.parts.glow.material as THREE.MeshBasicMaterial
+    mat.color.setRGB(1, 0.27 * (1 - t), 0.13 * (1 - t) * 0.5)
+    mat.opacity = 0.25 + t * 0.4
+    for (const o of chest.parts.eyes) ((o as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = Math.min(1, t * 1.6)
+    chest.parts.lid.rotation.x = -t * (0.25 + Math.sin(performance.now() / 90) * 0.08)
   }
 
   // ── Enemy update ────────────────────────────────────────────────────────────────

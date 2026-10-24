@@ -254,7 +254,7 @@ export function addRim(root: THREE.Object3D, rim = RIM_DEFAULT): void {
     for (const mat of mats) {
       if (mat instanceof THREE.MeshToonMaterial || mat instanceof THREE.MeshStandardMaterial ||
           mat instanceof THREE.MeshLambertMaterial || mat instanceof THREE.MeshPhongMaterial) {
-        if (mat.side === THREE.BackSide) continue   // inverted-hull outlines stay flat
+        if (mat.side === THREE.BackSide || mat.userData.noRim) continue   // outlines (and opt-outs) stay flat
         patchMaterial(mat, { rim })
       }
     }

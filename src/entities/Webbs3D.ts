@@ -3,7 +3,8 @@ import { WeaponSystem, WeaponType } from '../systems/WeaponSystem'
 import { WEAPON_DATA, WEAPON_COLORS } from '../config/WeaponData'
 import { type CollisionBody, physicsWorld } from '../core/PhysicsWorld'
 import { InputManager } from '../core/InputManager'
-import { SpiderLegs, createFuzzyBodyTexture, WEBBS_RIM } from './SpiderLegs'
+import { SpiderLegs, WEBBS_RIM } from './SpiderLegs'
+import { buildWebbsBody } from './WebbsBody'
 import { addRim } from '../env/Materials'
 import { audio } from '../systems/AudioManager'
 import { CAMERA_YAW, CAMERA_DIR_X, CAMERA_DIR_Z } from '../core/CameraRig'
@@ -106,7 +107,7 @@ export class Webbs3D {
   private preCelebRotation = 0   // saved rotation to restore after celebration
 
 
-  private bodyMat:          THREE.MeshStandardMaterial | THREE.MeshToonMaterial
+  private flashMats:        THREE.MeshToonMaterial[] = []
   private gradientMap:      THREE.Texture
   private webLauncherMount: THREE.Group | null = null
   private timeSinceDamage   = 9999
@@ -124,80 +125,11 @@ export class Webbs3D {
     this.group.position.set(x, 0, z)
     this.weaponSystem = new WeaponSystem(WEAPON_DATA)
 
-    // ─── Body — taller, fuzzier, layered (Round 8 Issue 1) ─────────────────
-    // Cephalothorax (front part with eyes) + abdomen (rear bulb)
-    const fuzzyTex = createFuzzyBodyTexture()
-    // Hybrid: toon banding (cel look) + fuzzy map/bumpMap kept for surface hair detail
-    this.bodyMat = new THREE.MeshToonMaterial({
-      color: 0x6a4d8a,
-      gradientMap: this.gradientMap,
-      map: fuzzyTex,
-      bumpMap: fuzzyTex,
-      bumpScale: 0.04,
-    })
-
-    const cephGeo = new THREE.SphereGeometry(0.20, 16, 12)
-    cephGeo.scale(1, 0.7, 1)
-    const cephMesh = new THREE.Mesh(cephGeo, this.bodyMat)
-    cephMesh.castShadow = true
-    cephMesh.position.set(0, 0.42, 0.16)        // RAISED so legs visible underneath
-    this.group.add(cephMesh)
-    // Inverted-hull outline — BackSide dark mesh scaled out slightly
-    const cephOutline = new THREE.Mesh(cephGeo, new THREE.MeshBasicMaterial({ color: 0x0a0612, side: THREE.BackSide }))
-    cephOutline.scale.multiplyScalar(1.04)
-    cephMesh.add(cephOutline)
-    this.bodyMesh = cephMesh
-
-    const abdGeo = new THREE.SphereGeometry(0.26, 16, 14)
-    abdGeo.scale(1, 0.75, 1.15)
-    const abdMesh = new THREE.Mesh(abdGeo, this.bodyMat)
-    abdMesh.castShadow = true
-    abdMesh.position.set(0, 0.40, -0.18)
-    this.group.add(abdMesh)
-    const abdOutline = new THREE.Mesh(abdGeo, new THREE.MeshBasicMaterial({ color: 0x0a0612, side: THREE.BackSide }))
-    abdOutline.scale.multiplyScalar(1.04)
-    abdMesh.add(abdOutline)
-    this.abdMesh = abdMesh
-
-    // ─── Eyes — 8 total in classic spider pattern ──────────────────────────
-    const primaryEyeMat = new THREE.MeshStandardMaterial({
-      color: 0x111122, emissive: 0x66e0ff, emissiveIntensity: 2.2,
-    })
-    const pupilMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
-    const secondaryEyeMat = new THREE.MeshStandardMaterial({
-      color: 0x000000, emissive: 0x44aadd, emissiveIntensity: 1.0,
-    })
-    // Two large primary eyes with white pupils — face direction = +Z (forward)
-    const primaryR = 0.04
-    const eyeY     = 0.52
-    const eyeZ     = 0.32
-    for (const x of [-0.07, 0.07]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(primaryR, 10, 8), primaryEyeMat)
-      eye.position.set(x, eyeY, eyeZ)
-      this.group.add(eye)
-      const pupil = new THREE.Mesh(new THREE.SphereGeometry(primaryR * 0.5, 8, 6), pupilMat)
-      pupil.position.set(x, eyeY + 0.005, eyeZ + 0.03)
-      this.group.add(pupil)
-    }
-    // Six secondary eyes
-    const secondaryR = 0.022
-    for (const [x, y, z] of [
-      [-0.13, 0.55, 0.27], [-0.05, 0.57, 0.30], [ 0.05, 0.57, 0.30], [ 0.13, 0.55, 0.27],
-      [-0.10, 0.49, 0.34], [ 0.10, 0.49, 0.34],
-    ] as [number, number, number][]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(secondaryR, 8, 6), secondaryEyeMat)
-      eye.position.set(x, y, z)
-      this.group.add(eye)
-    }
-
-    // ─── Mandibles ─────────────────────────────────────────────────────────
-    const mandMat = new THREE.MeshStandardMaterial({ color: 0x2a1830, roughness: 0.8 })
-    for (const x of [-0.06, 0.06]) {
-      const mand = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.08, 6), mandMat)
-      mand.position.set(x, 0.34, 0.33)
-      mand.rotation.x = Math.PI / 4
-      this.group.add(mand)
-    }
+    // ─── Body — patterned, harnessed, glossy-eyed (see entities/WebbsBody) ──
+    const body = buildWebbsBody(this.group, this.gradientMap)
+    this.bodyMesh  = body.ceph
+    this.abdMesh   = body.abd
+    this.flashMats = body.flashMats
 
     // ─── Ground shadow disc ────────────────────────────────────────────────
     const shadowGeo = new THREE.CircleGeometry(0.30, 16).rotateX(-Math.PI / 2)
@@ -508,8 +440,8 @@ export class Webbs3D {
     audio.play('webbs_damage', this.collisionBody.x, this.collisionBody.z)
 
     // Red flash on body (new color base = 0x6a4d8a)
-    this.bodyMat.color.setHex(0xff3344)
-    setTimeout(() => { this.bodyMat.color.setHex(0x6a4d8a) }, 140)
+    for (const m of this.flashMats) m.color.setHex(0xff5566)
+    setTimeout(() => { for (const m of this.flashMats) m.color.setHex(m.userData.baseColor as number) }, 140)
 
     // Shove away from the attacker (physical impulse) + brief control loss
     if (opts.fromX !== undefined && opts.fromZ !== undefined) {

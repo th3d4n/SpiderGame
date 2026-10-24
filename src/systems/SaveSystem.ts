@@ -23,6 +23,7 @@ export interface SaveData {
   endingSeen:                     boolean    // chapter-one ending played
   deaths:                         number
   brewsUsed:                      number
+  guideStep:                      number     // den objectives progress (systems/DenGuide)
   cluesFoundIds:                  number[]
 }
 
@@ -63,6 +64,7 @@ const SAVE_FIELDS: (keyof SaveData)[] = [
   'endingSeen',
   'deaths',
   'brewsUsed',
+  'guideStep',
   'cluesFoundIds',
 ]
 
