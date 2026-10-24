@@ -842,6 +842,9 @@ async function transitionTo(zone: ZoneId, opts: { title?: string; onSwitch?: () 
       zone === 'homeBase' ? (scene.userData.homeBaseWarmth as number) ?? 0.12 : undefined)
     lighting.calibrateAccents(zone)
     audio.setRoom(zone)
+    // Water dripping somewhere in the dark: the caves, not the cosy den
+    audio.setAmbientSpots(zone === 'homeBase' ? null
+      : { key: 'cave_drip', every: zone === 'bossRoller' ? [4, 9] : [2.5, 7], radius: zone === 'antColony' ? 7 : 9 })
     const savedHp = registry.get<number>('health')
     if (savedHp !== undefined) webbs.hp = Math.max(1, savedHp)
     opts.onSwitch?.()   // runs under the blackout
@@ -915,6 +918,8 @@ const IMPACT_WEIGHT: Partial<Record<WeaponType, ImpactKind>> = {
 weaponUseSystem.onHit = (e) => {
   hitStop(e.hitStop)
   audio.impact(e.kill ? 'kill' : e.weak ? 'weak' : IMPACT_WEIGHT[e.weapon] ?? 'light', e.x, e.z)
+  // Every enemy but the Anteater wears a shell: crack it (harder on kills)
+  if (currentZone !== 'bossRoller') audio.play('chitin_crack', e.x, e.z, { volume: e.kill ? 1.3 : e.weak ? 1.1 : 0.8 })
   damageNumbers.spawn(e.x, e.y + 0.4 * webbs.scale, e.z, e.damage, { weak: e.weak, kill: e.kill })
 }
 
@@ -1532,18 +1537,23 @@ function gameLoop() {
         continue
       }
       const at = new THREE.Vector3(ev.x, 1, ev.z)
-      if (ev.kind === 'click') audio.play('ui_click', ev.x, ev.z, { rate: 1.7, volume: 0.8 })
+      if (ev.kind === 'click') audio.play('lock_click', ev.x, ev.z)
       else if (ev.kind === 'unlock') {
-        audio.play('sword_hit_ground', ev.x, ev.z, { rate: 1.9 })
+        audio.play('lock_open', ev.x, ev.z)
         particles.burst(at, 0xffd28a, 14, 1.6, 0.04)
+      } else if (ev.kind === 'creak') {
+        audio.play('gate_creak', ev.x, ev.z)
       } else if (ev.kind === 'chop') {
         audio.impact('heavy', ev.x, ev.z)
-        audio.play('axe_hit_enemy', ev.x, ev.z)
+        audio.play('axe_hit_ground', ev.x, ev.z)
+        audio.play('chain_snap', ev.x, ev.z)
         particles.burst(at, 0x9a9aa0, 22, 3.2, 0.05)
         hitStop(0.09)
         cameraShakeRemaining = 0.25; cameraShakeIntensity = 0.02
       } else if (ev.kind === 'crumble') {
-        audio.play('beetle_charge_crash', ev.x, ev.z, { rate: 1.3, volume: 0.7 })
+        audio.play('wax_crumble', ev.x, ev.z)
+        audio.play('wax_crumble', ev.x + 0.4, ev.z, { rate: 0.8 })
+        audio.play('rubble_fall', ev.x, ev.z, { rate: 1.4, volume: 0.4 })
         particles.burst(at, 0xd9a43a, 30, 2.4, 0.06)
         cameraShakeRemaining = 0.4; cameraShakeIntensity = 0.012
       }

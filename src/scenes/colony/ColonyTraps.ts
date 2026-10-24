@@ -181,11 +181,11 @@ export class ColonyTraps {
       const enemyOn = enemies.some(e => !e.isDead() && e.config.speed > 0 && (e.collisionBody.x - s.x) ** 2 + (e.collisionBody.z - s.z) ** 2 < SPIKE_R * SPIKE_R)
       if (s.state === 'idle' && (onP || enemyOn)) {
         s.state = 'armed'; s.t = 0
-        audio.play('bow_hit_wall', s.x, s.z, { rate: 1.6, volume: 1.2 })   // the click
+        audio.play('trap_click', s.x, s.z, { volume: 1.3 })   // the click
         s.plate.position.y = 0.0
       } else if (s.state === 'armed' && s.t > 0.35) {
         s.state = 'up'; s.t = 0
-        audio.play('sword_hit_ground', s.x, s.z, { rate: 0.8 })
+        audio.play('trap_spike', s.x, s.z)
         audio.impact('medium', s.x, s.z)
         out.push({ kind: 'noise', x: s.x, z: s.z, range: 9 })
         if ((px - s.x) ** 2 + (pz - s.z) ** 2 < (SPIKE_R + pr) ** 2) out.push({ kind: 'hurt', amount: SPIKE_DMG, fromX: s.x, fromZ: s.z, label: 'Spike trap!' })
@@ -208,7 +208,7 @@ export class ColonyTraps {
       if (c.state === 'idle' && d2 < 1.3 * 1.3) {
         c.state = 'rumble'; c.t = 0
         audio.impact('heavy', c.x, c.z)
-        audio.play('beetle_walk', c.x, c.z, { rate: 0.5, volume: 1.3 })
+        audio.play('rubble_fall', c.x, c.z, { rate: 0.55, volume: 0.6 })   // grit trickling from the roof
         out.push({ kind: 'shake', amount: 0.006, time: 0.9 })
       }
       if (c.state === 'rumble') {
@@ -220,7 +220,7 @@ export class ColonyTraps {
         c.rock.position.y = Math.max(0.42, 4 - c.t * c.t * 40)
         if (c.rock.position.y <= 0.42) {
           c.state = 'rubble'; c.t = 0
-          audio.impact('heavy', c.x, c.z); audio.play('beetle_charge_crash', c.x, c.z)
+          audio.impact('heavy', c.x, c.z); audio.play('rubble_fall', c.x, c.z, { volume: 1.3 }); audio.play('rubble_fall', c.x, c.z, { rate: 0.7 })
           out.push({ kind: 'shake', amount: 0.03, time: 0.35 }, { kind: 'dust', x: c.x, z: c.z, color: 0x6a5238, count: 24 }, { kind: 'noise', x: c.x, z: c.z, range: 12 })
           if (d2 < (0.95 + pr) ** 2) out.push({ kind: 'hurt', amount: CAVE_DMG, fromX: c.x, fromZ: c.z, label: 'Cave-in!' })
           for (const e of enemies) if (!e.isDead() && e.config.speed > 0 && (e.collisionBody.x - c.x) ** 2 + (e.collisionBody.z - c.z) ** 2 < 1.1) { e.takeDamage(45); e.stagger(1) }
@@ -246,11 +246,11 @@ export class ColonyTraps {
           const mesh = new THREE.Mesh(this.globGeo, this.globMat)
           mesh.position.set(s.x, 0.5, s.z); this.root.add(mesh)
           this.globs.push({ mesh, x: s.x, z: s.z, vx: vx / l * 6.2, vz: vz / l * 6.2, life: 2 })
-          audio.play('flame_hit', s.x, s.z, { rate: 1.8, volume: 0.8 })
+          audio.play('web_attach_wall', s.x, s.z, { rate: 0.75, volume: 1.1 })   // a wet spit
         }
       } else if (inLine && s.cool <= 0) {
         s.charge = 0.001
-        audio.play('centipede_skitter', s.x, s.z, { rate: 1.5, volume: 0.9 })
+        audio.play('ant_hiss', s.x, s.z, { rate: 1.3, volume: 0.8 })   // drawing breath
       }
     }
     for (let k = this.globs.length - 1; k >= 0; k--) {
@@ -297,7 +297,7 @@ export class ColonyTraps {
         p.jawL.rotation.y = -0.6; p.jawR.rotation.y = 0.6
         if (p.snapT > 0.45) {
           p.state = 'snap'; p.snapT = 0
-          audio.play('beetle_charge_crash', p.x, p.z, { rate: 1.4 }); audio.impact('heavy', p.x, p.z)
+          audio.play('chitin_crack', p.x, p.z, { rate: 0.6, volume: 2.2 }); audio.play('beetle_charge_crash', p.x, p.z, { rate: 1.4, volume: 0.6 }); audio.impact('heavy', p.x, p.z)
           out.push({ kind: 'noise', x: p.x, z: p.z, range: 10 }, { kind: 'shake', amount: 0.02, time: 0.25 })
           if (d < 1.05) out.push({ kind: 'hurt', amount: PIT_DMG, fromX: p.x, fromZ: p.z, label: 'Antlion!' })
           for (const e of enemies) if (!e.isDead() && e.config.speed > 0 && Math.hypot(e.collisionBody.x - p.x, e.collisionBody.z - p.z) < 1.05) { e.takeDamage(60); e.stagger(0.8) }

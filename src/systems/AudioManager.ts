@@ -13,8 +13,14 @@
 //  • Buses: world (sfx + ambience, through a menu "muffle" filter), UI (dry),
 //    a per-zone cave reverb send, and a master limiter so stacked hits can't clip.
 //  • A tiny synth layers weight under impacts (sub thump, weak-point ting).
+//  • Multi-take sounds: one file packs several takes (tools/audio/build_sprites.py
+//    writes the split points to audioSprites.ts); each play picks a random take,
+//    never the same one twice running, and every take is normalised on its own.
+//  • Ambient one-shots (cave drips…) scatter around the listener per zone.
 //
 // Files live under `/public/audio/<file>.webm` (Opus) with `.mp3` fallback.
+
+import { AUDIO_SPRITES } from './audioSprites'
 
 export type SoundKey =
   // Player
@@ -39,10 +45,15 @@ export type SoundKey =
   | 'beetle_death_sword' | 'beetle_death_axe'
   | 'beetle_death_stab' | 'beetle_death_flame'
   // Enemies — small fry (ants, jumping spiders) reuse pitched sources
-  | 'small_death' | 'spider_coil' | 'spider_leap' | 'spider_land' | 'ant_bite'
+  | 'small_death' | 'spider_coil' | 'spider_leap' | 'spider_land' | 'ant_bite' | 'ant_hiss'
+  | 'chitin_crack' | 'sac_burst'
+  // Colony traps, cave, Crossroads locks
+  | 'trap_click' | 'trap_spike' | 'rubble_fall' | 'rock_smack' | 'cave_drip'
+  | 'lock_click' | 'lock_open' | 'gate_creak' | 'chain_snap' | 'wax_crumble'
   // Boss
-  | 'boss_idle' | 'boss_suction' | 'boss_windup' | 'boss_charge' | 'boss_hit'
+  | 'boss_idle' | 'boss_suction' | 'boss_windup' | 'boss_hit'
   | 'boss_phase_change' | 'boss_death'
+  | 'boss_snort' | 'boss_sniff' | 'boss_growl' | 'tongue_lash' | 'tongue_slap'
   // Ambience (looping)
   | 'amb_homebase' | 'amb_colony_entry' | 'amb_colony_mid' | 'amb_colony_deep' | 'amb_boss'
   // UI
@@ -79,12 +90,13 @@ const ST = (semitones: number) => 2 ** (semitones / 12)
 // Volumes are a mix, relative to a normalised -20 dBFS RMS buffer.
 const SOUND_REGISTRY: Record<SoundKey, SoundConfig> = {
   // ── Player ──────────────────────────────────────────────────────────────
-  footstep_dirt:    { file: 'footstep_dirt',  volume: 0.20, trimDb: -12, rateRandom: [0.88, 1.12], maxVoices: 6, minGap: 0.05, maxLen: 0.25, lowpass: 5000, reverb: 0.4 },
-  footstep_stone:   { file: 'footstep_stone', volume: 0.18, rateRandom: [0.88, 1.12], maxVoices: 6, minGap: 0.05, reverb: 0.5 },
-  web_swing:        { file: 'web_swing',      volume: 0.45 },
+  // Multi-take files (10 dirt steps, 5 stone): light, quick feet
+  footstep_dirt:    { file: 'footstep_dirt',  volume: 0.17, rateRandom: [0.9, 1.15], maxVoices: 6, minGap: 0.05, maxLen: 0.22, lowpass: 6000, reverb: 0.4 },
+  footstep_stone:   { file: 'footstep_stone', volume: 0.16, rateRandom: [0.95, 1.25], maxVoices: 6, minGap: 0.05, reverb: 0.5 },
+  web_swing:        { file: 'web_swing',      volume: 0.45, rateRandom: [0.95, 1.08] },
   webbs_damage:     { file: 'webbs_damage',   volume: 0.80, rateRandom: [0.92, 1.08] },
   webbs_death:      { file: 'webbs_death',    volume: 0.90 },
-  webbs_dodge:      { file: 'webbs_dodge',    volume: 0.45, maxLen: 0.45 },
+  webbs_dodge:      { file: 'webbs_dodge',    volume: 0.45, maxLen: 0.45, rateRandom: [0.95, 1.1] },
   heartbeat_low_hp: { file: 'heartbeat',      volume: 0.45, loop: true, reverb: 0, lowpass: 900 },
   half_hp_pain:     { file: 'half_hp_pain',   volume: 0.65, maxLen: 1.6 },
 
@@ -92,21 +104,23 @@ const SOUND_REGISTRY: Record<SoundKey, SoundConfig> = {
   sword_swing:      { file: 'sword_swing',      volume: 0.50, rateRandom: [0.95, 1.05] },
   sword_hit_enemy:  { file: 'sword_hit_enemy',  volume: 0.95, rateRandom: [0.92, 1.08], maxLen: 0.7 },
   sword_hit_ground: { file: 'sword_hit_ground', volume: 0.40, maxLen: 0.6 },
-  axe_swing:        { file: 'axe_swing',        volume: 0.60, rateRandom: [0.92, 1.05] },
-  axe_hit_enemy:    { file: 'axe_hit_enemy',    volume: 1.00, rateRandom: [0.9, 1.05] },
+  // The 6 sword swings pitched down read as a heavier blade (was a single axe whoosh)
+  axe_swing:        { file: 'sword_swing',      volume: 0.62, rate: ST(-4), rateRandom: [0.92, 1.05] },
+  axe_hit_enemy:    { file: 'axe_hit_enemy',    volume: 1.00, rateRandom: [0.9, 1.05], maxLen: 0.8 },
   axe_hit_ground:   { file: 'axe_hit_ground',   volume: 0.45, maxLen: 0.6 },
   toothpick_stab:   { file: 'toothpick_stab',   volume: 0.45, rateRandom: [0.95, 1.1] },
   toothpick_hit:    { file: 'toothpick_hit',    volume: 0.85, rateRandom: [0.92, 1.08] },
   // Placeholder (string flutter) — darkened and slowed so it reads as a creak
   bow_draw:         { file: 'bow_draw',         volume: 0.30, rate: ST(-4), lowpass: 2400 },
-  bow_release:      { file: 'bow_release',      volume: 0.55 },
+  bow_release:      { file: 'bow_release',      volume: 0.55, rateRandom: [0.95, 1.08], maxLen: 0.7 },
   bow_hit_enemy:    { file: 'bow_hit_enemy',    volume: 0.70, rateRandom: [0.95, 1.05] },
-  bow_hit_wall:     { file: 'bow_hit_wall',     volume: 0.55 },
+  bow_hit_wall:     { file: 'bow_hit_wall',     volume: 0.50, rateRandom: [1.0, 1.3] },
   flame_loop:       { file: 'flame_loop',       volume: 0.55, loop: true, maxLoop: 10 },
   flame_hit:        { file: 'flame_hit',        volume: 0.45, maxLen: 0.45, minGap: 0.3, maxVoices: 2 },
-  web_fire:         { file: 'web_fire',         volume: 0.55 },
-  web_attach_wall:  { file: 'web_attach_wall',  volume: 0.55 },
-  web_attach_enemy: { file: 'web_attach_enemy', volume: 0.60, maxLen: 0.7 },
+  // The source asked for −3…−5 st; done here
+  web_fire:         { file: 'web_fire',         volume: 0.55, rate: ST(-3), rateRandom: [0.95, 1.08], maxLen: 0.5 },
+  web_attach_wall:  { file: 'web_attach_wall',  volume: 0.50, rateRandom: [0.95, 1.15] },
+  web_attach_enemy: { file: 'web_attach_enemy', volume: 0.58, rateRandom: [0.9, 1.05], maxLen: 0.5 },
   web_pull_loop:    { file: 'web_pull_loop',    volume: 0.40, loop: true },
 
   // ── Centipede ───────────────────────────────────────────────────────────
@@ -135,19 +149,42 @@ const SOUND_REGISTRY: Record<SoundKey, SoundConfig> = {
   beetle_death_flame:    { file: 'beetle_death', volume: 0.80, rate: ST(-2), lowpass: 1400 },
 
   // ── Small fry ───────────────────────────────────────────────────────────
-  small_death:   { file: 'centipede_death',  volume: 0.55, rate: ST(6), rateRandom: [0.94, 1.06], maxLen: 0.6 },
-  spider_coil:   { file: 'centipede_attack', volume: 0.45, rate: ST(5), lowpass: 4000 },   // telegraph hiss
+  // Shell crunch + wet squish (8 takes)
+  small_death:   { file: 'bug_squish',       volume: 0.50, rate: ST(3), rateRandom: [0.9, 1.12], maxLen: 0.45 },
+  spider_coil:   { file: 'ant_hiss',         volume: 0.35, rate: ST(3), rateRandom: [0.95, 1.1], maxLen: 0.45 },   // telegraph hiss
   spider_leap:   { file: 'webbs_dodge',      volume: 0.40, rate: ST(4), maxLen: 0.35 },
-  spider_land:   { file: 'beetle_hit',       volume: 0.45, rate: ST(5) },
-  ant_bite:      { file: 'centipede_attack', volume: 0.35, rate: ST(9), maxLen: 0.3, minGap: 0.12 },   // mandible click (bite tell)
+  spider_land:   { file: 'footstep_stone',   volume: 0.40, rate: ST(-2), rateRandom: [0.9, 1.1] },
+  // Mandible clicks (bite tell) and a hiss when a soldier has you
+  ant_bite:      { file: 'ant_click',        volume: 0.40, rateRandom: [1.1, 1.5], maxLen: 0.3, minGap: 0.1 },
+  ant_hiss:      { file: 'ant_hiss',         volume: 0.42, rateRandom: [0.9, 1.15], maxLen: 0.6, minGap: 0.3 },
+  // Every blade/stab hit on a bug also cracks its shell
+  chitin_crack:  { file: 'chitin_crack',     volume: 0.38, rateRandom: [1.0, 1.35], maxLen: 0.35, maxVoices: 3 },
+  sac_burst:     { file: 'sac_burst',        volume: 0.80, rate: ST(-3), rateRandom: [0.9, 1.05], maxLen: 0.9 },
+
+  // ── Colony traps · cave · Crossroads locks ──────────────────────────────
+  trap_click:    { file: 'trap_click',       volume: 0.45, rateRandom: [0.9, 1.1] },
+  trap_spike:    { file: 'trap_spike',       volume: 0.60, rate: ST(-3), rateRandom: [0.92, 1.08] },
+  rubble_fall:   { file: 'rubble_fall',      volume: 0.70, rateRandom: [0.85, 1.05], maxLen: 0.9 },
+  rock_smack:    { file: 'rubble_fall',      volume: 0.50, rate: ST(5), rateRandom: [0.95, 1.15], maxLen: 0.35 },   // a pebble, batted
+  cave_drip:     { file: 'cave_drip',        volume: 0.22, rateRandom: [0.8, 1.35], maxVoices: 3, reverb: 1.6 },
+  lock_click:    { file: 'lock_click',       volume: 0.45, rateRandom: [1.0, 1.4], maxLen: 0.3 },
+  lock_open:     { file: 'lock_open',        volume: 0.60, rateRandom: [0.95, 1.05] },
+  gate_creak:    { file: 'gate_creak',       volume: 0.55, rate: ST(3), rateRandom: [0.95, 1.05] },
+  chain_snap:    { file: 'chain_snap',       volume: 0.75, rateRandom: [0.95, 1.1] },
+  wax_crumble:   { file: 'wax_crumble',      volume: 0.60, rateRandom: [0.85, 1.05], maxVoices: 3 },
 
   // ── Boss ────────────────────────────────────────────────────────────────
   boss_idle:         { file: 'boss_idle',         volume: 0.55, loop: true },
   boss_suction:      { file: 'boss_suction',      volume: 0.75 },
   boss_windup:       { file: 'beetle_charge_windup', volume: 0.80, rate: ST(-6), maxLen: 0.8 },   // attack telegraph
-  boss_charge:       { file: 'boss_charge',       volume: 0.70 },
-  // Shares a source with the beetle wind-up — deeper and shorter here
-  boss_hit:          { file: 'boss_hit',          volume: 0.75, rate: ST(-5), maxLen: 0.9 },
+  // Pained growls (5 takes), deep
+  boss_hit:          { file: 'boss_growl',        volume: 0.80, rate: ST(-4), rateRandom: [0.92, 1.05], maxLen: 1.2 },
+  // Snout: a pig snort + steam bursts for the rock volley; horse snorts for sniffing
+  boss_snort:        { file: 'boss_snort',        volume: 0.75, rate: ST(-5), rateRandom: [0.9, 1.05], maxLen: 1.0 },
+  boss_sniff:        { file: 'boss_sniff',        volume: 0.55, rate: ST(-3), rateRandom: [0.9, 1.1], maxLen: 0.9, minGap: 0.6 },
+  boss_growl:        { file: 'boss_growl',        volume: 0.85, rate: ST(-6), rateRandom: [0.95, 1.05], maxLen: 1.6 },
+  tongue_lash:       { file: 'tongue_lash',       volume: 0.70, rateRandom: [1.05, 1.25], maxLen: 0.8 },
+  tongue_slap:       { file: 'tongue_slap',       volume: 0.80, rate: ST(-4), rateRandom: [0.9, 1.05], maxLen: 0.6 },
   boss_phase_change: { file: 'boss_phase_change', volume: 0.90 },
   boss_death:        { file: 'boss_death',        volume: 1.00 },
 
@@ -255,6 +292,8 @@ export class AudioManager {
   private rumbleLp!: BiquadFilterNode
 
   private buffers = new Map<string, Analysed>()        // by file
+  private takes   = new Map<string, Analysed[]>()      // multi-take files, by file
+  private lastTake = new Map<string, number>()
   private loading = new Map<string, Promise<Analysed | null>>()
   private failed  = new Set<string>()
   private ext:    'webm' | 'mp3'
@@ -384,6 +423,13 @@ export class AudioManager {
         if (!buf) { this.failed.add(file); return null }
         const max = FILE_MAX_LOOP.get(file)
         if (max !== undefined) buf = cropLoop(this.ctx, buf, max)
+        const cuts = AUDIO_SPRITES[file]
+        if (cuts) {
+          const list = splitTakes(this.ctx, buf, cuts).map(b => analyse(b, FILE_TRIM_DB.get(file) ?? TRIM_REL_DB))
+          this.takes.set(file, list)
+          this.buffers.set(file, list[0])
+          return list[0]
+        }
         const a = analyse(buf, FILE_TRIM_DB.get(file) ?? TRIM_REL_DB)
         this.buffers.set(file, a)
         return a
@@ -419,7 +465,7 @@ export class AudioManager {
       if (victim) this.release(victim, 0.02)
     }
 
-    const v = this.startVoice(key, a, cfg, worldX, worldZ, opts, false)
+    const v = this.startVoice(key, this.pickTake(cfg.file) ?? a, cfg, worldX, worldZ, opts, false)
     if (cfg.maxLen) {
       const rate = (v.src as AudioBufferSourceNode).playbackRate.value
       const len  = cfg.maxLen
@@ -430,6 +476,32 @@ export class AudioManager {
       }
     }
     return v.id
+  }
+
+  // A random take, never the one this file played last
+  private pickTake(file: string): Analysed | null {
+    const list = this.takes.get(file)
+    if (!list || list.length < 2) return null
+    const last = this.lastTake.get(file) ?? -1
+    let i = Math.floor(Math.random() * (list.length - 1))
+    if (i >= last) i++
+    this.lastTake.set(file, i)
+    return list[i]
+  }
+
+  // ── Ambient one-shots ──────────────────────────────────────────────────────
+  // A few sounds scattered around the listener at random intervals (drips in
+  // the caves).  setAmbientSpots(null) stops it.  Ticked from setListener.
+  private spots: { key: SoundKey; every: [number, number]; radius: number; next: number } | null = null
+  setAmbientSpots(cfg: { key: SoundKey; every: [number, number]; radius: number } | null): void {
+    this.spots = cfg ? { ...cfg, next: this.ctx.currentTime + cfg.every[0] } : null
+  }
+  private tickSpots(): void {
+    const s = this.spots
+    if (!s || this.ctx.currentTime < s.next) return
+    s.next = this.ctx.currentTime + s.every[0] + Math.random() * (s.every[1] - s.every[0])
+    const a = Math.random() * Math.PI * 2, r = s.radius * (0.35 + Math.random() * 0.65) * this.unit
+    this.play(s.key, this.lx + Math.cos(a) * r, this.lz + Math.sin(a) * r)
   }
 
   // ── Loops ──────────────────────────────────────────────────────────────────
@@ -548,6 +620,7 @@ export class AudioManager {
     this.rx = rightX / l; this.rz = rightZ / l
     this.unit = unit
     this.updateSpatial()
+    this.tickSpots()
   }
 
   setListenerPosition(x: number, z: number): void {
@@ -751,6 +824,21 @@ function analyse(buffer: AudioBuffer, trimDb: number): Analysed {
   const rms  = Math.sqrt(sum / Math.max(1, last - first + 1))
   const gain = Math.min(TARGET_RMS / Math.max(rms, 1e-6), MAX_BOOST, PEAK_CEIL / peak)
   return { buffer, start: Math.max(0, first / buffer.sampleRate - TRIM_PREROLL), gain }
+}
+
+// Cut a multi-take file at its split points (s) into one buffer per take
+function splitTakes(ctx: BaseAudioContext, src: AudioBuffer, cuts: number[]): AudioBuffer[] {
+  const sr = src.sampleRate
+  const edges = [0, ...cuts.map(c => Math.min(src.length, Math.round(c * sr))), src.length]
+  const out: AudioBuffer[] = []
+  for (let i = 0; i < edges.length - 1; i++) {
+    const n = edges[i + 1] - edges[i]
+    if (n <= 0) continue
+    const b = ctx.createBuffer(src.numberOfChannels, n, sr)
+    for (let c = 0; c < src.numberOfChannels; c++) b.getChannelData(c).set(src.getChannelData(c).subarray(edges[i], edges[i + 1]))
+    out.push(b)
+  }
+  return out
 }
 
 // Crop a long loop to `seconds`, crossfading the tail of the kept part into

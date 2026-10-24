@@ -67,7 +67,7 @@ export class PheromoneSac3D extends Enemy3D {
   override startDeath(weapon: WeaponType): void {
     super.startDeath(weapon)
     if (this.deathState) this.deathState.duration = 0.9
-    audio.play('boss_hit', this.collisionBody.x, this.collisionBody.z, { rate: 0.7 })
+    audio.play('sac_burst', this.collisionBody.x, this.collisionBody.z)
     audio.impact('kill', this.collisionBody.x, this.collisionBody.z)
     this.spawnIchor(this.group.position, 40, 0xffa020)
     Enemy3D.onCameraShake?.(0.03, 0.35)

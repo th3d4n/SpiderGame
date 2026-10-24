@@ -224,6 +224,37 @@ Still needs a listen or new source files:
 - The identical death samples should eventually be distinct recordings.
 - `centipede_idle` is unreferenced, but its 7.6 MB of files still ship in `public/audio`. Safe to delete.
 
+### Sound pass 2 (2026-10-24): variety and realism
+
+- **Multi-take sounds.** `tools/audio/build_sprites.py` cuts takes from the local
+  library (`D:\dmorgan\Downloads\nolegsAudio`) by an energy gate and packs them
+  into one file per sound. The split points go into `src/systems/audioSprites.ts`
+  (generated). The engine splits each file once, normalises every take on its own,
+  and each play picks a random take, never the same one twice in a row. The spec
+  of which source feeds which sound is in `tools/audio/sprite_spec.py`; rerun with
+  `python tools/audio/build_sprites.py [keys]`.
+- **38 multi-take sounds** (most with 4–10 takes):
+  - footsteps;
+  - swings, stabs and every weapon hit;
+  - web fire and web splats;
+  - bug deaths and shell cracks;
+  - beetle hits;
+  - Anteater growls, snorts, sniffs and tongue lash/slap;
+  - trap click and spikes, rubble, rock smacks, cave drips;
+  - Crossroads lock clicks, unlock, gate creak, chain snap, wax crumble.
+- **Dedicated sounds replace borrowed ones:**
+  - traps used to use the arrow, sword and beetle-step sounds;
+  - pheromone sacs and the rock volley used boss sounds;
+  - ant hisses used a pitched centipede.
+- **New layers:**
+  - a chitin crack under every weapon hit on a bug;
+  - the Anteater sniffs between volleys and draws a long breath before inhaling;
+  - `audio.setAmbientSpots` drips water around the listener in the Crossroads,
+    colony and boss pit.
+- **Removed:** 12 unused files, about 8 MB, including `centipede_idle` and the
+  identical per-weapon death copies.
+- **Sources and licenses:** `tools/audio/CREDITS.md`.
+
 ## 5. Deep review (after the four phases) — backlog
 
 Four parallel read-only reviews (physics, rendering, flow/saves, combat) plus runtime

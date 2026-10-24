@@ -174,7 +174,7 @@ export class ColonyDirector {
       audio.play('ant_bite', p.x, p.z, { rate: 0.5, volume: 0.6 })
     } else if (pick < 0.85) {
       audio.impact('heavy', px + (Math.random() - 0.5) * 6, pz + (Math.random() - 0.5) * 6)
-      audio.play('beetle_walk', p.x, p.z, { rate: 0.45, volume: 1.2 })              // the ceiling grinds
+      audio.play('rubble_fall', p.x, p.z, { rate: 0.5, volume: 0.9 })              // the ceiling grinds
       this.hooks.shake(0.004, 1.2)
       for (let k = 0; k < 3; k++) this.hooks.dust(px + (Math.random() - 0.5) * 2, pz + (Math.random() - 0.5) * 2, 0x6a5238, 4)
     } else {

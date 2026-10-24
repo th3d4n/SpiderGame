@@ -230,7 +230,7 @@ export class AntSoldier3D extends Enemy3D {
         if (sees) {
           this.setState('ALERT')
           b.velocity.x = b.velocity.z = 0
-          audio.play('ant_bite', b.x, b.z, { rate: 0.55, volume: 1.2 })   // the hiss: it has you
+          audio.play('ant_hiss', b.x, b.z, { volume: 1.2 })   // the hiss: it has you
           ctx.alert(px, pz, this)
           return this.pose(delta)
         }

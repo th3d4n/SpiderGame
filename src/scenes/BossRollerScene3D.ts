@@ -89,6 +89,7 @@ export class BossRollerScene3D {
   private rocks: RockBody[] = []
   private snortT = SNORT_EVERY
   private snortCharge = 0
+  private sniffT = 2.5   // idle sniffing between volleys
   // Inhale (both phases)
   private inhaleT = INHALE_EVERY
   private inhaleState: 'none' | 'warn' | 'pull' = 'none'
@@ -215,6 +216,12 @@ export class BossRollerScene3D {
         hud.showBossHp('THE ANTEATER', this.snoutHp, SNOUT_HP)
         this.anteater.aimAt(target, Math.min(1, delta * 1.5))
         this.updateSnort(delta, webbs, hud)
+        this.sniffT -= delta
+        if (this.sniffT <= 0 && this.inhaleState === 'none' && this.snortT > 1) {
+          this.sniffT = 3.5 + Math.random() * 3
+          const tip = this.anteater.tip(new THREE.Vector3())
+          audio.play('boss_sniff', tip.x, tip.z)
+        }
         this.updateInhale(delta, webbs, hud, isAnchored)
       } else {
         this.updateBreak(delta, hud)
@@ -249,7 +256,7 @@ export class BossRollerScene3D {
     this.snortCharge = 0
     const tip = this.anteater.tip(new THREE.Vector3())
     const n = 2 + Math.floor(Math.random() * 2)
-    audio.play('boss_charge', tip.x, tip.z, { rate: 1.3, volume: 0.9 })
+    audio.play('boss_snort', tip.x, tip.z)
     for (let k = 0; k < n; k++) {
       const tx = webbs.collisionBody.x + (Math.random() - 0.5) * 3, tz = webbs.collisionBody.z + (Math.random() - 0.5) * 1.5
       const dx = tx - tip.x, dz = tz - tip.z, l = Math.hypot(dx, dz) || 1
@@ -324,7 +331,7 @@ export class BossRollerScene3D {
       ;(r.mesh.material as THREE.MeshToonMaterial).color.setHex(0xffcc44)
       ;(r.mesh.material as THREE.MeshToonMaterial).emissive = new THREE.Color(0xaa6600)
       this.ring(r.body.x, r.body.z, 0xffdd44, 0.25, 2.5)
-      audio.play('sword_hit_ground', r.body.x, r.body.z, { rate: 1.4 })
+      audio.play('rock_smack', r.body.x, r.body.z)
     }
   }
 
@@ -346,6 +353,7 @@ export class BossRollerScene3D {
         this.inhaleState = 'warn'; this.inhaleTimer = INHALE_WARN
         hud.flashBossMessage('⚠ IT\'S INHALING — WEB A WALL OR PILLAR [Q] ⚠')
         audio.play('boss_windup', 0, BACK_Z)
+        audio.play('boss_sniff', 0, BACK_Z, { rate: 0.8, volume: 1.4 })   // a long draw of breath
       }
     } else if (this.inhaleState === 'warn') {
       this.inhaleTimer -= delta
@@ -495,7 +503,7 @@ export class BossRollerScene3D {
           this.tTimer = this.tState === 'sweep' ? SWEEP_TIME * fast : LASH_TIME
           this.lashHit = false
           tg.collisionBody.enabled = this.tState === 'lash'
-          audio.play('boss_charge', mouth.x, mouth.z, { rate: 1.8 })
+          audio.play('tongue_lash', mouth.x, mouth.z)
         }
         break
       }
@@ -508,6 +516,7 @@ export class BossRollerScene3D {
           this.tState = 'stuck'; this.tTimer = STUCK_TIME * fast
           this.ring(mouth.x + this.aimDir.x * this.reachMax, mouth.z + this.aimDir.y * this.reachMax, 0xd8607e, 0.3, 2)
           audio.impact('medium', mouth.x + this.aimDir.x * this.reachMax, mouth.z + this.aimDir.y * this.reachMax)
+          audio.play('tongue_slap', mouth.x + this.aimDir.x * this.reachMax, mouth.z + this.aimDir.y * this.reachMax)
         }
         break
       }
@@ -672,7 +681,7 @@ export class BossRollerScene3D {
     g.position.set(0, HOLE_Y, BACK_Z + 0.3)
     this.add(g)
     this.drop = { group: g, beam, t: 0, x: 0, z: BACK_Z + 2.4, landed: false }
-    audio.play('boss_hit', 0, BACK_Z, { rate: 1.4, volume: 0.6 })
+    audio.play('rubble_fall', 0, BACK_Z, { rate: 1.2, volume: 0.6 })
   }
 
   // Per frame after victory; true the moment Webbs walks over the drop
@@ -683,7 +692,7 @@ export class BossRollerScene3D {
     const k = Math.min(1, d.t / 0.7)   // tumbles out of the hole in an arc
     const g = d.group
     g.position.set(0, k < 1 ? HOLE_Y * (1 - k) + Math.sin(k * Math.PI) * 0.8 : 0, BACK_Z + 0.3 + (d.z - BACK_Z - 0.3) * k)
-    if (k >= 1 && !d.landed) { d.landed = true; this.ring(d.x, d.z, 0xffd08a, 0.4, 3); audio.play('sword_hit_ground', d.x, d.z, { rate: 0.7 }) }
+    if (k >= 1 && !d.landed) { d.landed = true; this.ring(d.x, d.z, 0xffd08a, 0.4, 3); audio.play('rubble_fall', d.x, d.z, { rate: 1.3, volume: 0.8 }) }
     this.updateRings(delta)
     const glow = Math.min(1, Math.max(0, d.t - 0.7) * 2)
     ;(d.beam.material as THREE.MeshBasicMaterial).opacity = glow * (0.1 + Math.sin(d.t * 3) * 0.03)

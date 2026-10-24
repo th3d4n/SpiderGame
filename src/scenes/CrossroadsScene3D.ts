@@ -36,7 +36,7 @@ const DOOR_PHI = THREE.MathUtils.degToRad(45)
 
 export type TunnelId = 'drowned' | 'roots' | 'ants' | 'hive' | 'glow' | 'fall'
 export type CrossroadsEvent =
-  | { kind: 'click' | 'unlock' | 'chop' | 'crumble'; x: number; z: number }
+  | { kind: 'click' | 'unlock' | 'creak' | 'chop' | 'crumble'; x: number; z: number }
   | { kind: 'opened'; id: TunnelId }
 
 interface TunnelDef { id: TunnelId; name: string; deg: number }
@@ -580,6 +580,7 @@ export class CrossroadsScene3D {
         P.lock.rotation.z = Math.min(1.4, k * 4)
       }
       if (t >= 1.1 && P.chain) for (const c of P.chain) c.position.y = Math.max(0.05, 1.15 - (t - 1.1) ** 2 * 8)
+      if (at(1.3) && P.gate) this.events.push({ kind: 'creak', ...world(P.gate) })
       if (t >= 1.3 && P.gate) P.gate.rotation.y = -1.75 * THREE.MathUtils.smoothstep(t, 1.3, 2.1)
       if (t >= 2.1) this.finishOpen(tn)
       return
